@@ -1,1 +1,4 @@
-
+pybaseball
+pandas
+gspread
+google-auth
