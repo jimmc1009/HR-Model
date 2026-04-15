@@ -134,9 +134,58 @@ def infer_batting_team(df: pd.DataFrame) -> pd.Series:
     return pd.Series([""] * len(df), index=df.index)
 
 
+def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter to one row per plate appearance (the actual batted ball),
+    and only keep realistic tracked contact events.
+    """
+    batted_ball_events = {
+        "single", "double", "triple", "home_run",
+        "field_out", "grounded_into_double_play", "double_play",
+        "triple_play", "field_error", "fielders_choice",
+        "fielders_choice_out", "force_out", "sac_fly",
+        "sac_fly_double_play", "sac_bunt", "sac_bunt_double_play",
+        "other_out",
+    }
+
+    bbe = df[
+        df["events"].astype("string").str.lower().isin(batted_ball_events) &
+        df["launch_speed"].notna() &
+        df["launch_speed"].between(50, 120) &
+        df["launch_angle"].notna() &
+        df["launch_angle"].between(-90, 90)
+    ].copy()
+
+    dedupe_cols = [
+        c for c in ["game_pk", "at_bat_number", "batter"]
+        if c in bbe.columns
+    ]
+    if dedupe_cols:
+        bbe = bbe.drop_duplicates(subset=dedupe_cols)
+
+    return bbe
+
+
 def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add barrel, hard-hit, sweet-spot, HR, fly ball, and pull flags.
+    Barrel is calculated directly from exit velo + launch angle
+    to match Statcast's official definition.
+    """
     df = df.copy()
-    df["is_barrel"] = df["launch_speed_angle"].astype("string").eq("6")
+
+    def is_barrel(row):
+        ev = row["launch_speed"]
+        la = row["launch_angle"]
+        if pd.isna(ev) or pd.isna(la):
+            return False
+        if ev < 98:
+            return False
+        min_la = max(26 - (ev - 98), 8)
+        max_la = min(30 + (ev - 98), 50)
+        return min_la <= la <= max_la
+
+    df["is_barrel"] = df.apply(is_barrel, axis=1)
     df["is_hard_hit"] = df["launch_speed"] >= 95
     df["is_sweet_spot"] = df["launch_angle"].between(8, 32, inclusive="both")
     df["is_hr"] = df["events"].astype("string").str.lower().eq("home_run")
@@ -153,24 +202,6 @@ def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
         df["is_pull"] = False
 
     return df
-
-
-def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
-    bbe = df[
-        df["launch_speed"].notna() &
-        df["launch_speed"].between(50, 120) &
-        df["launch_angle"].notna() &
-        df["launch_angle"].between(-90, 90)
-    ].copy()
-
-    dedupe_cols = [
-        c for c in ["game_date", "game_pk", "at_bat_number", "pitch_number", "batter"]
-        if c in bbe.columns
-    ]
-    if dedupe_cols:
-        bbe = bbe.drop_duplicates(subset=dedupe_cols)
-
-    return bbe
 
 
 def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame:
@@ -330,14 +361,9 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Replace NaN, Infinity, and -Infinity with empty strings
-    so Google Sheets JSON serialization never crashes.
-    """
+    """Replace NaN, Infinity, and -Infinity with empty strings."""
     df = df.copy()
-    # Replace numeric NaN/inf before converting to string
     df = df.replace([np.inf, -np.inf], np.nan)
-    # Convert to string, replacing any remaining NaN with ""
     for col in df.columns:
         df[col] = df[col].apply(
             lambda x: "" if (isinstance(x, float) and (np.isnan(x) or np.isinf(x)))
