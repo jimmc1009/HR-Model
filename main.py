@@ -17,10 +17,20 @@ SCOPES = [
 
 SEASON_START = "2026-03-26"
 
-# Pitch type groupings
 FASTBALLS = {"FF", "SI", "FC", "FA"}
 BREAKING = {"SL", "CU", "KC", "CS", "SV"}
 OFFSPEED = {"CH", "FS", "FO", "SC"}
+
+ESPN_TO_MLB = {
+    "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
+    "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
+    "COL": "COL", "OAK": "ATH", "CLE": "CLE", "CHC": "CHC",
+    "SEA": "SEA", "PHI": "PHI", "DET": "DET", "ARI": "AZ",
+    "TB":  "TB",  "SD":  "SD",  "STL": "STL", "ATL": "ATL",
+    "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
+    "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
+    "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -31,23 +41,62 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_today_team_abbrs() -> Set[str]:
-    today_str = date.today().strftime("%Y-%m-%d")
-    url = (
-        f"https://statsapi.mlb.com/api/v1/schedule"
-        f"?sportId=1&date={today_str}&hydrate=probablePitcher"
-    )
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    def fetch_mlb_api() -> Set[str]:
+        today_str = date.today().strftime("%Y-%m-%d")
+        url = (
+            f"https://statsapi.mlb.com/api/v1/schedule"
+            f"?sportId=1&date={today_str}&hydrate=probablePitcher"
+        )
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        teams: Set[str] = set()
+        for d in data.get("dates", []):
+            for g in d.get("games", []):
+                for side in ("away", "home"):
+                    abbr = g.get("teams", {}).get(side, {}).get("team", {}).get("abbreviation")
+                    if abbr:
+                        teams.add(str(abbr).strip())
+        return teams
 
-    teams: Set[str] = set()
-    for d in data.get("dates", []):
-        for g in d.get("games", []):
-            for side in ("away", "home"):
-                abbr = g.get("teams", {}).get(side, {}).get("team", {}).get("abbreviation")
-                if abbr:
-                    teams.add(str(abbr).strip())
-    return teams
+    def fetch_espn_api() -> Set[str]:
+        today_str = date.today().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_str}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        teams: Set[str] = set()
+        for event in data.get("events", []):
+            for comp in event.get("competitions", []):
+                for competitor in comp.get("competitors", []):
+                    abbr = competitor.get("team", {}).get("abbreviation", "")
+                    if abbr:
+                        mlb_abbr = ESPN_TO_MLB.get(str(abbr).strip(), str(abbr).strip())
+                        teams.add(mlb_abbr)
+        return teams
+
+    try:
+        print("Fetching today's teams from MLB API...")
+        teams = fetch_mlb_api()
+        if teams:
+            print(f"MLB API returned {len(teams)} teams: {teams}")
+            return teams
+        print("MLB API returned no teams.")
+    except Exception as e:
+        print(f"MLB API failed: {e}")
+
+    try:
+        print("Falling back to ESPN API...")
+        teams = fetch_espn_api()
+        if teams:
+            print(f"ESPN API returned {len(teams)} teams: {teams}")
+            return teams
+        print("ESPN API returned no teams.")
+    except Exception as e:
+        print(f"ESPN API failed: {e}")
+
+    print("Both APIs failed — returning empty set.")
+    return set()
 
 
 def get_season_statcast() -> pd.DataFrame:
@@ -169,7 +218,6 @@ def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["is_pull"] = False
 
-    # Pitch type groups
     if "pitch_type" in df.columns:
         df["pitch_group"] = df["pitch_type"].apply(
             lambda p: "fastball" if str(p) in FASTBALLS
@@ -217,10 +265,7 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
     pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
     pa_counts = pa_df.groupby("batter").size().reset_index(name="pa")
 
-    # Total bases for ISO calculation
-    tb_map = {
-        "single": 1, "double": 2, "triple": 3, "home_run": 4,
-    }
+    tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
     bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
     bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
         {"single", "double", "triple", "home_run"}
@@ -319,15 +364,9 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
 
 
 def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
-    """
-    Per batter, per pitch group (fastball/breaking/offspeed):
-    ISO, FB%, Pull%, HR rate, barrel%.
-    Only includes pitch groups with at least 5 BBE for reliability.
-    """
     if "pitch_group" not in bbe.columns:
         return pd.DataFrame(columns=["batter"])
 
-    # Total bases and hits for ISO
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
     bbe = bbe.copy()
     bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
@@ -335,7 +374,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
         {"single", "double", "triple", "home_run"}
     )
 
-    # PA per pitch group for ISO denominator
     all_pa = bbe.copy()
     pa_by_group = (
         all_pa.groupby(["batter", "pitch_group"])
@@ -363,28 +401,17 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
             .reset_index()
         )
 
-        # Merge PA for ISO
         pa_sub = pa_by_group[pa_by_group["pitch_group"] == group][["batter", "pa_vs_group"]]
         grp = grp.merge(pa_sub, on="batter", how="left")
-
-        # Only keep batters with enough sample
         grp = grp[grp["bbe_count"] >= 5].copy()
 
         grp[f"iso_vs_{group}"] = (
             (grp["total_bases"] - grp["hits"]) / grp["pa_vs_group"].replace(0, pd.NA)
         ).round(3)
-        grp[f"hr_rate_vs_{group}"] = (
-            grp["hr_count"] / grp["bbe_count"] * 100
-        ).round(2)
-        grp[f"fb_rate_vs_{group}"] = (
-            grp["fb_count"] / grp["bbe_count"] * 100
-        ).round(2)
-        grp[f"pull_rate_vs_{group}"] = (
-            grp["pull_count"] / grp["bbe_count"] * 100
-        ).round(2)
-        grp[f"barrel_pct_vs_{group}"] = (
-            grp["barrel_count"] / grp["bbe_count"] * 100
-        ).round(2)
+        grp[f"hr_rate_vs_{group}"] = (grp["hr_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"fb_rate_vs_{group}"] = (grp["fb_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"pull_rate_vs_{group}"] = (grp["pull_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"barrel_pct_vs_{group}"] = (grp["barrel_count"] / grp["bbe_count"] * 100).round(2)
 
         keep_cols = [
             "batter",
@@ -506,7 +533,6 @@ def main() -> None:
     gc = get_gspread_client()
 
     today_teams = get_today_team_abbrs()
-    print(f"Today's teams: {today_teams}")
     if not today_teams:
         print("WARNING: No games found for today — defaulting to all teams.")
 
