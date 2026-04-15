@@ -167,6 +167,8 @@ def main() -> None:
 
     gc = get_gspread_client()
     raw_df = get_last_10_days_statcast()
+    debug_player = raw_df[raw_df["batter"] == YOUR_PLAYER_ID]
+print(debug_player[["launch_speed", "launch_angle", "launch_speed_angle"]].head(20))
     batter_df = build_batter_10d(raw_df)
 
     write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_10D", batter_df)
