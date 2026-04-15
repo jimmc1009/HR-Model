@@ -17,6 +17,11 @@ SCOPES = [
 
 SEASON_START = "2026-03-26"
 
+# Pitch type groupings
+FASTBALLS = {"FF", "SI", "FC", "FA"}
+BREAKING = {"SL", "CU", "KC", "CS", "SV"}
+OFFSPEED = {"CH", "FS", "FO", "SC"}
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -256,6 +261,73 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
+    """
+    For each pitcher, calculate what % of their pitches are
+    fastball, breaking, offspeed, and other.
+    Uses all pitches (not just BBE) for accurate mix calculation.
+    """
+    if "pitch_type" not in df.columns:
+        return pd.DataFrame(columns=["pitcher"])
+
+    pitch_df = df[
+        df["pitcher"].isin(probable_ids) &
+        df["pitch_type"].notna()
+    ].copy()
+
+    pitch_df["pitch_group"] = pitch_df["pitch_type"].apply(
+        lambda p: "fastball" if str(p) in FASTBALLS
+        else "breaking" if str(p) in BREAKING
+        else "offspeed" if str(p) in OFFSPEED
+        else "other"
+    )
+
+    # Total pitches per pitcher
+    total = (
+        pitch_df.groupby("pitcher")
+        .size()
+        .reset_index(name="total_pitches")
+    )
+
+    # Count per group
+    group_counts = (
+        pitch_df.groupby(["pitcher", "pitch_group"])
+        .size()
+        .reset_index(name="count")
+    )
+
+    group_counts = group_counts.merge(total, on="pitcher", how="left")
+    group_counts["pct"] = (group_counts["count"] / group_counts["total_pitches"] * 100).round(2)
+
+    # Pivot to wide format
+    pivot = group_counts.pivot_table(
+        index="pitcher",
+        columns="pitch_group",
+        values="pct",
+        fill_value=0,
+    ).reset_index()
+
+    # Ensure all columns exist
+    for group in ["fastball", "breaking", "offspeed", "other"]:
+        col = f"pitch_pct_{group}"
+        if group in pivot.columns:
+            pivot = pivot.rename(columns={group: col})
+        else:
+            pivot[col] = 0.0
+
+    pivot = pivot.merge(total, on="pitcher", how="left")
+
+    keep_cols = [
+        "pitcher",
+        "total_pitches",
+        "pitch_pct_fastball",
+        "pitch_pct_breaking",
+        "pitch_pct_offspeed",
+        "pitch_pct_other",
+    ]
+    return pivot[[c for c in keep_cols if c in pivot.columns]]
+
+
 def build_season_stats_pitcher(
     bbe: pd.DataFrame,
     full_df: pd.DataFrame,
@@ -393,7 +465,6 @@ def build_pitcher_full(
         print(f"Found {len(probable_ids)} pitchers — looking up names...")
         name_map = lookup_player_names(list(probable_ids))
 
-        # Build pitcher_team from most recent pitching_team in Statcast data
         team_lookup = (
             df[df["pitcher"].isin(probable_ids)]
             .sort_values("game_date")
@@ -429,11 +500,13 @@ def build_pitcher_full(
     season_stats = build_season_stats_pitcher(bbe, df, probable_ids)
     platoon_splits = build_platoon_splits_pitcher(bbe)
     rolling_stats = build_rolling_stats_pitcher(bbe)
+    pitch_mix = build_pitch_mix(df, probable_ids)
 
     combined = (
         season_stats
         .merge(platoon_splits, on="pitcher", how="left")
         .merge(rolling_stats, on="pitcher", how="left")
+        .merge(pitch_mix, on="pitcher", how="left")
     )
 
     id_to_name = {v["id"]: v["name"] for v in probable_pitchers.values()}
