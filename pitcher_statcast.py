@@ -80,26 +80,37 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
 
 def get_today_matchups(probable_pitchers: Dict[str, dict]) -> Dict[str, str]:
     """
-    Returns {team_abbr: opponent_abbr} for today's games.
+    Returns {team_abbr: opponent_abbr} for today's or tomorrow's games.
+    Checks the same dates as get_today_probable_pitchers.
     """
-    today_str = date.today().strftime("%Y-%m-%d")
-    url = (
-        f"https://statsapi.mlb.com/api/v1/schedule"
-        f"?sportId=1&date={today_str}&hydrate=probablePitcher"
-    )
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    def fetch_matchups(date_str: str) -> Dict[str, str]:
+        url = (
+            f"https://statsapi.mlb.com/api/v1/schedule"
+            f"?sportId=1&date={date_str}&hydrate=probablePitcher"
+        )
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
 
-    matchups: Dict[str, str] = {}
-    for d in data.get("dates", []):
-        for g in d.get("games", []):
-            away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "")
-            home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
-            if away and home:
-                matchups[away.strip()] = home.strip()
-                matchups[home.strip()] = away.strip()
-    return matchups
+        matchups: Dict[str, str] = {}
+        for d in data.get("dates", []):
+            for g in d.get("games", []):
+                away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "")
+                home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
+                if away and home:
+                    matchups[away.strip()] = home.strip()
+                    matchups[home.strip()] = away.strip()
+        return matchups
+
+    # Try today first
+    today_str = date.today().strftime("%Y-%m-%d")
+    matchups = fetch_matchups(today_str)
+    if matchups:
+        return matchups
+
+    # Fall back to tomorrow
+    tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    return fetch_matchups(tomorrow_str)
 
 
 def get_season_statcast() -> pd.DataFrame:
