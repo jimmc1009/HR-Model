@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import date, datetime
-from typing import Dict
+from typing import Dict, Set
 
 import pandas as pd
 import numpy as np
@@ -14,9 +14,17 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# cf_direction = compass bearing FROM home plate TO center field
-# Wind FROM (cf_direction) = blowing IN (bad for HRs)
-# Wind FROM (cf_direction + 180) = blowing OUT (good for HRs)
+ESPN_TO_MLB = {
+    "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
+    "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
+    "COL": "COL", "OAK": "ATH", "CLE": "CLE", "CHC": "CHC",
+    "SEA": "SEA", "PHI": "PHI", "DET": "DET", "ARI": "AZ",
+    "TB":  "TB",  "SD":  "SD",  "STL": "STL", "ATL": "ATL",
+    "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
+    "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
+    "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
+
 PARKS = [
     {"team": "AZ",  "park": "Chase Field",                 "lat": 33.4453, "lon": -112.0667, "roof": True,  "cf_direction": 0},
     {"team": "ATL", "park": "Truist Park",                 "lat": 33.8908, "lon": -84.4678,  "roof": False, "cf_direction": 25},
@@ -59,41 +67,83 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_today_games() -> Dict[str, dict]:
-    """Returns {home_team_abbr: {away_team, game_time_utc}} for today's games."""
-    today_str = date.today().strftime("%Y-%m-%d")
-    url = (
-        f"https://statsapi.mlb.com/api/v1/schedule"
-        f"?sportId=1&date={today_str}&hydrate=venue"
-    )
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    def fetch_mlb_games() -> Dict[str, dict]:
+        today_str = date.today().strftime("%Y-%m-%d")
+        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today_str}&hydrate=venue"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        games: Dict[str, dict] = {}
+        for d in data.get("dates", []):
+            for g in d.get("games", []):
+                home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
+                away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "")
+                game_time = g.get("gameDate", "")
+                if home:
+                    games[str(home).strip()] = {
+                        "away_team": str(away).strip(),
+                        "game_time_utc": game_time,
+                    }
+        return games
 
-    games: Dict[str, dict] = {}
-    for d in data.get("dates", []):
-        for g in d.get("games", []):
-            home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
-            away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "")
-            game_time = g.get("gameDate", "")
-            if home:
-                games[str(home).strip()] = {
-                    "away_team": str(away).strip(),
-                    "game_time_utc": game_time,
-                }
-    return games
+    def fetch_espn_games() -> Dict[str, dict]:
+        today_str = date.today().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_str}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        games: Dict[str, dict] = {}
+        for event in data.get("events", []):
+            for comp in event.get("competitions", []):
+                competitors = comp.get("competitors", [])
+                if len(competitors) == 2:
+                    home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                    away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+                    if home and away:
+                        home_abbr = ESPN_TO_MLB.get(
+                            home.get("team", {}).get("abbreviation", ""),
+                            home.get("team", {}).get("abbreviation", "")
+                        )
+                        away_abbr = ESPN_TO_MLB.get(
+                            away.get("team", {}).get("abbreviation", ""),
+                            away.get("team", {}).get("abbreviation", "")
+                        )
+                        if home_abbr:
+                            games[home_abbr] = {
+                                "away_team": away_abbr,
+                                "game_time_utc": comp.get("date", ""),
+                            }
+        return games
+
+    try:
+        print("Fetching today's games from MLB API...")
+        games = fetch_mlb_games()
+        if games:
+            print(f"MLB API found {len(games)} games.")
+            return games
+        print("MLB API returned no games.")
+    except Exception as e:
+        print(f"MLB API failed: {e}")
+
+    try:
+        print("Falling back to ESPN API for games...")
+        games = fetch_espn_games()
+        if games:
+            print(f"ESPN API found {len(games)} games.")
+            return games
+        print("ESPN API returned no games.")
+    except Exception as e:
+        print(f"ESPN API failed: {e}")
+
+    return {}
 
 
 def angle_difference(a: float, b: float) -> float:
-    """
-    Returns the smallest signed difference between two compass angles.
-    Positive = clockwise, negative = counterclockwise.
-    """
     diff = (a - b + 180) % 360 - 180
     return diff
 
 
 def wind_direction_label(degrees: float) -> str:
-    """Convert wind degrees to cardinal direction label."""
     if pd.isna(degrees):
         return "Unknown"
     dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
@@ -108,49 +158,23 @@ def hr_weather_boost(
     roof: bool,
     cf_direction: int,
 ) -> float:
-    """
-    Estimate HR boost/penalty from weather conditions using
-    actual park orientation.
-
-    - wind_dir: direction wind is blowing FROM (meteorological convention)
-    - cf_direction: compass bearing from home plate to center field
-
-    If wind is FROM cf_direction → blowing IN → bad for HRs
-    If wind is FROM cf_direction + 180 → blowing OUT → good for HRs
-    """
     if roof:
         return 0.0
 
     score = 0.0
-
-    # Temperature effect: warmer = less dense air = ball carries further
     temp_delta = (temp_f - 72) / 10
     score += temp_delta * 0.5
 
-    # Wind effect using actual park orientation
     if not pd.isna(wind_mph) and not pd.isna(wind_dir) and wind_mph > 0:
-        # Direction wind is blowing TO (opposite of FROM)
         wind_to = (wind_dir + 180) % 360
-
-        # How aligned is the wind with the CF direction?
-        # diff = 0 means wind blowing straight out to CF (best for HRs)
-        # diff = 180 means wind blowing straight in from CF (worst for HRs)
         diff = abs(angle_difference(wind_to, cf_direction))
-
-        # Convert to -1 (blowing in) to +1 (blowing out) scale
-        # diff=0 → +1, diff=90 → 0, diff=180 → -1
-        alignment = (90 - diff) / 90  # ranges from -1 to +1
-
+        alignment = (90 - diff) / 90
         score += alignment * (wind_mph / 10) * 1.5
 
     return round(score, 2)
 
 
 def fetch_weather_for_park(lat: float, lon: float) -> dict:
-    """
-    Fetch hourly weather from Open-Meteo for a given location.
-    Returns temp (F), wind speed (mph), wind direction (degrees FROM).
-    """
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
@@ -167,15 +191,13 @@ def fetch_weather_for_park(lat: float, lon: float) -> dict:
         data = resp.json()
 
         hourly = data.get("hourly", {})
-        times = hourly.get("time", [])
         temps = hourly.get("temperature_2m", [])
         winds = hourly.get("windspeed_10m", [])
         dirs = hourly.get("winddirection_10m", [])
 
-        if not times:
+        if not temps:
             return {}
 
-        # Use 7pm local as default game time
         game_hour = 19
         idx = min(game_hour, len(temps) - 1)
 
@@ -191,10 +213,6 @@ def fetch_weather_for_park(lat: float, lon: float) -> dict:
 
 
 def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
-    """
-    For each park hosting a game today, fetch weather and
-    calculate HR weather boost using correct park orientation.
-    """
     rows = []
     playing_home_teams = set(games.keys())
 
@@ -222,7 +240,6 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
             cf_direction,
         )
 
-        # Human readable wind context
         if roof:
             wind_context = "Roof — weather neutral"
         elif wind_mph and wind_mph >= 5:
@@ -306,7 +323,7 @@ def main() -> None:
     print(f"Games today: {len(games)} — home teams: {list(games.keys())}")
 
     if not games:
-        print("No games today — fetching weather for all parks anyway.")
+        print("No games found — fetching weather for all parks anyway.")
 
     print("Fetching weather for each park...")
     weather_df = build_weather_table(games)
