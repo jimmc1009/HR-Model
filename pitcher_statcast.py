@@ -270,4 +270,12 @@ def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
                 **{
                     f"{label}_bbe": ("launch_speed", "size"),
                     f"{label}_hr": ("is_hr", "sum"),
-                    f"{label}_barrel_pct": ("is_barre
+                    f"{label}_barrel_pct": ("is_barrel", "mean"),
+                }
+            )
+            .reset_index()
+        )
+        grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
+        grp[f"{label}_hr_rate"] = (
+            grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
+        ).round(2)
