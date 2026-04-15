@@ -124,6 +124,11 @@ def build_batter_10d(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     (df["launch_speed"] > 50) &   # removes junk weak readings
     (df["launch_speed"] < 120)    # removes outliers
 ].copy()
+    bbe = bbe[
+    (bbe["launch_angle"].notna()) &
+    (bbe["launch_angle"] > -90) &
+    (bbe["launch_angle"] < 90)
+]
 
     # Deduplicate at the event level
     dedupe_cols = [c for c in ["game_date", "game_pk", "at_bat_number", "pitch_number", "batter"] if c in bbe.columns]
