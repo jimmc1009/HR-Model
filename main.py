@@ -118,17 +118,18 @@ def build_batter_10d(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=columns)
 
-    # Only real batted-ball events
-    bbe = df[
+# Only real batted-ball events
+bbe = df[
     (df["launch_speed"].notna()) &
-    (df["launch_speed"] > 50) &   # removes junk weak readings
-    (df["launch_speed"] < 120)    # removes outliers
+    (df["launch_speed"] > 50) &
+    (df["launch_speed"] < 120)
 ].copy()
-    bbe = bbe[
+
+bbe = bbe[
     (bbe["launch_angle"].notna()) &
     (bbe["launch_angle"] > -90) &
     (bbe["launch_angle"] < 90)
-]
+].copy()
 
     # Deduplicate at the event level
     dedupe_cols = [c for c in ["game_date", "game_pk", "at_bat_number", "pitch_number", "batter"] if c in bbe.columns]
