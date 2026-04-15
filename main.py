@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Set
 
 import pandas as pd
+import numpy as np
 import gspread
 import requests
 from google.oauth2.service_account import Credentials
@@ -14,7 +15,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-SEASON_START = "2026-03-26"  # Adjust to actual 2026 Opening Day
+SEASON_START = "2026-03-26"
 
 
 def get_gspread_client() -> gspread.Client:
@@ -45,15 +46,9 @@ def get_today_team_abbrs() -> Set[str]:
 
 
 def get_season_statcast() -> pd.DataFrame:
-    """
-    Pull all 2026 season Statcast data from Opening Day through yesterday.
-    Tries a single bulk pull first; falls back to month-by-month chunks
-    if the bulk pull fails or returns empty.
-    """
     end_dt = date.today() - timedelta(days=1)
     season_start = date.fromisoformat(SEASON_START)
 
-    # --- Attempt 1: single bulk pull ---
     try:
         print("Attempting bulk Statcast pull...")
         df = statcast(
@@ -67,7 +62,6 @@ def get_season_statcast() -> pd.DataFrame:
     except Exception as e:
         print(f"Bulk pull failed ({e}) — falling back to monthly chunks.")
 
-    # --- Attempt 2: month-by-month chunking ---
     chunks = []
     chunk_start = season_start
 
@@ -141,7 +135,6 @@ def infer_batting_team(df: pd.DataFrame) -> pd.Series:
 
 
 def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
-    """Add barrel, hard-hit, sweet-spot, HR, fly ball, and pull flags."""
     df = df.copy()
     df["is_barrel"] = df["launch_speed_angle"].astype("string").eq("6")
     df["is_hard_hit"] = df["launch_speed"] >= 95
@@ -163,7 +156,6 @@ def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to realistic batted ball events and deduplicate."""
     bbe = df[
         df["launch_speed"].notna() &
         df["launch_speed"].between(50, 120) &
@@ -182,7 +174,6 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame:
-    """Season-level stats: HR/PA, HR/FB%, fly ball rate, pull rate, barrel%."""
     pa_df = full_df[full_df["events"].notna()].copy()
     ab_dedupe = [c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
     pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
@@ -215,7 +206,6 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
 
 
 def build_platoon_splits(bbe: pd.DataFrame) -> pd.DataFrame:
-    """Barrel% and HR rate vs LHP and RHP separately."""
     if "p_throws" not in bbe.columns:
         return pd.DataFrame(columns=["batter"])
 
@@ -243,7 +233,6 @@ def build_platoon_splits(bbe: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> pd.DataFrame:
-    """Rolling barrel%, hard-hit%, avg EV, and HR count over 7, 14, 30 days."""
     today = date.today()
     results = []
 
@@ -278,7 +267,6 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
 
 
 def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
-    """Master function: builds the full batter feature table for today's playing batters."""
     if df.empty:
         return pd.DataFrame()
 
@@ -341,6 +329,24 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     return combined
 
 
+def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace NaN, Infinity, and -Infinity with empty strings
+    so Google Sheets JSON serialization never crashes.
+    """
+    df = df.copy()
+    # Replace numeric NaN/inf before converting to string
+    df = df.replace([np.inf, -np.inf], np.nan)
+    # Convert to string, replacing any remaining NaN with ""
+    for col in df.columns:
+        df[col] = df[col].apply(
+            lambda x: "" if (isinstance(x, float) and (np.isnan(x) or np.isinf(x)))
+            else x
+        )
+    df = df.fillna("")
+    return df
+
+
 def write_dataframe_to_sheet(
     gc: gspread.Client,
     sheet_id: str,
@@ -354,6 +360,7 @@ def write_dataframe_to_sheet(
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=50)
 
+    df = clean_for_sheets(df)
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
     ws.update(values)
 
