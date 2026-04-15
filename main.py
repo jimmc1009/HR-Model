@@ -286,7 +286,12 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     df["team"] = infer_batting_team(df)
     df["game_date"] = pd.to_datetime(df["game_date"])
 
-    today_df = df[df["team"].isin(today_teams)].copy()
+    if today_teams:
+        today_df = df[df["team"].isin(today_teams)].copy()
+    else:
+        print("No today's teams found — showing all teams from dataset.")
+        today_df = df.copy()
+
     if today_df.empty:
         return pd.DataFrame()
 
@@ -359,6 +364,8 @@ def main() -> None:
 
     today_teams = get_today_team_abbrs()
     print(f"Today's teams: {today_teams}")
+    if not today_teams:
+        print("WARNING: No games found for today — defaulting to all teams.")
 
     raw_df = get_season_statcast()
     print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
