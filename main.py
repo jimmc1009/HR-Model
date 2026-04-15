@@ -9,11 +9,12 @@ import requests
 from google.oauth2.service_account import Credentials
 from pybaseball import statcast
 
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+SEASON_START = "2026-03-26"  # Adjust to actual 2026 Opening Day
 
 
 def get_gspread_client() -> gspread.Client:
@@ -24,12 +25,11 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_today_team_abbrs() -> Set[str]:
-    """
-    Pull today's MLB schedule and return only the teams on today's slate.
-    """
     today_str = date.today().strftime("%Y-%m-%d")
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today_str}&hydrate=probablePitcher"
-
+    url = (
+        f"https://statsapi.mlb.com/api/v1/schedule"
+        f"?sportId=1&date={today_str}&hydrate=probablePitcher"
+    )
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -37,59 +37,98 @@ def get_today_team_abbrs() -> Set[str]:
     teams: Set[str] = set()
     for d in data.get("dates", []):
         for g in d.get("games", []):
-            away_abbr = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation")
-            home_abbr = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation")
-            if away_abbr:
-                teams.add(str(away_abbr).strip())
-            if home_abbr:
-                teams.add(str(home_abbr).strip())
+            for side in ("away", "home"):
+                abbr = g.get("teams", {}).get(side, {}).get("team", {}).get("abbreviation")
+                if abbr:
+                    teams.add(str(abbr).strip())
     return teams
 
 
-def get_last_10_days_statcast() -> pd.DataFrame:
-    end_dt = date.today()
-    start_dt = end_dt - timedelta(days=10)
+def get_season_statcast() -> pd.DataFrame:
+    """
+    Pull all 2026 season Statcast data from Opening Day through yesterday.
+    Tries a single bulk pull first; falls back to month-by-month chunks
+    if the bulk pull fails or returns empty.
+    """
+    end_dt = date.today() - timedelta(days=1)
+    season_start = date.fromisoformat(SEASON_START)
 
-    df = statcast(
-        start_dt=start_dt.strftime("%Y-%m-%d"),
-        end_dt=end_dt.strftime("%Y-%m-%d"),
-    )
+    # --- Attempt 1: single bulk pull ---
+    try:
+        print("Attempting bulk Statcast pull...")
+        df = statcast(
+            start_dt=season_start.strftime("%Y-%m-%d"),
+            end_dt=end_dt.strftime("%Y-%m-%d"),
+        )
+        if df is not None and not df.empty:
+            print(f"Bulk pull succeeded: {len(df):,} rows")
+            return df
+        print("Bulk pull returned empty — falling back to monthly chunks.")
+    except Exception as e:
+        print(f"Bulk pull failed ({e}) — falling back to monthly chunks.")
 
-    if df is None or df.empty:
+    # --- Attempt 2: month-by-month chunking ---
+    chunks = []
+    chunk_start = season_start
+
+    while chunk_start <= end_dt:
+        if chunk_start.month == 12:
+            chunk_end = date(chunk_start.year + 1, 1, 1) - timedelta(days=1)
+        else:
+            chunk_end = date(chunk_start.year, chunk_start.month + 1, 1) - timedelta(days=1)
+
+        chunk_end = min(chunk_end, end_dt)
+
+        print(f"Pulling {chunk_start} → {chunk_end}...")
+        try:
+            chunk_df = statcast(
+                start_dt=chunk_start.strftime("%Y-%m-%d"),
+                end_dt=chunk_end.strftime("%Y-%m-%d"),
+            )
+            if chunk_df is not None and not chunk_df.empty:
+                chunks.append(chunk_df)
+                print(f"  ✓ {len(chunk_df):,} rows")
+            else:
+                print(f"  ✗ Empty result for this range — skipping.")
+        except Exception as e:
+            print(f"  ✗ Chunk failed ({e}) — skipping.")
+
+        if chunk_start.month == 12:
+            chunk_start = date(chunk_start.year + 1, 1, 1)
+        else:
+            chunk_start = date(chunk_start.year, chunk_start.month + 1, 1)
+
+    if not chunks:
+        print("All chunks failed — returning empty DataFrame.")
         return pd.DataFrame()
 
-    return df
+    combined = pd.concat(chunks, ignore_index=True)
+    print(f"Monthly chunking complete: {len(combined):,} total rows")
+    return combined
 
 
 def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
     out: Dict[int, str] = {}
     clean_ids = sorted({int(pid) for pid in player_ids if pd.notna(pid)})
-
     if not clean_ids:
         return out
 
-    chunk_size = 50
-    for i in range(0, len(clean_ids), chunk_size):
-        chunk = clean_ids[i:i + chunk_size]
+    for i in range(0, len(clean_ids), 50):
+        chunk = clean_ids[i:i + 50]
         url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
-
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
-
-        for person in data.get("people", []):
+        for person in resp.json().get("people", []):
             pid = person.get("id")
             name = person.get("fullName", "")
             if pid and name:
                 out[int(pid)] = name
-
     return out
 
 
 def infer_batting_team(df: pd.DataFrame) -> pd.Series:
     if "batting_team" in df.columns:
         return df["batting_team"].fillna("").astype(str)
-
     required = {"inning_topbot", "home_team", "away_team"}
     if required.issubset(df.columns):
         return df.apply(
@@ -98,121 +137,217 @@ def infer_batting_team(df: pd.DataFrame) -> pd.Series:
             else str(r["home_team"]).strip(),
             axis=1,
         )
-
     return pd.Series([""] * len(df), index=df.index)
 
 
-def build_batter_10d(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
-    columns = [
-        "player_name",
-        "player_id",
-        "team",
-        "bbe",
-        "avg_ev",
-        "avg_launch_angle",
-        "barrel_bbe_pct",
-        "hard_hit_pct",
-        "sweet_spot_pct",
+def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """Add barrel, hard-hit, sweet-spot, HR, fly ball, and pull flags."""
+    df = df.copy()
+    df["is_barrel"] = df["launch_speed_angle"].astype("string").eq("6")
+    df["is_hard_hit"] = df["launch_speed"] >= 95
+    df["is_sweet_spot"] = df["launch_angle"].between(8, 32, inclusive="both")
+    df["is_hr"] = df["events"].astype("string").str.lower().eq("home_run")
+    df["is_fly_ball"] = df["launch_angle"].between(25, 50, inclusive="both")
+
+    if "stand" in df.columns and "hc_x" in df.columns:
+        df["is_pull"] = df.apply(
+            lambda r: (r["hc_x"] < 125) if str(r.get("stand")) == "R"
+            else (r["hc_x"] > 125) if str(r.get("stand")) == "L"
+            else False,
+            axis=1,
+        )
+    else:
+        df["is_pull"] = False
+
+    return df
+
+
+def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter to realistic batted ball events and deduplicate."""
+    bbe = df[
+        df["launch_speed"].notna() &
+        df["launch_speed"].between(50, 120) &
+        df["launch_angle"].notna() &
+        df["launch_angle"].between(-90, 90)
+    ].copy()
+
+    dedupe_cols = [
+        c for c in ["game_date", "game_pk", "at_bat_number", "pitch_number", "batter"]
+        if c in bbe.columns
     ]
-
-    if df.empty:
-        return pd.DataFrame(columns=columns)
-
-# Only real batted-ball events
-bbe = df[
-    (df["launch_speed"].notna()) &
-    (df["launch_speed"] > 50) &
-    (df["launch_speed"] < 120)
-].copy()
-
-bbe = bbe[
-    (bbe["launch_angle"].notna()) &
-    (bbe["launch_angle"] > -90) &
-    (bbe["launch_angle"] < 90)
-].copy()
-
-    # Deduplicate at the event level
-    dedupe_cols = [c for c in ["game_date", "game_pk", "at_bat_number", "pitch_number", "batter"] if c in bbe.columns]
     if dedupe_cols:
         bbe = bbe.drop_duplicates(subset=dedupe_cols)
 
-    # Infer batting team, then keep only today's teams
-    bbe["team"] = infer_batting_team(bbe)
-    if today_teams:
-        bbe = bbe[bbe["team"].isin(today_teams)].copy()
+    return bbe
 
-    # Basic Statcast flags
-    bbe["is_barrel"] = bbe["launch_speed_angle"].astype("string").eq("6")
-    bbe["is_hard_hit"] = bbe["launch_speed"] >= 95
-    bbe["is_sweet_spot"] = bbe["launch_angle"].between(8, 32, inclusive="both")
 
-    grouped = (
-        bbe.groupby(["batter", "team"], dropna=False)
+def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame:
+    """Season-level stats: HR/PA, HR/FB%, fly ball rate, pull rate, barrel%."""
+    pa_df = full_df[full_df["events"].notna()].copy()
+    ab_dedupe = [c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
+    pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
+    pa_counts = pa_df.groupby("batter").size().reset_index(name="pa")
+
+    season = (
+        bbe.groupby("batter", dropna=False)
         .agg(
-            bbe=("launch_speed", "size"),
-            avg_ev=("launch_speed", "mean"),
-            avg_launch_angle=("launch_angle", "mean"),
-            barrels=("is_barrel", "sum"),
-            hard_hits=("is_hard_hit", "sum"),
-            sweet_spots=("is_sweet_spot", "sum"),
+            season_bbe=("launch_speed", "size"),
+            season_hr=("is_hr", "sum"),
+            season_fb=("is_fly_ball", "sum"),
+            season_pull=("is_pull", "sum"),
+            season_barrel=("is_barrel", "sum"),
         )
         .reset_index()
     )
 
-    grouped["barrel_bbe_pct"] = grouped["barrels"] / grouped["bbe"] * 100
-    grouped["hard_hit_pct"] = grouped["hard_hits"] / grouped["bbe"] * 100
-    grouped["sweet_spot_pct"] = grouped["sweet_spots"] / grouped["bbe"] * 100
+    season = season.merge(pa_counts, on="batter", how="left")
+    season["hr_per_pa"] = (season["season_hr"] / season["pa"] * 100).round(2)
+    season["hr_per_fb"] = (
+        season["season_hr"] / season["season_fb"].replace(0, pd.NA) * 100
+    ).round(2)
+    season["fb_rate"] = (season["season_fb"] / season["season_bbe"] * 100).round(2)
+    season["pull_rate"] = (season["season_pull"] / season["season_bbe"] * 100).round(2)
+    season["season_barrel_pct"] = (
+        season["season_barrel"] / season["season_bbe"] * 100
+    ).round(2)
 
-    grouped["batter"] = grouped["batter"].astype("Int64")
-    name_map = lookup_player_names(grouped["batter"].dropna().astype(int).tolist())
-    grouped["player_name"] = grouped["batter"].map(lambda x: name_map.get(int(x), "") if pd.notna(x) else "")
+    return season
 
-    result = grouped.rename(columns={"batter": "player_id"})[
-        [
-            "player_name",
-            "player_id",
-            "team",
-            "bbe",
-            "avg_ev",
-            "avg_launch_angle",
-            "barrel_bbe_pct",
-            "hard_hit_pct",
-            "sweet_spot_pct",
-        ]
-    ].copy()
 
-    numeric_cols = [
-        "avg_ev",
-        "avg_launch_angle",
-        "barrel_bbe_pct",
-        "hard_hit_pct",
-        "sweet_spot_pct",
-    ]
-    result[numeric_cols] = result[numeric_cols].round(2)
+def build_platoon_splits(bbe: pd.DataFrame) -> pd.DataFrame:
+    """Barrel% and HR rate vs LHP and RHP separately."""
+    if "p_throws" not in bbe.columns:
+        return pd.DataFrame(columns=["batter"])
 
-    # Keep believable samples
-    result = result[(result["bbe"] >= 5) & (result["player_name"] != "")]
-    result = result.sort_values(
-        by=["barrel_bbe_pct", "avg_ev", "avg_launch_angle"],
-        ascending=[False, False, False],
+    splits = []
+    for hand, label in [("L", "vs_lhp"), ("R", "vs_rhp")]:
+        sub = bbe[bbe["p_throws"] == hand]
+        grp = (
+            sub.groupby("batter", dropna=False)
+            .agg(
+                **{
+                    f"{label}_bbe": ("launch_speed", "size"),
+                    f"{label}_hr": ("is_hr", "sum"),
+                    f"{label}_barrel_pct": ("is_barrel", "mean"),
+                }
+            )
+            .reset_index()
+        )
+        grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
+        grp[f"{label}_hr_rate"] = (
+            grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
+        ).round(2)
+        splits.append(grp)
+
+    return splits[0].merge(splits[1], on="batter", how="outer")
+
+
+def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> pd.DataFrame:
+    """Rolling barrel%, hard-hit%, avg EV, and HR count over 7, 14, 30 days."""
+    today = date.today()
+    results = []
+
+    for days in windows:
+        cutoff = today - timedelta(days=days)
+        window_df = bbe[bbe["game_date"] >= pd.Timestamp(cutoff)].copy()
+
+        grp = (
+            window_df.groupby("batter", dropna=False)
+            .agg(
+                **{
+                    f"bbe_{days}d": ("launch_speed", "size"),
+                    f"avg_ev_{days}d": ("launch_speed", "mean"),
+                    f"barrel_pct_{days}d": ("is_barrel", "mean"),
+                    f"hard_hit_pct_{days}d": ("is_hard_hit", "mean"),
+                    f"hr_{days}d": ("is_hr", "sum"),
+                }
+            )
+            .reset_index()
+        )
+
+        pct_cols = [f"barrel_pct_{days}d", f"hard_hit_pct_{days}d"]
+        grp[pct_cols] = (grp[pct_cols] * 100).round(2)
+        grp[f"avg_ev_{days}d"] = grp[f"avg_ev_{days}d"].round(2)
+        results.append(grp)
+
+    rolling = results[0]
+    for r in results[1:]:
+        rolling = rolling.merge(r, on="batter", how="outer")
+
+    return rolling
+
+
+def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
+    """Master function: builds the full batter feature table for today's playing batters."""
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df["team"] = infer_batting_team(df)
+    df["game_date"] = pd.to_datetime(df["game_date"])
+
+    today_df = df[df["team"].isin(today_teams)].copy()
+    if today_df.empty:
+        return pd.DataFrame()
+
+    today_df = add_statcast_flags(today_df)
+    bbe = filter_bbe(today_df)
+
+    season_stats = build_season_stats(bbe, today_df)
+    platoon_splits = build_platoon_splits(bbe)
+    rolling_stats = build_rolling_stats(bbe)
+
+    combined = (
+        season_stats
+        .merge(platoon_splits, on="batter", how="left")
+        .merge(rolling_stats, on="batter", how="left")
     )
 
-    return result
+    team_map = (
+        today_df.sort_values("game_date")
+        .drop_duplicates(subset=["batter"], keep="last")
+        [["batter", "team"]]
+    )
+    combined = combined.merge(team_map, on="batter", how="left")
+
+    combined["batter"] = combined["batter"].astype("Int64")
+    name_map = lookup_player_names(combined["batter"].dropna().astype(int).tolist())
+    combined["player_name"] = combined["batter"].map(
+        lambda x: name_map.get(int(x), "") if pd.notna(x) else ""
+    )
+
+    combined = combined[
+        (combined["season_bbe"] >= 10) &
+        (combined["player_name"] != "")
+    ].copy()
+
+    combined = combined.rename(columns={"batter": "player_id"})
+
+    id_cols = ["player_name", "player_id", "team"]
+    other_cols = [c for c in combined.columns if c not in id_cols]
+    combined = combined[id_cols + other_cols]
+
+    combined = combined.sort_values(
+        by=["hr_per_pa", "barrel_pct_7d", "avg_ev_7d"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
+
+    return combined
 
 
 def write_dataframe_to_sheet(
     gc: gspread.Client,
     sheet_id: str,
     worksheet_name: str,
-    df: pd.DataFrame
+    df: pd.DataFrame,
 ) -> None:
     sh = gc.open_by_key(sheet_id)
-
     try:
         ws = sh.worksheet(worksheet_name)
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=30)
+        ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=50)
 
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
     ws.update(values)
@@ -220,15 +355,19 @@ def write_dataframe_to_sheet(
 
 def main() -> None:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-
     gc = get_gspread_client()
+
     today_teams = get_today_team_abbrs()
-    raw_df = get_last_10_days_statcast()
-    batter_df = build_batter_10d(raw_df, today_teams)
+    print(f"Today's teams: {today_teams}")
 
-    write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_10D", batter_df)
+    raw_df = get_season_statcast()
+    print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
 
-    print(f"Wrote {len(batter_df)} batter rows to Batter_Statcast_10D")
+    batter_df = build_batter_full(raw_df, today_teams)
+    print(f"Built {len(batter_df)} batter rows")
+
+    write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_2026", batter_df)
+    print("Written to Batter_Statcast_2026")
 
 
 if __name__ == "__main__":
