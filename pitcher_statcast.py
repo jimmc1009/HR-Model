@@ -26,11 +26,6 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_today_probable_pitchers() -> Dict[str, dict]:
-    """
-    Returns {team_abbr: {name, id}} for today's probable starters.
-    Falls back to tomorrow if today's games are already underway
-    and probables are no longer listed.
-    """
     def fetch_probables(date_str: str) -> Dict[str, dict]:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -56,7 +51,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         }
         return pitchers
 
-    # Try today first
     today_str = date.today().strftime("%Y-%m-%d")
     print(f"Fetching probable pitchers for {today_str}...")
     pitchers = fetch_probables(today_str)
@@ -65,7 +59,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
         print(f"Found {len(pitchers)} probable pitchers for today.")
         return pitchers
 
-    # Fall back to tomorrow
     tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"No probables for today — trying tomorrow ({tomorrow_str})...")
     pitchers = fetch_probables(tomorrow_str)
@@ -79,10 +72,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
 
 
 def get_today_matchups(probable_pitchers: Dict[str, dict]) -> Dict[str, str]:
-    """
-    Returns {team_abbr: opponent_abbr} for today's or tomorrow's games.
-    Checks the same dates as get_today_probable_pitchers.
-    """
     def fetch_matchups(date_str: str) -> Dict[str, str]:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -102,22 +91,16 @@ def get_today_matchups(probable_pitchers: Dict[str, dict]) -> Dict[str, str]:
                     matchups[home.strip()] = away.strip()
         return matchups
 
-    # Try today first
     today_str = date.today().strftime("%Y-%m-%d")
     matchups = fetch_matchups(today_str)
     if matchups:
         return matchups
 
-    # Fall back to tomorrow
     tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     return fetch_matchups(tomorrow_str)
 
 
 def get_season_statcast() -> pd.DataFrame:
-    """
-    Pull all 2026 season Statcast data from Opening Day through yesterday.
-    Tries bulk pull first, falls back to monthly chunks.
-    """
     end_dt = date.today() - timedelta(days=1)
     season_start = date.fromisoformat(SEASON_START)
 
@@ -173,29 +156,7 @@ def get_season_statcast() -> pd.DataFrame:
     return combined
 
 
-def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
-    out: Dict[int, str] = {}
-    clean_ids = sorted({int(pid) for pid in player_ids if pd.notna(pid)})
-    if not clean_ids:
-        return out
-
-    for i in range(0, len(clean_ids), 50):
-        chunk = clean_ids[i:i + 50]
-        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        for person in resp.json().get("people", []):
-            pid = person.get("id")
-            name = person.get("fullName", "")
-            if pid and name:
-                out[int(pid)] = name
-    return out
-
-
 def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
-    """
-    Filter to one batted ball event per at-bat allowed by today's probable pitchers.
-    """
     batted_ball_events = {
         "single", "double", "triple", "home_run",
         "field_out", "grounded_into_double_play", "double_play",
@@ -225,7 +186,6 @@ def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame
 
 
 def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
-    """Add barrel, hard-hit, HR, fly ball flags using official Statcast barrel definition."""
     df = df.copy()
 
     def is_barrel(row):
@@ -247,9 +207,11 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_season_stats_pitcher(bbe: pd.DataFrame, full_df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
-    """Season-level stats allowed per pitcher."""
-    # Batters faced = unique at-bats in full dataset
+def build_season_stats_pitcher(
+    bbe: pd.DataFrame,
+    full_df: pd.DataFrame,
+    probable_ids: Set[int],
+) -> pd.DataFrame:
     bf_df = full_df[
         full_df["pitcher"].isin(probable_ids) &
         full_df["events"].notna()
@@ -291,7 +253,6 @@ def build_season_stats_pitcher(bbe: pd.DataFrame, full_df: pd.DataFrame, probabl
 
 
 def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
-    """Barrel% and HR rate allowed vs LHH and RHH separately."""
     if "stand" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -313,3 +274,171 @@ def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
         grp[f"{label}_hr_rate"] = (
             grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
         ).round(2)
+        splits.append(grp)
+
+    return splits[0].merge(splits[1], on="pitcher", how="outer")
+
+
+def build_rolling_stats_pitcher(
+    bbe: pd.DataFrame,
+    windows: List[int] = [7, 14, 30],
+) -> pd.DataFrame:
+    today = date.today()
+    results = []
+
+    for days in windows:
+        cutoff = today - timedelta(days=days)
+        window_df = bbe[bbe["game_date"] >= pd.Timestamp(cutoff)].copy()
+
+        grp = (
+            window_df.groupby("pitcher", dropna=False)
+            .agg(
+                **{
+                    f"bbe_{days}d": ("launch_speed", "size"),
+                    f"avg_ev_{days}d": ("launch_speed", "mean"),
+                    f"barrel_pct_{days}d": ("is_barrel", "mean"),
+                    f"hard_hit_pct_{days}d": ("is_hard_hit", "mean"),
+                    f"hr_{days}d": ("is_hr", "sum"),
+                }
+            )
+            .reset_index()
+        )
+
+        pct_cols = [f"barrel_pct_{days}d", f"hard_hit_pct_{days}d"]
+        grp[pct_cols] = (grp[pct_cols] * 100).round(2)
+        grp[f"avg_ev_{days}d"] = grp[f"avg_ev_{days}d"].round(2)
+        results.append(grp)
+
+    rolling = results[0]
+    for r in results[1:]:
+        rolling = rolling.merge(r, on="pitcher", how="outer")
+
+    return rolling
+
+
+def build_pitcher_full(
+    df: pd.DataFrame,
+    probable_pitchers: Dict[str, dict],
+    matchups: Dict[str, str],
+) -> pd.DataFrame:
+    if df.empty or not probable_pitchers:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df["game_date"] = pd.to_datetime(df["game_date"])
+
+    probable_ids = {v["id"] for v in probable_pitchers.values()}
+    print(f"Probable pitcher IDs: {probable_ids}")
+
+    matching_rows = df[df["pitcher"].isin(probable_ids)]
+    print(f"Rows in Statcast matching probable pitcher IDs: {len(matching_rows)}")
+
+    bbe = filter_bbe_allowed(df, probable_ids)
+    print(f"BBE rows after filtering: {len(bbe)}")
+
+    if bbe.empty:
+        print("WARNING: No BBE rows found for probable pitchers.")
+        return pd.DataFrame()
+
+    bbe = add_pitcher_flags(bbe)
+
+    season_stats = build_season_stats_pitcher(bbe, df, probable_ids)
+    platoon_splits = build_platoon_splits_pitcher(bbe)
+    rolling_stats = build_rolling_stats_pitcher(bbe)
+
+    combined = (
+        season_stats
+        .merge(platoon_splits, on="pitcher", how="left")
+        .merge(rolling_stats, on="pitcher", how="left")
+    )
+
+    id_to_name = {v["id"]: v["name"] for v in probable_pitchers.values()}
+    id_to_team = {v["id"]: k for k, v in probable_pitchers.items()}
+
+    combined["pitcher_name"] = combined["pitcher"].map(
+        lambda x: id_to_name.get(int(x), "") if pd.notna(x) else ""
+    )
+    combined["pitcher_team"] = combined["pitcher"].map(
+        lambda x: id_to_team.get(int(x), "") if pd.notna(x) else ""
+    )
+    combined["opposing_team"] = combined["pitcher_team"].map(
+        lambda t: matchups.get(str(t), "")
+    )
+
+    combined = combined[combined["pitcher_name"] != ""].copy()
+    combined = combined.rename(columns={"pitcher": "pitcher_id"})
+
+    id_cols = ["pitcher_name", "pitcher_id", "pitcher_team", "opposing_team"]
+    other_cols = [c for c in combined.columns if c not in id_cols]
+    combined = combined[id_cols + other_cols]
+
+    combined = combined.sort_values(
+        by=["hr_per_fb_allowed", "season_barrel_pct_allowed", "avg_ev_allowed"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
+
+    return combined
+
+
+def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan)
+    for col in df.columns:
+        df[col] = df[col].apply(
+            lambda x: "" if (isinstance(x, float) and (np.isnan(x) or np.isinf(x)))
+            else x
+        )
+    df = df.fillna("")
+    return df
+
+
+def write_dataframe_to_sheet(
+    gc: gspread.Client,
+    sheet_id: str,
+    worksheet_name: str,
+    df: pd.DataFrame,
+) -> None:
+    sh = gc.open_by_key(sheet_id)
+    try:
+        ws = sh.worksheet(worksheet_name)
+        ws.clear()
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=50)
+
+    df = clean_for_sheets(df)
+    values = [df.columns.tolist()] + df.astype(str).values.tolist()
+    ws.update(values)
+
+
+def main() -> None:
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    gc = get_gspread_client()
+
+    probable_pitchers = get_today_probable_pitchers()
+    print(f"Probable pitchers found: {len(probable_pitchers)}")
+    print(f"Probable pitchers: {probable_pitchers}")
+
+    if not probable_pitchers:
+        print("No probable pitchers found — skipping pitcher script.")
+        return
+
+    matchups = get_today_matchups(probable_pitchers)
+    print(f"Matchups: {matchups}")
+
+    raw_df = get_season_statcast()
+    print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
+
+    pitcher_df = build_pitcher_full(raw_df, probable_pitchers, matchups)
+    print(f"Built {len(pitcher_df)} pitcher rows")
+
+    if pitcher_df.empty:
+        print("WARNING: Pitcher DataFrame is empty — nothing to write.")
+        return
+
+    write_dataframe_to_sheet(gc, sheet_id, "Pitcher_Statcast_2026", pitcher_df)
+    print("Written to Pitcher_Statcast_2026")
+
+
+if __name__ == "__main__":
+    main()
