@@ -18,8 +18,9 @@ SCOPES = [
 SEASON_START = "2026-03-26"
 
 FASTBALLS = {"FF", "SI", "FC", "FA"}
-BREAKING = {"SL", "CU", "KC", "CS", "SV"}
+BREAKING = {"SL", "CU", "KC", "CS", "SV", "ST"}
 OFFSPEED = {"CH", "FS", "FO", "SC"}
+KNUCKLEBALL = {"KN"}
 
 ESPN_TO_MLB = {
     "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
@@ -30,6 +31,13 @@ ESPN_TO_MLB = {
     "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
     "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
     "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
+
+PITCH_GROUP_MAP = {
+    **{p: "fastball" for p in FASTBALLS},
+    **{p: "breaking" for p in BREAKING},
+    **{p: "offspeed" for p in OFFSPEED},
+    **{p: "knuckleball" for p in KNUCKLEBALL},
 }
 
 
@@ -123,7 +131,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         teams.add(mlb_abbr)
         return teams
 
-    # Try MLB API for today and tomorrow
     for days_ahead in (0, 1):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         label = "today" if days_ahead == 0 else "tomorrow"
@@ -137,18 +144,17 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
         except Exception as e:
             print(f"MLB API failed for {label}: {e}")
 
-    # Try ESPN for probable pitchers
     try:
         print("Trying ESPN API for probable pitchers...")
         pitchers = fetch_espn_probables()
         if pitchers:
             print(f"ESPN API found {len(pitchers)} probable pitchers.")
+            pitchers["_espn"] = True
             return pitchers
         print("ESPN API returned no probable pitchers.")
     except Exception as e:
         print(f"ESPN API failed for probables: {e}")
 
-    # Try ESPN for playing teams
     try:
         print("Trying ESPN API for playing teams...")
         teams = fetch_espn_teams()
@@ -159,7 +165,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
     except Exception as e:
         print(f"ESPN API failed for teams: {e}")
 
-    # Try MLB API playing teams
     print("Trying MLB API for playing teams...")
     playing_teams: Set[str] = set()
     for days_ahead in (0, 1):
@@ -217,7 +222,6 @@ def get_today_matchups() -> Dict[str, str]:
                         matchups[abbr1] = abbr0
         return matchups
 
-    # Try MLB API
     for days_ahead in (0, 1):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         try:
@@ -228,7 +232,6 @@ def get_today_matchups() -> Dict[str, str]:
         except Exception as e:
             print(f"MLB API matchups failed: {e}")
 
-    # Try ESPN
     try:
         matchups = fetch_espn_matchups()
         if matchups:
@@ -379,6 +382,12 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
+    """
+    For each pitcher calculate:
+    1. % of each pitch group (fastball/breaking/offspeed/knuckleball/other)
+    2. Top 3 individual pitch types by usage %
+    3. % of each individual pitch type
+    """
     if "pitch_type" not in df.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -387,53 +396,92 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         df["pitch_type"].notna()
     ].copy()
 
+    pitch_df["pitch_type"] = pitch_df["pitch_type"].astype("string").str.upper().str.strip()
     pitch_df["pitch_group"] = pitch_df["pitch_type"].apply(
-        lambda p: "fastball" if str(p) in FASTBALLS
-        else "breaking" if str(p) in BREAKING
-        else "offspeed" if str(p) in OFFSPEED
-        else "other"
+        lambda p: PITCH_GROUP_MAP.get(str(p), "other")
     )
 
+    # Total pitches per pitcher
     total = (
         pitch_df.groupby("pitcher")
         .size()
         .reset_index(name="total_pitches")
     )
 
+    # Group level percentages
     group_counts = (
         pitch_df.groupby(["pitcher", "pitch_group"])
         .size()
         .reset_index(name="count")
     )
-
     group_counts = group_counts.merge(total, on="pitcher", how="left")
     group_counts["pct"] = (group_counts["count"] / group_counts["total_pitches"] * 100).round(2)
 
-    pivot = group_counts.pivot_table(
+    group_pivot = group_counts.pivot_table(
         index="pitcher",
         columns="pitch_group",
         values="pct",
         fill_value=0,
     ).reset_index()
 
-    for group in ["fastball", "breaking", "offspeed", "other"]:
+    for group in ["fastball", "breaking", "offspeed", "knuckleball", "other"]:
         col = f"pitch_pct_{group}"
-        if group in pivot.columns:
-            pivot = pivot.rename(columns={group: col})
+        if group in group_pivot.columns:
+            group_pivot = group_pivot.rename(columns={group: col})
         else:
-            pivot[col] = 0.0
+            group_pivot[col] = 0.0
 
-    pivot = pivot.merge(total, on="pitcher", how="left")
+    # Individual pitch type percentages
+    individual_counts = (
+        pitch_df.groupby(["pitcher", "pitch_type"])
+        .size()
+        .reset_index(name="count")
+    )
+    individual_counts = individual_counts.merge(total, on="pitcher", how="left")
+    individual_counts["pct"] = (
+        individual_counts["count"] / individual_counts["total_pitches"] * 100
+    ).round(2)
 
-    keep_cols = [
-        "pitcher",
-        "total_pitches",
-        "pitch_pct_fastball",
-        "pitch_pct_breaking",
-        "pitch_pct_offspeed",
-        "pitch_pct_other",
+    # Top 3 pitch types per pitcher
+    top3 = (
+        individual_counts
+        .sort_values(["pitcher", "pct"], ascending=[True, False])
+        .groupby("pitcher")
+        .head(3)
+        .reset_index(drop=True)
+    )
+
+    top3_wide = {}
+    for _, row in top3.iterrows():
+        pid = row["pitcher"]
+        if pid not in top3_wide:
+            top3_wide[pid] = {}
+        rank = len(top3_wide[pid]) + 1
+        if rank <= 3:
+            top3_wide[pid][f"top_pitch_{rank}"] = row["pitch_type"]
+            top3_wide[pid][f"top_pitch_{rank}_pct"] = row["pct"]
+
+    top3_df = pd.DataFrame.from_dict(top3_wide, orient="index").reset_index()
+    top3_df = top3_df.rename(columns={"index": "pitcher"})
+
+    # Individual pitch type pivot (all types)
+    individual_pivot = individual_counts.pivot_table(
+        index="pitcher",
+        columns="pitch_type",
+        values="pct",
+        fill_value=0,
+    ).reset_index()
+    individual_pivot.columns = [
+        f"pitch_pct_{c}" if c != "pitcher" else c
+        for c in individual_pivot.columns
     ]
-    return pivot[[c for c in keep_cols if c in pivot.columns]]
+
+    # Merge everything
+    result = group_pivot.merge(total, on="pitcher", how="left")
+    result = result.merge(top3_df, on="pitcher", how="left")
+    result = result.merge(individual_pivot, on="pitcher", how="left")
+
+    return result
 
 
 def build_season_stats_pitcher(
@@ -558,10 +606,10 @@ def build_pitcher_full(
     df["pitching_team"] = infer_pitching_team(df)
 
     is_fallback = probable_pitchers.get("_fallback", False)
+    is_espn = probable_pitchers.get("_espn", False)
 
     if is_fallback:
         playing_teams = probable_pitchers.get("_teams", "ALL")
-
         if playing_teams == "ALL":
             print("Fallback mode — using ALL pitchers from season data.")
             probable_ids = set(df["pitcher"].dropna().astype(int).unique())
@@ -591,6 +639,37 @@ def build_pitcher_full(
             if name_map.get(pid)
         }
         print(f"Resolved {len(probable_pitchers)} pitcher names")
+        probable_ids = {v["id"] for v in probable_pitchers.values()}
+
+    elif is_espn:
+        print("ESPN mode — resolving pitcher IDs by name from Statcast data...")
+        all_pitcher_ids = set(df["pitcher"].dropna().astype(int).unique())
+        print(f"Looking up names for {len(all_pitcher_ids)} pitchers in Statcast...")
+        name_map = lookup_player_names(list(all_pitcher_ids))
+
+        name_to_statcast_id = {
+            v.lower().strip(): k for k, v in name_map.items()
+        }
+
+        resolved = {}
+        for team_abbr, info in probable_pitchers.items():
+            if str(team_abbr).startswith("_"):
+                continue
+            espn_name = info.get("name", "").lower().strip()
+            statcast_id = name_to_statcast_id.get(espn_name)
+            if statcast_id:
+                resolved[team_abbr] = {
+                    "name": info["name"],
+                    "id": statcast_id,
+                    "team": info.get("team", team_abbr),
+                }
+            else:
+                print(f"  Could not resolve: {info['name']} ({team_abbr})")
+
+        print(f"Resolved {len(resolved)}/{len([k for k in probable_pitchers if not str(k).startswith('_')])} pitchers by name")
+        probable_pitchers = resolved
+        probable_ids = {v["id"] for v in probable_pitchers.values()}
+
     else:
         probable_ids = {v["id"] for v in probable_pitchers.values()}
 
@@ -669,7 +748,7 @@ def write_dataframe_to_sheet(
         ws = sh.worksheet(worksheet_name)
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=50)
+        ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=100)
 
     df = clean_for_sheets(df)
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
