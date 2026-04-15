@@ -143,6 +143,7 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
         pitchers = fetch_espn_probables()
         if pitchers:
             print(f"ESPN API found {len(pitchers)} probable pitchers.")
+            pitchers["_espn"] = True
             return pitchers
         print("ESPN API returned no probable pitchers.")
     except Exception as e:
@@ -558,10 +559,10 @@ def build_pitcher_full(
     df["pitching_team"] = infer_pitching_team(df)
 
     is_fallback = probable_pitchers.get("_fallback", False)
+    is_espn = probable_pitchers.get("_espn", False)
 
     if is_fallback:
         playing_teams = probable_pitchers.get("_teams", "ALL")
-
         if playing_teams == "ALL":
             print("Fallback mode — using ALL pitchers from season data.")
             probable_ids = set(df["pitcher"].dropna().astype(int).unique())
@@ -591,6 +592,38 @@ def build_pitcher_full(
             if name_map.get(pid)
         }
         print(f"Resolved {len(probable_pitchers)} pitcher names")
+        probable_ids = {v["id"] for v in probable_pitchers.values()}
+
+    elif is_espn:
+        print("ESPN mode — resolving pitcher IDs by name from Statcast data...")
+        all_pitcher_ids = set(df["pitcher"].dropna().astype(int).unique())
+        print(f"Looking up names for {len(all_pitcher_ids)} pitchers in Statcast...")
+        name_map = lookup_player_names(list(all_pitcher_ids))
+
+        # Build reverse map: lowercase name -> statcast ID
+        name_to_statcast_id = {
+            v.lower().strip(): k for k, v in name_map.items()
+        }
+
+        resolved = {}
+        for team_abbr, info in probable_pitchers.items():
+            if str(team_abbr).startswith("_"):
+                continue
+            espn_name = info.get("name", "").lower().strip()
+            statcast_id = name_to_statcast_id.get(espn_name)
+            if statcast_id:
+                resolved[team_abbr] = {
+                    "name": info["name"],
+                    "id": statcast_id,
+                    "team": info.get("team", team_abbr),
+                }
+            else:
+                print(f"  Could not resolve: {info['name']} ({team_abbr})")
+
+        print(f"Resolved {len(resolved)}/{len([k for k in probable_pitchers if not str(k).startswith('_')])} pitchers by name")
+        probable_pitchers = resolved
+        probable_ids = {v["id"] for v in probable_pitchers.values()}
+
     else:
         probable_ids = {v["id"] for v in probable_pitchers.values()}
 
