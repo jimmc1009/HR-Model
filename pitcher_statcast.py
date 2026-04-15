@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import date, timedelta
-from typing import Dict, List, Set, Union
+from typing import Dict, List, Set
 
 import pandas as pd
 import numpy as np
@@ -42,10 +42,6 @@ def fetch_playing_teams(date_str: str) -> Set[str]:
 
 
 def get_today_probable_pitchers() -> Dict[str, dict]:
-    """
-    Tries to get probable pitchers from the MLB API for today and tomorrow.
-    Falls back to playing teams, then falls back to all pitchers in season data.
-    """
     def fetch_probables(date_str: str) -> Dict[str, dict]:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -68,10 +64,10 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         pitchers[str(abbr).strip()] = {
                             "name": pitcher_name,
                             "id": int(pitcher_id),
+                            "team": str(abbr).strip(),
                         }
         return pitchers
 
-    # Try today and tomorrow for probable pitchers
     for days_ahead in (0, 1):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         label = "today" if days_ahead == 0 else "tomorrow"
@@ -82,7 +78,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
             return pitchers
         print(f"No probables found for {label}.")
 
-    # Try to get playing teams
     print("Falling back to playing teams...")
     playing_teams: Set[str] = set()
     for days_ahead in (0, 1):
@@ -93,20 +88,13 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
         print(f"Playing teams found: {playing_teams}")
         return {"_fallback": True, "_teams": playing_teams}
 
-    # Last resort: use all pitchers from season data
     print("No teams found from API — will use all pitchers from season data.")
     return {"_fallback": True, "_teams": "ALL"}
 
 
 def get_today_matchups() -> Dict[str, str]:
-    """
-    Returns {team_abbr: opponent_abbr} for today's or tomorrow's games.
-    """
     def fetch_matchups(date_str: str) -> Dict[str, str]:
-        url = (
-            f"https://statsapi.mlb.com/api/v1/schedule"
-            f"?sportId=1&date={date_str}"
-        )
+        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         data = resp.json()
@@ -404,8 +392,22 @@ def build_pitcher_full(
 
         print(f"Found {len(probable_ids)} pitchers — looking up names...")
         name_map = lookup_player_names(list(probable_ids))
+
+        # Build pitcher_team from most recent pitching_team in Statcast data
+        team_lookup = (
+            df[df["pitcher"].isin(probable_ids)]
+            .sort_values("game_date")
+            .drop_duplicates(subset=["pitcher"], keep="last")
+            .set_index("pitcher")["pitching_team"]
+            .to_dict()
+        )
+
         probable_pitchers = {
-            name_map.get(pid, ""): {"name": name_map.get(pid, ""), "id": pid}
+            str(pid): {
+                "name": name_map.get(pid, ""),
+                "id": pid,
+                "team": str(team_lookup.get(pid, "")),
+            }
             for pid in probable_ids
             if name_map.get(pid)
         }
@@ -435,7 +437,7 @@ def build_pitcher_full(
     )
 
     id_to_name = {v["id"]: v["name"] for v in probable_pitchers.values()}
-    id_to_team = {v["id"]: k for k, v in probable_pitchers.items()}
+    id_to_team = {v["id"]: v.get("team", "") for v in probable_pitchers.values()}
 
     combined["pitcher_name"] = combined["pitcher"].map(
         lambda x: id_to_name.get(int(x), "") if pd.notna(x) else ""
