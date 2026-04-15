@@ -17,10 +17,20 @@ SCOPES = [
 
 SEASON_START = "2026-03-26"
 
-# Pitch type groupings
 FASTBALLS = {"FF", "SI", "FC", "FA"}
 BREAKING = {"SL", "CU", "KC", "CS", "SV"}
 OFFSPEED = {"CH", "FS", "FO", "SC"}
+
+ESPN_TO_MLB = {
+    "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
+    "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
+    "COL": "COL", "OAK": "ATH", "CLE": "CLE", "CHC": "CHC",
+    "SEA": "SEA", "PHI": "PHI", "DET": "DET", "ARI": "AZ",
+    "TB":  "TB",  "SD":  "SD",  "STL": "STL", "ATL": "ATL",
+    "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
+    "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
+    "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -32,10 +42,9 @@ def get_gspread_client() -> gspread.Client:
 
 def fetch_playing_teams(date_str: str) -> Set[str]:
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
-    resp = requests.get(url, timeout=30)
+    resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-
     teams: Set[str] = set()
     for d in data.get("dates", []):
         for g in d.get("games", []):
@@ -47,15 +56,14 @@ def fetch_playing_teams(date_str: str) -> Set[str]:
 
 
 def get_today_probable_pitchers() -> Dict[str, dict]:
-    def fetch_probables(date_str: str) -> Dict[str, dict]:
+    def fetch_mlb_probables(date_str: str) -> Dict[str, dict]:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
             f"?sportId=1&date={date_str}&hydrate=probablePitcher"
         )
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-
         pitchers: Dict[str, dict] = {}
         for d in data.get("dates", []):
             for g in d.get("games", []):
@@ -73,37 +81,108 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         }
         return pitchers
 
+    def fetch_espn_probables() -> Dict[str, dict]:
+        today_str = date.today().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_str}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        pitchers: Dict[str, dict] = {}
+        for event in data.get("events", []):
+            for comp in event.get("competitions", []):
+                for competitor in comp.get("competitors", []):
+                    abbr = competitor.get("team", {}).get("abbreviation", "")
+                    mlb_abbr = ESPN_TO_MLB.get(str(abbr).strip(), str(abbr).strip())
+                    probable = competitor.get("probables", [])
+                    if probable and mlb_abbr:
+                        p = probable[0]
+                        athlete = p.get("athlete", {})
+                        pid = athlete.get("id")
+                        name = athlete.get("displayName", "")
+                        if pid and name:
+                            pitchers[mlb_abbr] = {
+                                "name": name,
+                                "id": int(pid),
+                                "team": mlb_abbr,
+                            }
+        return pitchers
+
+    def fetch_espn_teams() -> Set[str]:
+        today_str = date.today().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_str}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        teams: Set[str] = set()
+        for event in data.get("events", []):
+            for comp in event.get("competitions", []):
+                for competitor in comp.get("competitors", []):
+                    abbr = competitor.get("team", {}).get("abbreviation", "")
+                    if abbr:
+                        mlb_abbr = ESPN_TO_MLB.get(str(abbr).strip(), str(abbr).strip())
+                        teams.add(mlb_abbr)
+        return teams
+
+    # Try MLB API for today and tomorrow
     for days_ahead in (0, 1):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         label = "today" if days_ahead == 0 else "tomorrow"
-        print(f"Fetching probable pitchers for {date_str} ({label})...")
-        pitchers = fetch_probables(date_str)
-        if pitchers:
-            print(f"Found {len(pitchers)} probable pitchers for {label}.")
-            return pitchers
-        print(f"No probables found for {label}.")
+        try:
+            print(f"Fetching probable pitchers from MLB API for {label}...")
+            pitchers = fetch_mlb_probables(date_str)
+            if pitchers:
+                print(f"MLB API found {len(pitchers)} probables for {label}.")
+                return pitchers
+            print(f"MLB API returned no probables for {label}.")
+        except Exception as e:
+            print(f"MLB API failed for {label}: {e}")
 
-    print("Falling back to playing teams...")
+    # Try ESPN for probable pitchers
+    try:
+        print("Trying ESPN API for probable pitchers...")
+        pitchers = fetch_espn_probables()
+        if pitchers:
+            print(f"ESPN API found {len(pitchers)} probable pitchers.")
+            return pitchers
+        print("ESPN API returned no probable pitchers.")
+    except Exception as e:
+        print(f"ESPN API failed for probables: {e}")
+
+    # Try ESPN for playing teams
+    try:
+        print("Trying ESPN API for playing teams...")
+        teams = fetch_espn_teams()
+        if teams:
+            print(f"ESPN API found playing teams: {teams}")
+            return {"_fallback": True, "_teams": teams}
+        print("ESPN API returned no teams.")
+    except Exception as e:
+        print(f"ESPN API failed for teams: {e}")
+
+    # Try MLB API playing teams
+    print("Trying MLB API for playing teams...")
     playing_teams: Set[str] = set()
     for days_ahead in (0, 1):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        playing_teams |= fetch_playing_teams(date_str)
+        try:
+            playing_teams |= fetch_playing_teams(date_str)
+        except Exception as e:
+            print(f"MLB API playing teams failed: {e}")
 
     if playing_teams:
-        print(f"Playing teams found: {playing_teams}")
+        print(f"MLB API playing teams found: {playing_teams}")
         return {"_fallback": True, "_teams": playing_teams}
 
-    print("No teams found from API — will use all pitchers from season data.")
+    print("All sources failed — using all pitchers from season data.")
     return {"_fallback": True, "_teams": "ALL"}
 
 
 def get_today_matchups() -> Dict[str, str]:
-    def fetch_matchups(date_str: str) -> Dict[str, str]:
+    def fetch_mlb_matchups(date_str: str) -> Dict[str, str]:
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-
         matchups: Dict[str, str] = {}
         for d in data.get("dates", []):
             for g in d.get("games", []):
@@ -114,13 +193,51 @@ def get_today_matchups() -> Dict[str, str]:
                     matchups[home.strip()] = away.strip()
         return matchups
 
-    today_str = date.today().strftime("%Y-%m-%d")
-    matchups = fetch_matchups(today_str)
-    if matchups:
+    def fetch_espn_matchups() -> Dict[str, str]:
+        today_str = date.today().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_str}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        matchups: Dict[str, str] = {}
+        for event in data.get("events", []):
+            for comp in event.get("competitions", []):
+                competitors = comp.get("competitors", [])
+                if len(competitors) == 2:
+                    abbr0 = ESPN_TO_MLB.get(
+                        competitors[0].get("team", {}).get("abbreviation", ""),
+                        competitors[0].get("team", {}).get("abbreviation", "")
+                    )
+                    abbr1 = ESPN_TO_MLB.get(
+                        competitors[1].get("team", {}).get("abbreviation", ""),
+                        competitors[1].get("team", {}).get("abbreviation", "")
+                    )
+                    if abbr0 and abbr1:
+                        matchups[abbr0] = abbr1
+                        matchups[abbr1] = abbr0
         return matchups
 
-    tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
-    return fetch_matchups(tomorrow_str)
+    # Try MLB API
+    for days_ahead in (0, 1):
+        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        try:
+            matchups = fetch_mlb_matchups(date_str)
+            if matchups:
+                print(f"MLB API matchups: {len(matchups) // 2} games")
+                return matchups
+        except Exception as e:
+            print(f"MLB API matchups failed: {e}")
+
+    # Try ESPN
+    try:
+        matchups = fetch_espn_matchups()
+        if matchups:
+            print(f"ESPN API matchups: {len(matchups) // 2} games")
+            return matchups
+    except Exception as e:
+        print(f"ESPN API matchups failed: {e}")
+
+    return {}
 
 
 def get_season_statcast() -> pd.DataFrame:
@@ -262,11 +379,6 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
-    """
-    For each pitcher, calculate what % of their pitches are
-    fastball, breaking, offspeed, and other.
-    Uses all pitches (not just BBE) for accurate mix calculation.
-    """
     if "pitch_type" not in df.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -282,14 +394,12 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         else "other"
     )
 
-    # Total pitches per pitcher
     total = (
         pitch_df.groupby("pitcher")
         .size()
         .reset_index(name="total_pitches")
     )
 
-    # Count per group
     group_counts = (
         pitch_df.groupby(["pitcher", "pitch_group"])
         .size()
@@ -299,7 +409,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     group_counts = group_counts.merge(total, on="pitcher", how="left")
     group_counts["pct"] = (group_counts["count"] / group_counts["total_pitches"] * 100).round(2)
 
-    # Pivot to wide format
     pivot = group_counts.pivot_table(
         index="pitcher",
         columns="pitch_group",
@@ -307,7 +416,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         fill_value=0,
     ).reset_index()
 
-    # Ensure all columns exist
     for group in ["fastball", "breaking", "offspeed", "other"]:
         col = f"pitch_pct_{group}"
         if group in pivot.columns:
