@@ -2,3 +2,4 @@ pybaseball
 pandas
 gspread
 google-auth
+requests
