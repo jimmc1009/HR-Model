@@ -25,7 +25,28 @@ def get_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
+def fetch_playing_teams(date_str: str) -> Set[str]:
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    teams: Set[str] = set()
+    for d in data.get("dates", []):
+        for g in d.get("games", []):
+            for side in ("away", "home"):
+                abbr = g.get("teams", {}).get(side, {}).get("team", {}).get("abbreviation", "")
+                if abbr:
+                    teams.add(str(abbr).strip())
+    return teams
+
+
 def get_today_probable_pitchers() -> Dict[str, dict]:
+    """
+    Tries to get probable pitchers from the MLB API for today and tomorrow.
+    If none are found, falls back to all pitchers from today's/tomorrow's
+    playing teams in the Statcast data.
+    """
     def fetch_probables(date_str: str) -> Dict[str, dict]:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -51,27 +72,32 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         }
         return pitchers
 
-    today_str = date.today().strftime("%Y-%m-%d")
-    print(f"Fetching probable pitchers for {today_str}...")
-    pitchers = fetch_probables(today_str)
+    # Try today and tomorrow for probable pitchers
+    for days_ahead in (0, 1):
+        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        label = "today" if days_ahead == 0 else "tomorrow"
+        print(f"Fetching probable pitchers for {date_str} ({label})...")
+        pitchers = fetch_probables(date_str)
+        if pitchers:
+            print(f"Found {len(pitchers)} probable pitchers for {label}.")
+            return pitchers
+        print(f"No probables found for {label}.")
 
-    if pitchers:
-        print(f"Found {len(pitchers)} probable pitchers for today.")
-        return pitchers
+    # Fallback: return playing teams so build_pitcher_full can handle it
+    print("Falling back to all pitchers from today's/tomorrow's playing teams...")
+    playing_teams: Set[str] = set()
+    for days_ahead in (0, 1):
+        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        playing_teams |= fetch_playing_teams(date_str)
 
-    tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
-    print(f"No probables for today — trying tomorrow ({tomorrow_str})...")
-    pitchers = fetch_probables(tomorrow_str)
-
-    if pitchers:
-        print(f"Found {len(pitchers)} probable pitchers for tomorrow.")
-        return pitchers
-
-    print("No probable pitchers found for today or tomorrow.")
-    return {}
+    print(f"Playing teams found: {playing_teams}")
+    return {"_fallback": True, "_teams": playing_teams}
 
 
-def get_today_matchups(probable_pitchers: Dict[str, dict]) -> Dict[str, str]:
+def get_today_matchups() -> Dict[str, str]:
+    """
+    Returns {team_abbr: opponent_abbr} for today's or tomorrow's games.
+    """
     def fetch_matchups(date_str: str) -> Dict[str, str]:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -154,6 +180,37 @@ def get_season_statcast() -> pd.DataFrame:
     combined = pd.concat(chunks, ignore_index=True)
     print(f"Monthly chunking complete: {len(combined):,} total rows")
     return combined
+
+
+def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    clean_ids = sorted({int(pid) for pid in player_ids if pd.notna(pid)})
+    if not clean_ids:
+        return out
+
+    for i in range(0, len(clean_ids), 50):
+        chunk = clean_ids[i:i + 50]
+        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        for person in resp.json().get("people", []):
+            pid = person.get("id")
+            name = person.get("fullName", "")
+            if pid and name:
+                out[int(pid)] = name
+    return out
+
+
+def infer_pitching_team(df: pd.DataFrame) -> pd.Series:
+    required = {"inning_topbot", "home_team", "away_team"}
+    if required.issubset(df.columns):
+        return df.apply(
+            lambda r: str(r["home_team"]).strip()
+            if str(r["inning_topbot"]).lower().startswith("top")
+            else str(r["away_team"]).strip(),
+            axis=1,
+        )
+    return pd.Series([""] * len(df), index=df.index)
 
 
 def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
@@ -326,18 +383,35 @@ def build_pitcher_full(
 
     df = df.copy()
     df["game_date"] = pd.to_datetime(df["game_date"])
+    df["pitching_team"] = infer_pitching_team(df)
 
-    probable_ids = {v["id"] for v in probable_pitchers.values()}
-    print(f"Probable pitcher IDs: {probable_ids}")
+    is_fallback = probable_pitchers.get("_fallback", False)
+
+    if is_fallback:
+        playing_teams = probable_pitchers.get("_teams", set())
+        print(f"Fallback mode — using all pitchers from teams: {playing_teams}")
+        team_df = df[df["pitching_team"].isin(playing_teams)].copy()
+        probable_ids = set(team_df["pitcher"].dropna().astype(int).unique())
+        print(f"Found {len(probable_ids)} pitchers from playing teams")
+        name_map = lookup_player_names(list(probable_ids))
+        probable_pitchers = {
+            name_map.get(pid, str(pid)): {"name": name_map.get(pid, str(pid)), "id": pid}
+            for pid in probable_ids
+            if name_map.get(pid)
+        }
+    else:
+        probable_ids = {v["id"] for v in probable_pitchers.values()}
+
+    print(f"Pitcher IDs count: {len(probable_ids)}")
 
     matching_rows = df[df["pitcher"].isin(probable_ids)]
-    print(f"Rows in Statcast matching probable pitcher IDs: {len(matching_rows)}")
+    print(f"Rows in Statcast matching pitcher IDs: {len(matching_rows)}")
 
     bbe = filter_bbe_allowed(df, probable_ids)
     print(f"BBE rows after filtering: {len(bbe)}")
 
     if bbe.empty:
-        print("WARNING: No BBE rows found for probable pitchers.")
+        print("WARNING: No BBE rows found for pitchers.")
         return pd.DataFrame()
 
     bbe = add_pitcher_flags(bbe)
@@ -417,13 +491,12 @@ def main() -> None:
 
     probable_pitchers = get_today_probable_pitchers()
     print(f"Probable pitchers found: {len(probable_pitchers)}")
-    print(f"Probable pitchers: {probable_pitchers}")
 
     if not probable_pitchers:
-        print("No probable pitchers found — skipping pitcher script.")
+        print("No pitchers or teams found — skipping pitcher script.")
         return
 
-    matchups = get_today_matchups(probable_pitchers)
+    matchups = get_today_matchups()
     print(f"Matchups: {matchups}")
 
     raw_df = get_season_statcast()
