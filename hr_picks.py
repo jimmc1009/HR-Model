@@ -13,23 +13,22 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Scoring weights — how much each factor contributes to the final score
 WEIGHTS = {
-    "barrel_pct_7d":            2.0,   # recent barrel% is strongest signal
-    "hr_per_pa":                1.8,   # season HR rate
-    "hr_per_fb":                1.5,   # HR per fly ball
-    "iso":                      1.2,   # isolated power
-    "avg_ev_7d":                1.0,   # recent exit velocity
-    "hard_hit_pct_7d":          0.8,   # recent hard hit%
-    "pitcher_barrel_pct":       1.5,   # pitcher allows barrels
-    "pitcher_hr_per_fb":        1.5,   # pitcher allows HRs on fly balls
-    "pitcher_hard_hit_pct":     0.8,   # pitcher allows hard contact
-    "park_hr_factor":           0.5,   # park factor (centered at 100)
-    "hr_weather_boost":         0.4,   # weather boost
+    "barrel_pct_7d":            2.0,
+    "hr_per_pa":                1.8,
+    "hr_per_fb":                1.5,
+    "iso":                      1.2,
+    "avg_ev_7d":                1.0,
+    "hard_hit_pct_7d":          0.8,
+    "pitcher_barrel_pct":       1.5,
+    "pitcher_hr_per_fb":        1.5,
+    "pitcher_hard_hit_pct":     0.8,
+    "park_hr_factor":           0.5,
+    "hr_weather_boost":         0.4,
 }
 
-# Platoon bonus — if batter has strong splits vs pitcher handedness
 PLATOON_BONUS_WEIGHT = 0.6
+PITCH_MATCHUP_WEIGHT = 1.2
 
 
 def get_gspread_client() -> gspread.Client:
@@ -40,7 +39,6 @@ def get_gspread_client() -> gspread.Client:
 
 
 def read_sheet(gc: gspread.Client, sheet_id: str, worksheet_name: str) -> pd.DataFrame:
-    """Read a worksheet into a DataFrame."""
     sh = gc.open_by_key(sheet_id)
     try:
         ws = sh.worksheet(worksheet_name)
@@ -52,7 +50,6 @@ def read_sheet(gc: gspread.Client, sheet_id: str, worksheet_name: str) -> pd.Dat
 
 
 def safe_float(val, default=0.0) -> float:
-    """Safely convert a value to float."""
     try:
         f = float(val)
         if np.isnan(f) or np.isinf(f):
@@ -63,12 +60,50 @@ def safe_float(val, default=0.0) -> float:
 
 
 def normalize(series: pd.Series) -> pd.Series:
-    """Min-max normalize a series to 0-1 range."""
     mn = series.min()
     mx = series.max()
     if mx == mn:
         return pd.Series([0.5] * len(series), index=series.index)
     return (series - mn) / (mx - mn)
+
+
+def compute_pitch_matchup_score(row: pd.Series) -> tuple:
+    """
+    Cross-reference batter's ISO vs pitcher's top 3 pitch types.
+    Returns (score, description string).
+    """
+    scores = []
+    descriptions = []
+
+    for rank in range(1, 4):
+        pitch_type = str(row.get(f"top_pitch_{rank}", "")).strip().upper()
+        pitch_pct = safe_float(row.get(f"top_pitch_{rank}_pct", 0))
+
+        if not pitch_type or pitch_type in ("", "NAN", "NONE"):
+            continue
+
+        # Look up batter's ISO vs this specific pitch type
+        iso_col = f"iso_vs_{pitch_type}"
+        hr_rate_col = f"hr_rate_vs_{pitch_type}"
+        barrel_col = f"barrel_pct_vs_{pitch_type}"
+
+        iso = safe_float(row.get(iso_col, 0))
+        hr_rate = safe_float(row.get(hr_rate_col, 0))
+        barrel = safe_float(row.get(barrel_col, 0))
+
+        if iso > 0 or hr_rate > 0:
+            # Weight by how often pitcher throws this pitch
+            pitch_score = (iso * 3 + hr_rate / 10 + barrel / 20) * (pitch_pct / 100)
+            scores.append(pitch_score)
+
+            if iso >= 0.200 and pitch_pct >= 20:
+                descriptions.append(
+                    f"ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
+                )
+
+    total_score = sum(scores)
+    desc = " + ".join(descriptions) if descriptions else ""
+    return total_score, desc
 
 
 def build_picks(
@@ -77,69 +112,62 @@ def build_picks(
     parks: pd.DataFrame,
     weather: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Join all four data sources and score each batter-pitcher matchup.
-    """
     if batters.empty or pitchers.empty:
         print("Missing batter or pitcher data — cannot build picks.")
         return pd.DataFrame()
 
-    # --- Clean up pitchers ---
-    # Keep only one pitcher per opposing team
-    # pitcher_team = the team pitching, opposing_team = the team batting against them
     pitchers = pitchers.copy()
     pitchers.columns = [c.strip() for c in pitchers.columns]
 
-    # Rename pitcher columns to avoid clashes with batter columns
-    pitcher_cols = {
-        "pitcher_name":             "opp_pitcher_name",
-        "pitcher_team":             "opp_pitcher_team",
-        "opposing_team":            "batter_team",
-        "season_barrel_pct_allowed":"pitcher_barrel_pct",
-        "hr_per_fb_allowed":        "pitcher_hr_per_fb",
-        "hard_hit_pct_allowed":     "pitcher_hard_hit_pct",
-        "avg_ev_allowed":           "pitcher_avg_ev",
-        "pitch_pct_fastball":       "pitcher_pct_fastball",
-        "pitch_pct_breaking":       "pitcher_pct_breaking",
-        "pitch_pct_offspeed":       "pitcher_pct_offspeed",
-        "vs_lhh_barrel_pct":        "pitcher_vs_lhh_barrel_pct",
-        "vs_rhh_barrel_pct":        "pitcher_vs_rhh_barrel_pct",
-        "p_throws":                 "pitcher_hand",
+    pitcher_rename = {
+        "pitcher_name":              "opp_pitcher_name",
+        "pitcher_team":              "opp_pitcher_team",
+        "opposing_team":             "batter_team",
+        "season_barrel_pct_allowed": "pitcher_barrel_pct",
+        "hr_per_fb_allowed":         "pitcher_hr_per_fb",
+        "hard_hit_pct_allowed":      "pitcher_hard_hit_pct",
+        "avg_ev_allowed":            "pitcher_avg_ev",
+        "pitch_pct_fastball":        "pitcher_pct_fastball",
+        "pitch_pct_breaking":        "pitcher_pct_breaking",
+        "pitch_pct_offspeed":        "pitcher_pct_offspeed",
+        "pitch_pct_knuckleball":     "pitcher_pct_knuckleball",
+        "vs_lhh_barrel_pct":         "pitcher_vs_lhh_barrel_pct",
+        "vs_rhh_barrel_pct":         "pitcher_vs_rhh_barrel_pct",
+        "top_pitch_1":               "top_pitch_1",
+        "top_pitch_1_pct":           "top_pitch_1_pct",
+        "top_pitch_2":               "top_pitch_2",
+        "top_pitch_2_pct":           "top_pitch_2_pct",
+        "top_pitch_3":               "top_pitch_3",
+        "top_pitch_3_pct":           "top_pitch_3_pct",
     }
-    pitchers = pitchers.rename(columns={k: v for k, v in pitcher_cols.items() if k in pitchers.columns})
+    pitchers = pitchers.rename(columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns})
 
-    # --- Clean up park factors ---
     parks = parks.copy()
     parks.columns = [c.strip() for c in parks.columns]
     parks = parks.rename(columns={"team": "home_team"})
 
-    # --- Clean up weather ---
     weather = weather.copy()
     weather.columns = [c.strip() for c in weather.columns]
     weather = weather.rename(columns={"home_team": "weather_home_team"})
 
-    # --- Clean up batters ---
     batters = batters.copy()
     batters.columns = [c.strip() for c in batters.columns]
     batters = batters.rename(columns={"team": "batter_team"})
 
-    # --- Join batter + pitcher on batter_team ---
+    # Core pitcher cols to join
+    pitcher_join_cols = [c for c in [
+        "batter_team", "opp_pitcher_name", "opp_pitcher_team",
+        "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
+        "pitcher_avg_ev", "pitcher_pct_fastball", "pitcher_pct_breaking",
+        "pitcher_pct_offspeed", "pitcher_pct_knuckleball",
+        "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
+        "top_pitch_1", "top_pitch_1_pct",
+        "top_pitch_2", "top_pitch_2_pct",
+        "top_pitch_3", "top_pitch_3_pct",
+    ] if c in pitchers.columns]
+
     combined = batters.merge(
-        pitchers[[c for c in [
-            "batter_team",
-            "opp_pitcher_name",
-            "opp_pitcher_team",
-            "pitcher_barrel_pct",
-            "pitcher_hr_per_fb",
-            "pitcher_hard_hit_pct",
-            "pitcher_avg_ev",
-            "pitcher_pct_fastball",
-            "pitcher_pct_breaking",
-            "pitcher_pct_offspeed",
-            "pitcher_vs_lhh_barrel_pct",
-            "pitcher_vs_rhh_barrel_pct",
-            "pitcher_hand",
-        ] if c in pitchers.columns]],
+        pitchers[pitcher_join_cols],
         on="batter_team",
         how="inner",
     )
@@ -148,9 +176,6 @@ def build_picks(
         print("No batter-pitcher matchups found — check that team abbreviations match.")
         return pd.DataFrame()
 
-    # --- Join park factors on opp_pitcher_team (home team = park) ---
-    # The park is determined by which team is home
-    # We use opp_pitcher_team as a proxy — if pitcher is home team, use their park
     if not parks.empty:
         combined = combined.merge(
             parks[["home_team", "park_hr_factor", "park_name", "small_sample"]],
@@ -163,7 +188,6 @@ def build_picks(
         combined["park_name"] = ""
         combined["small_sample"] = False
 
-    # --- Join weather on home team ---
     if not weather.empty:
         combined = combined.merge(
             weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]],
@@ -176,7 +200,7 @@ def build_picks(
         combined["wind_context"] = ""
         combined["temp_f"] = 72.0
 
-    # --- Convert all scoring columns to float ---
+    # Convert scoring columns to float
     score_cols = [
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d",
@@ -184,8 +208,6 @@ def build_picks(
         "park_hr_factor", "hr_weather_boost",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
-        "iso_vs_fastball", "iso_vs_breaking", "iso_vs_offspeed",
-        "pitcher_pct_fastball", "pitcher_pct_breaking", "pitcher_pct_offspeed",
     ]
     for col in score_cols:
         if col in combined.columns:
@@ -193,71 +215,60 @@ def build_picks(
         else:
             combined[col] = 0.0
 
-    # --- Normalize park factor (center at 100) ---
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
 
-    # --- Pitch mix matchup bonus ---
-    # Cross-reference batter's ISO vs pitch type with pitcher's pitch mix
-    combined["pitch_mix_bonus"] = (
-        combined["iso_vs_fastball"] * combined["pitcher_pct_fastball"] / 100 +
-        combined["iso_vs_breaking"] * combined["pitcher_pct_breaking"] / 100 +
-        combined["iso_vs_offspeed"] * combined["pitcher_pct_offspeed"] / 100
-    )
-
-    # --- Platoon bonus ---
-    # If pitcher throws left and batter hits better vs LHP, add bonus
+    # Platoon bonus
     def platoon_bonus(row):
-        hand = str(row.get("pitcher_hand", "")).strip().upper()
-        if hand == "L":
+        stand = str(row.get("stand", "")).strip().upper()
+        if stand == "L":
             return safe_float(row.get("vs_lhp_barrel_pct", 0))
-        elif hand == "R":
+        elif stand == "R":
             return safe_float(row.get("vs_rhp_barrel_pct", 0))
         return 0.0
 
-    if "pitcher_hand" in combined.columns:
-        combined["platoon_bonus"] = combined.apply(platoon_bonus, axis=1)
-    else:
-        combined["platoon_bonus"] = 0.0
+    combined["platoon_bonus"] = combined.apply(platoon_bonus, axis=1) \
+        if "stand" in combined.columns else 0.0
 
-    # --- Build composite score ---
+    # Pitch matchup score using individual pitch type ISO
+    pitch_matchup_results = combined.apply(compute_pitch_matchup_score, axis=1)
+    combined["pitch_matchup_score"] = pitch_matchup_results.apply(lambda x: x[0])
+    combined["pitch_matchup_desc"] = pitch_matchup_results.apply(lambda x: x[1])
+
+    # Composite score
     combined["score"] = (
-        normalize(combined["barrel_pct_7d"])      * WEIGHTS["barrel_pct_7d"] +
-        normalize(combined["hr_per_pa"])           * WEIGHTS["hr_per_pa"] +
-        normalize(combined["hr_per_fb"])           * WEIGHTS["hr_per_fb"] +
-        normalize(combined["iso"])                 * WEIGHTS["iso"] +
-        normalize(combined["avg_ev_7d"])           * WEIGHTS["avg_ev_7d"] +
-        normalize(combined["hard_hit_pct_7d"])     * WEIGHTS["hard_hit_pct_7d"] +
-        normalize(combined["pitcher_barrel_pct"])  * WEIGHTS["pitcher_barrel_pct"] +
-        normalize(combined["pitcher_hr_per_fb"])   * WEIGHTS["pitcher_hr_per_fb"] +
-        normalize(combined["pitcher_hard_hit_pct"])* WEIGHTS["pitcher_hard_hit_pct"] +
-        normalize(combined["park_hr_factor_norm"]) * WEIGHTS["park_hr_factor"] +
-        normalize(combined["hr_weather_boost"])    * WEIGHTS["hr_weather_boost"] +
-        normalize(combined["platoon_bonus"])       * PLATOON_BONUS_WEIGHT +
-        normalize(combined["pitch_mix_bonus"])     * 0.8
+        normalize(combined["barrel_pct_7d"])       * WEIGHTS["barrel_pct_7d"] +
+        normalize(combined["hr_per_pa"])            * WEIGHTS["hr_per_pa"] +
+        normalize(combined["hr_per_fb"])            * WEIGHTS["hr_per_fb"] +
+        normalize(combined["iso"])                  * WEIGHTS["iso"] +
+        normalize(combined["avg_ev_7d"])            * WEIGHTS["avg_ev_7d"] +
+        normalize(combined["hard_hit_pct_7d"])      * WEIGHTS["hard_hit_pct_7d"] +
+        normalize(combined["pitcher_barrel_pct"])   * WEIGHTS["pitcher_barrel_pct"] +
+        normalize(combined["pitcher_hr_per_fb"])    * WEIGHTS["pitcher_hr_per_fb"] +
+        normalize(combined["pitcher_hard_hit_pct"]) * WEIGHTS["pitcher_hard_hit_pct"] +
+        normalize(combined["park_hr_factor_norm"])  * WEIGHTS["park_hr_factor"] +
+        normalize(combined["hr_weather_boost"])     * WEIGHTS["hr_weather_boost"] +
+        normalize(combined["platoon_bonus"])        * PLATOON_BONUS_WEIGHT +
+        normalize(combined["pitch_matchup_score"])  * PITCH_MATCHUP_WEIGHT
     )
 
     combined["score"] = combined["score"].round(3)
 
-    # --- Build reason string ---
+    # Build reason string
     def build_reason(row) -> str:
         reasons = []
 
-        # Batter hot streak
         barrel_7d = safe_float(row.get("barrel_pct_7d"))
         if barrel_7d >= 15:
             reasons.append(f"🔥 Hot — {barrel_7d:.1f}% barrel rate last 7 days")
 
-        # Season HR rate
         hr_pa = safe_float(row.get("hr_per_pa"))
         if hr_pa >= 4:
-            reasons.append(f"💪 Strong HR rate ({hr_pa:.1f}% HR/PA this season)")
+            reasons.append(f"💪 Strong HR rate ({hr_pa:.1f}% HR/PA)")
 
-        # ISO
         iso = safe_float(row.get("iso"))
         if iso >= 0.200:
             reasons.append(f"⚡ Elite ISO ({iso:.3f})")
 
-        # Pitcher vulnerable
         p_barrel = safe_float(row.get("pitcher_barrel_pct"))
         if p_barrel >= 10:
             reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
@@ -266,42 +277,26 @@ def build_picks(
         if p_hr_fb >= 15:
             reasons.append(f"🚀 Pitcher HR/FB% is {p_hr_fb:.1f}%")
 
-        # Pitch mix matchup
-        pct_fb = safe_float(row.get("pitcher_pct_fastball"))
-        iso_fb = safe_float(row.get("iso_vs_fastball"))
-        pct_br = safe_float(row.get("pitcher_pct_breaking"))
-        iso_br = safe_float(row.get("iso_vs_breaking"))
-        pct_os = safe_float(row.get("pitcher_pct_offspeed"))
-        iso_os = safe_float(row.get("iso_vs_offspeed"))
+        pitch_desc = str(row.get("pitch_matchup_desc", ""))
+        if pitch_desc:
+            reasons.append(f"🎳 Pitch matchup: {pitch_desc}")
 
-        if pct_fb >= 50 and iso_fb >= 0.200:
-            reasons.append(f"🎳 Batter ISO {iso_fb:.3f} vs fastballs, pitcher throws {pct_fb:.0f}% fastballs")
-        elif pct_br >= 35 and iso_br >= 0.180:
-            reasons.append(f"🎳 Batter ISO {iso_br:.3f} vs breaking balls, pitcher throws {pct_br:.0f}% breaking")
-        elif pct_os >= 25 and iso_os >= 0.180:
-            reasons.append(f"🎳 Batter ISO {iso_os:.3f} vs offspeed, pitcher throws {pct_os:.0f}% offspeed")
-
-        # Park factor
         park_factor = safe_float(row.get("park_hr_factor"), 100)
         park_name = str(row.get("park_name", ""))
         if park_factor >= 110:
             reasons.append(f"🏟️ HR-friendly park ({park_name}, factor {park_factor:.0f})")
 
-        # Weather
         boost = safe_float(row.get("hr_weather_boost"))
         wind_ctx = str(row.get("wind_context", ""))
         temp = safe_float(row.get("temp_f"), 72)
         if boost >= 1.0:
             reasons.append(f"🌬️ Favorable weather — {wind_ctx}")
         if temp >= 85:
-            reasons.append(f"🌡️ Hot weather ({temp:.0f}°F) helps ball carry")
+            reasons.append(f"🌡️ Hot weather ({temp:.0f}°F)")
 
-        # Platoon advantage
         platoon = safe_float(row.get("platoon_bonus"))
-        hand = str(row.get("pitcher_hand", "")).strip().upper()
-        if platoon >= 15 and hand:
-            side = "LHP" if hand == "L" else "RHP"
-            reasons.append(f"📊 Strong platoon advantage vs {side}")
+        if platoon >= 15:
+            reasons.append(f"📊 Strong platoon advantage")
 
         if not reasons:
             reasons.append("Solid across multiple factors")
@@ -310,11 +305,9 @@ def build_picks(
 
     combined["reason"] = combined.apply(build_reason, axis=1)
 
-    # --- Select top 10 ---
     top10 = combined.nlargest(10, "score").copy()
     top10["rank"] = range(1, len(top10) + 1)
 
-    # --- Build output table ---
     output_cols = {
         "rank":                 "Rank",
         "player_name":          "Batter",
@@ -331,6 +324,13 @@ def build_picks(
         "avg_ev_7d":            "Avg EV (7d)",
         "pitcher_barrel_pct":   "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":    "Pitcher HR/FB% Allowed",
+        "top_pitch_1":          "Pitcher Top Pitch 1",
+        "top_pitch_1_pct":      "Top Pitch 1 %",
+        "top_pitch_2":          "Pitcher Top Pitch 2",
+        "top_pitch_2_pct":      "Top Pitch 2 %",
+        "top_pitch_3":          "Pitcher Top Pitch 3",
+        "top_pitch_3_pct":      "Top Pitch 3 %",
+        "pitch_matchup_desc":   "Pitch Matchup",
         "park_hr_factor":       "Park HR Factor",
         "hr_weather_boost":     "Weather Boost",
         "wind_context":         "Wind",
