@@ -34,3 +34,4 @@ jobs:
           python pitcher_statcast.py
           python park_factors.py
           python weather.py
+          python hr_picks.py
