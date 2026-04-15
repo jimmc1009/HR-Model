@@ -17,6 +17,11 @@ SCOPES = [
 
 SEASON_START = "2026-03-26"
 
+# Pitch type groupings
+FASTBALLS = {"FF", "SI", "FC", "FA"}
+BREAKING = {"SL", "CU", "KC", "CS", "SV"}
+OFFSPEED = {"CH", "FS", "FO", "SC"}
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -72,8 +77,8 @@ def get_season_statcast() -> pd.DataFrame:
             chunk_end = date(chunk_start.year, chunk_start.month + 1, 1) - timedelta(days=1)
 
         chunk_end = min(chunk_end, end_dt)
-
         print(f"Pulling {chunk_start} → {chunk_end}...")
+
         try:
             chunk_df = statcast(
                 start_dt=chunk_start.strftime("%Y-%m-%d"),
@@ -83,7 +88,7 @@ def get_season_statcast() -> pd.DataFrame:
                 chunks.append(chunk_df)
                 print(f"  ✓ {len(chunk_df):,} rows")
             else:
-                print(f"  ✗ Empty result for this range — skipping.")
+                print(f"  ✗ Empty result — skipping.")
         except Exception as e:
             print(f"  ✗ Chunk failed ({e}) — skipping.")
 
@@ -134,44 +139,7 @@ def infer_batting_team(df: pd.DataFrame) -> pd.Series:
     return pd.Series([""] * len(df), index=df.index)
 
 
-def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Filter to one row per plate appearance (the actual batted ball),
-    and only keep realistic tracked contact events.
-    """
-    batted_ball_events = {
-        "single", "double", "triple", "home_run",
-        "field_out", "grounded_into_double_play", "double_play",
-        "triple_play", "field_error", "fielders_choice",
-        "fielders_choice_out", "force_out", "sac_fly",
-        "sac_fly_double_play", "sac_bunt", "sac_bunt_double_play",
-        "other_out",
-    }
-
-    bbe = df[
-        df["events"].astype("string").str.lower().isin(batted_ball_events) &
-        df["launch_speed"].notna() &
-        df["launch_speed"].between(50, 120) &
-        df["launch_angle"].notna() &
-        df["launch_angle"].between(-90, 90)
-    ].copy()
-
-    dedupe_cols = [
-        c for c in ["game_pk", "at_bat_number", "batter"]
-        if c in bbe.columns
-    ]
-    if dedupe_cols:
-        bbe = bbe.drop_duplicates(subset=dedupe_cols)
-
-    return bbe
-
-
 def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add barrel, hard-hit, sweet-spot, HR, fly ball, and pull flags.
-    Barrel is calculated directly from exit velo + launch angle
-    to match Statcast's official definition.
-    """
     df = df.copy()
 
     def is_barrel(row):
@@ -201,7 +169,46 @@ def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["is_pull"] = False
 
+    # Pitch type groups
+    if "pitch_type" in df.columns:
+        df["pitch_group"] = df["pitch_type"].apply(
+            lambda p: "fastball" if str(p) in FASTBALLS
+            else "breaking" if str(p) in BREAKING
+            else "offspeed" if str(p) in OFFSPEED
+            else "other"
+        )
+    else:
+        df["pitch_group"] = "other"
+
     return df
+
+
+def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
+    batted_ball_events = {
+        "single", "double", "triple", "home_run",
+        "field_out", "grounded_into_double_play", "double_play",
+        "triple_play", "field_error", "fielders_choice",
+        "fielders_choice_out", "force_out", "sac_fly",
+        "sac_fly_double_play", "sac_bunt", "sac_bunt_double_play",
+        "other_out",
+    }
+
+    bbe = df[
+        df["events"].astype("string").str.lower().isin(batted_ball_events) &
+        df["launch_speed"].notna() &
+        df["launch_speed"].between(50, 120) &
+        df["launch_angle"].notna() &
+        df["launch_angle"].between(-90, 90)
+    ].copy()
+
+    dedupe_cols = [
+        c for c in ["game_pk", "at_bat_number", "batter"]
+        if c in bbe.columns
+    ]
+    if dedupe_cols:
+        bbe = bbe.drop_duplicates(subset=dedupe_cols)
+
+    return bbe
 
 
 def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame:
@@ -209,6 +216,15 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
     ab_dedupe = [c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
     pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
     pa_counts = pa_df.groupby("batter").size().reset_index(name="pa")
+
+    # Total bases for ISO calculation
+    tb_map = {
+        "single": 1, "double": 2, "triple": 3, "home_run": 4,
+    }
+    bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+    bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
+        {"single", "double", "triple", "home_run"}
+    )
 
     season = (
         bbe.groupby("batter", dropna=False)
@@ -218,6 +234,8 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
             season_fb=("is_fly_ball", "sum"),
             season_pull=("is_pull", "sum"),
             season_barrel=("is_barrel", "sum"),
+            total_bases=("total_bases", "sum"),
+            hits=("is_hit", "sum"),
         )
         .reset_index()
     )
@@ -232,6 +250,9 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
     season["season_barrel_pct"] = (
         season["season_barrel"] / season["season_bbe"] * 100
     ).round(2)
+    season["iso"] = (
+        (season["total_bases"] - season["hits"]) / season["pa"].replace(0, pd.NA)
+    ).round(3)
 
     return season
 
@@ -297,6 +318,94 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
     return rolling
 
 
+def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per batter, per pitch group (fastball/breaking/offspeed):
+    ISO, FB%, Pull%, HR rate, barrel%.
+    Only includes pitch groups with at least 5 BBE for reliability.
+    """
+    if "pitch_group" not in bbe.columns:
+        return pd.DataFrame(columns=["batter"])
+
+    # Total bases and hits for ISO
+    tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+    bbe = bbe.copy()
+    bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+    bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
+        {"single", "double", "triple", "home_run"}
+    )
+
+    # PA per pitch group for ISO denominator
+    all_pa = bbe.copy()
+    pa_by_group = (
+        all_pa.groupby(["batter", "pitch_group"])
+        .size()
+        .reset_index(name="pa_vs_group")
+    )
+
+    results = []
+    for group in ["fastball", "breaking", "offspeed"]:
+        sub = bbe[bbe["pitch_group"] == group].copy()
+        if sub.empty:
+            continue
+
+        grp = (
+            sub.groupby("batter", dropna=False)
+            .agg(
+                bbe_count=("launch_speed", "size"),
+                hr_count=("is_hr", "sum"),
+                fb_count=("is_fly_ball", "sum"),
+                pull_count=("is_pull", "sum"),
+                barrel_count=("is_barrel", "sum"),
+                total_bases=("total_bases", "sum"),
+                hits=("is_hit", "sum"),
+            )
+            .reset_index()
+        )
+
+        # Merge PA for ISO
+        pa_sub = pa_by_group[pa_by_group["pitch_group"] == group][["batter", "pa_vs_group"]]
+        grp = grp.merge(pa_sub, on="batter", how="left")
+
+        # Only keep batters with enough sample
+        grp = grp[grp["bbe_count"] >= 5].copy()
+
+        grp[f"iso_vs_{group}"] = (
+            (grp["total_bases"] - grp["hits"]) / grp["pa_vs_group"].replace(0, pd.NA)
+        ).round(3)
+        grp[f"hr_rate_vs_{group}"] = (
+            grp["hr_count"] / grp["bbe_count"] * 100
+        ).round(2)
+        grp[f"fb_rate_vs_{group}"] = (
+            grp["fb_count"] / grp["bbe_count"] * 100
+        ).round(2)
+        grp[f"pull_rate_vs_{group}"] = (
+            grp["pull_count"] / grp["bbe_count"] * 100
+        ).round(2)
+        grp[f"barrel_pct_vs_{group}"] = (
+            grp["barrel_count"] / grp["bbe_count"] * 100
+        ).round(2)
+
+        keep_cols = [
+            "batter",
+            f"iso_vs_{group}",
+            f"hr_rate_vs_{group}",
+            f"fb_rate_vs_{group}",
+            f"pull_rate_vs_{group}",
+            f"barrel_pct_vs_{group}",
+        ]
+        results.append(grp[keep_cols])
+
+    if not results:
+        return pd.DataFrame(columns=["batter"])
+
+    combined = results[0]
+    for r in results[1:]:
+        combined = combined.merge(r, on="batter", how="outer")
+
+    return combined
+
+
 def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -320,11 +429,13 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     season_stats = build_season_stats(bbe, today_df)
     platoon_splits = build_platoon_splits(bbe)
     rolling_stats = build_rolling_stats(bbe)
+    pitch_type_splits = build_pitch_type_splits(bbe)
 
     combined = (
         season_stats
         .merge(platoon_splits, on="batter", how="left")
         .merge(rolling_stats, on="batter", how="left")
+        .merge(pitch_type_splits, on="batter", how="left")
     )
 
     team_map = (
@@ -361,7 +472,6 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace NaN, Infinity, and -Infinity with empty strings."""
     df = df.copy()
     df = df.replace([np.inf, -np.inf], np.nan)
     for col in df.columns:
