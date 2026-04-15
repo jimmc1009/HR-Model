@@ -18,8 +18,9 @@ SCOPES = [
 SEASON_START = "2026-03-26"
 
 FASTBALLS = {"FF", "SI", "FC", "FA"}
-BREAKING = {"SL", "CU", "KC", "CS", "SV"}
+BREAKING = {"SL", "CU", "KC", "CS", "SV", "ST"}
 OFFSPEED = {"CH", "FS", "FO", "SC"}
+KNUCKLEBALL = {"KN"}
 
 ESPN_TO_MLB = {
     "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
@@ -30,6 +31,13 @@ ESPN_TO_MLB = {
     "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
     "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
     "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
+
+PITCH_GROUP_MAP = {
+    **{p: "fastball" for p in FASTBALLS},
+    **{p: "breaking" for p in BREAKING},
+    **{p: "offspeed" for p in OFFSPEED},
+    **{p: "knuckleball" for p in KNUCKLEBALL},
 }
 
 
@@ -220,10 +228,7 @@ def add_statcast_flags(df: pd.DataFrame) -> pd.DataFrame:
 
     if "pitch_type" in df.columns:
         df["pitch_group"] = df["pitch_type"].apply(
-            lambda p: "fastball" if str(p) in FASTBALLS
-            else "breaking" if str(p) in BREAKING
-            else "offspeed" if str(p) in OFFSPEED
-            else "other"
+            lambda p: PITCH_GROUP_MAP.get(str(p), "other")
         )
     else:
         df["pitch_group"] = "other"
@@ -266,6 +271,7 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
     pa_counts = pa_df.groupby("batter").size().reset_index(name="pa")
 
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+    bbe = bbe.copy()
     bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
     bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
         {"single", "double", "triple", "home_run"}
@@ -364,7 +370,14 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
 
 
 def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
-    if "pitch_group" not in bbe.columns:
+    """
+    Per batter, per individual pitch type:
+    ISO, HR rate, FB%, Pull%, barrel%.
+    Only includes pitch types with at least 5 BBE.
+    Columns named iso_vs_FF, iso_vs_SL, etc.
+    Also includes group-level splits for use in picks scoring.
+    """
+    if "pitch_type" not in bbe.columns:
         return pd.DataFrame(columns=["batter"])
 
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
@@ -373,16 +386,75 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
     bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
         {"single", "double", "triple", "home_run"}
     )
+    bbe["pitch_type"] = bbe["pitch_type"].astype("string").str.upper().str.strip()
 
-    all_pa = bbe.copy()
-    pa_by_group = (
-        all_pa.groupby(["batter", "pitch_group"])
+    # Get all pitch types with enough data
+    pitch_counts = (
+        bbe.groupby(["batter", "pitch_type"])
         .size()
-        .reset_index(name="pa_vs_group")
+        .reset_index(name="cnt")
     )
+    valid_combos = pitch_counts[pitch_counts["cnt"] >= 5].set_index(
+        ["batter", "pitch_type"]
+    ).index
 
-    results = []
-    for group in ["fastball", "breaking", "offspeed"]:
+    results_individual = []
+    all_pitch_types = bbe["pitch_type"].dropna().unique()
+
+    for pt in sorted(all_pitch_types):
+        if pt in ("", "nan", "None", "OTHER", "PO", "UN", "EP"):
+            continue
+
+        sub = bbe[bbe["pitch_type"] == pt].copy()
+        if sub.empty:
+            continue
+
+        grp = (
+            sub.groupby("batter", dropna=False)
+            .agg(
+                bbe_count=("launch_speed", "size"),
+                hr_count=("is_hr", "sum"),
+                fb_count=("is_fly_ball", "sum"),
+                pull_count=("is_pull", "sum"),
+                barrel_count=("is_barrel", "sum"),
+                total_bases=("total_bases", "sum"),
+                hits=("is_hit", "sum"),
+                pa_count=("launch_speed", "size"),
+            )
+            .reset_index()
+        )
+
+        # Filter to batter/pitch combos with enough sample
+        grp = grp[
+            grp.apply(lambda r: (r["batter"], pt) in valid_combos, axis=1)
+        ].copy()
+
+        if grp.empty:
+            continue
+
+        grp[f"iso_vs_{pt}"] = (
+            (grp["total_bases"] - grp["hits"]) / grp["pa_count"].replace(0, pd.NA)
+        ).round(3)
+        grp[f"hr_rate_vs_{pt}"] = (grp["hr_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"fb_rate_vs_{pt}"] = (grp["fb_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"pull_rate_vs_{pt}"] = (grp["pull_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"barrel_pct_vs_{pt}"] = (grp["barrel_count"] / grp["bbe_count"] * 100).round(2)
+        grp[f"bbe_vs_{pt}"] = grp["bbe_count"]
+
+        keep_cols = [
+            "batter",
+            f"iso_vs_{pt}",
+            f"hr_rate_vs_{pt}",
+            f"fb_rate_vs_{pt}",
+            f"pull_rate_vs_{pt}",
+            f"barrel_pct_vs_{pt}",
+            f"bbe_vs_{pt}",
+        ]
+        results_individual.append(grp[keep_cols])
+
+    # Also build group-level splits for scoring
+    results_group = []
+    for group in ["fastball", "breaking", "offspeed", "knuckleball"]:
         sub = bbe[bbe["pitch_group"] == group].copy()
         if sub.empty:
             continue
@@ -397,16 +469,17 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
                 barrel_count=("is_barrel", "sum"),
                 total_bases=("total_bases", "sum"),
                 hits=("is_hit", "sum"),
+                pa_count=("launch_speed", "size"),
             )
             .reset_index()
         )
 
-        pa_sub = pa_by_group[pa_by_group["pitch_group"] == group][["batter", "pa_vs_group"]]
-        grp = grp.merge(pa_sub, on="batter", how="left")
         grp = grp[grp["bbe_count"] >= 5].copy()
+        if grp.empty:
+            continue
 
         grp[f"iso_vs_{group}"] = (
-            (grp["total_bases"] - grp["hits"]) / grp["pa_vs_group"].replace(0, pd.NA)
+            (grp["total_bases"] - grp["hits"]) / grp["pa_count"].replace(0, pd.NA)
         ).round(3)
         grp[f"hr_rate_vs_{group}"] = (grp["hr_count"] / grp["bbe_count"] * 100).round(2)
         grp[f"fb_rate_vs_{group}"] = (grp["fb_count"] / grp["bbe_count"] * 100).round(2)
@@ -421,16 +494,34 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
             f"pull_rate_vs_{group}",
             f"barrel_pct_vs_{group}",
         ]
-        results.append(grp[keep_cols])
+        results_group.append(grp[keep_cols])
 
-    if not results:
+    if not results_individual and not results_group:
         return pd.DataFrame(columns=["batter"])
 
-    combined = results[0]
-    for r in results[1:]:
-        combined = combined.merge(r, on="batter", how="outer")
+    # Merge individual pitch type splits
+    if results_individual:
+        combined_individual = results_individual[0]
+        for r in results_individual[1:]:
+            combined_individual = combined_individual.merge(r, on="batter", how="outer")
+    else:
+        combined_individual = pd.DataFrame(columns=["batter"])
 
-    return combined
+    # Merge group splits
+    if results_group:
+        combined_group = results_group[0]
+        for r in results_group[1:]:
+            combined_group = combined_group.merge(r, on="batter", how="outer")
+    else:
+        combined_group = pd.DataFrame(columns=["batter"])
+
+    # Merge individual and group together
+    if combined_individual.empty:
+        return combined_group
+    if combined_group.empty:
+        return combined_individual
+
+    return combined_individual.merge(combined_group, on="batter", how="outer")
 
 
 def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
@@ -521,7 +612,7 @@ def write_dataframe_to_sheet(
         ws = sh.worksheet(worksheet_name)
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=50)
+        ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=100)
 
     df = clean_for_sheets(df)
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
