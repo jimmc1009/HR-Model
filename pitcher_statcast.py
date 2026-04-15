@@ -28,31 +28,54 @@ def get_gspread_client() -> gspread.Client:
 def get_today_probable_pitchers() -> Dict[str, dict]:
     """
     Returns {team_abbr: {name, id}} for today's probable starters.
+    Falls back to tomorrow if today's games are already underway
+    and probables are no longer listed.
     """
-    today_str = date.today().strftime("%Y-%m-%d")
-    url = (
-        f"https://statsapi.mlb.com/api/v1/schedule"
-        f"?sportId=1&date={today_str}&hydrate=probablePitcher"
-    )
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    def fetch_probables(date_str: str) -> Dict[str, dict]:
+        url = (
+            f"https://statsapi.mlb.com/api/v1/schedule"
+            f"?sportId=1&date={date_str}&hydrate=probablePitcher"
+        )
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
 
-    pitchers: Dict[str, dict] = {}
-    for d in data.get("dates", []):
-        for g in d.get("games", []):
-            for side in ("away", "home"):
-                team_info = g.get("teams", {}).get(side, {})
-                abbr = team_info.get("team", {}).get("abbreviation", "")
-                probable = team_info.get("probablePitcher", {})
-                pitcher_id = probable.get("id")
-                pitcher_name = probable.get("fullName", "")
-                if abbr and pitcher_id:
-                    pitchers[str(abbr).strip()] = {
-                        "name": pitcher_name,
-                        "id": int(pitcher_id),
-                    }
-    return pitchers
+        pitchers: Dict[str, dict] = {}
+        for d in data.get("dates", []):
+            for g in d.get("games", []):
+                for side in ("away", "home"):
+                    team_info = g.get("teams", {}).get(side, {})
+                    abbr = team_info.get("team", {}).get("abbreviation", "")
+                    probable = team_info.get("probablePitcher", {})
+                    pitcher_id = probable.get("id")
+                    pitcher_name = probable.get("fullName", "")
+                    if abbr and pitcher_id:
+                        pitchers[str(abbr).strip()] = {
+                            "name": pitcher_name,
+                            "id": int(pitcher_id),
+                        }
+        return pitchers
+
+    # Try today first
+    today_str = date.today().strftime("%Y-%m-%d")
+    print(f"Fetching probable pitchers for {today_str}...")
+    pitchers = fetch_probables(today_str)
+
+    if pitchers:
+        print(f"Found {len(pitchers)} probable pitchers for today.")
+        return pitchers
+
+    # Fall back to tomorrow
+    tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    print(f"No probables for today — trying tomorrow ({tomorrow_str})...")
+    pitchers = fetch_probables(tomorrow_str)
+
+    if pitchers:
+        print(f"Found {len(pitchers)} probable pitchers for tomorrow.")
+        return pitchers
+
+    print("No probable pitchers found for today or tomorrow.")
+    return {}
 
 
 def get_today_matchups(probable_pitchers: Dict[str, dict]) -> Dict[str, str]:
