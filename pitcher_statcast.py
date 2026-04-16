@@ -382,12 +382,6 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
-    """
-    For each pitcher calculate:
-    1. % of each pitch group (fastball/breaking/offspeed/knuckleball/other)
-    2. Top 3 individual pitch types by usage %
-    3. % of each individual pitch type
-    """
     if "pitch_type" not in df.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -401,14 +395,12 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         lambda p: PITCH_GROUP_MAP.get(str(p), "other")
     )
 
-    # Total pitches per pitcher
     total = (
         pitch_df.groupby("pitcher")
         .size()
         .reset_index(name="total_pitches")
     )
 
-    # Group level percentages
     group_counts = (
         pitch_df.groupby(["pitcher", "pitch_group"])
         .size()
@@ -431,7 +423,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         else:
             group_pivot[col] = 0.0
 
-    # Individual pitch type percentages
     individual_counts = (
         pitch_df.groupby(["pitcher", "pitch_type"])
         .size()
@@ -442,7 +433,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         individual_counts["count"] / individual_counts["total_pitches"] * 100
     ).round(2)
 
-    # Top 3 pitch types per pitcher
     top3 = (
         individual_counts
         .sort_values(["pitcher", "pct"], ascending=[True, False])
@@ -451,7 +441,7 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    top3_wide = {}
+    top3_wide: Dict = {}
     for _, row in top3.iterrows():
         pid = row["pitcher"]
         if pid not in top3_wide:
@@ -464,7 +454,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     top3_df = pd.DataFrame.from_dict(top3_wide, orient="index").reset_index()
     top3_df = top3_df.rename(columns={"index": "pitcher"})
 
-    # Individual pitch type pivot (all types)
     individual_pivot = individual_counts.pivot_table(
         index="pitcher",
         columns="pitch_type",
@@ -476,7 +465,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         for c in individual_pivot.columns
     ]
 
-    # Merge everything
     result = group_pivot.merge(total, on="pitcher", how="left")
     result = result.merge(top3_df, on="pitcher", how="left")
     result = result.merge(individual_pivot, on="pitcher", how="left")
@@ -497,16 +485,21 @@ def build_season_stats_pitcher(
     bf_df = bf_df.drop_duplicates(subset=bf_dedupe)
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
+    # Capture pitcher handedness
+    agg_dict = {
+        "season_bbe_allowed": ("launch_speed", "size"),
+        "season_hr_allowed":  ("is_hr", "sum"),
+        "season_fb_allowed":  ("is_fly_ball", "sum"),
+        "season_barrel_allowed": ("is_barrel", "sum"),
+        "season_hard_hit_allowed": ("is_hard_hit", "sum"),
+        "avg_ev_allowed":     ("launch_speed", "mean"),
+    }
+    if "p_throws" in bbe.columns:
+        agg_dict["pitcher_hand"] = ("p_throws", "first")
+
     season = (
         bbe.groupby("pitcher", dropna=False)
-        .agg(
-            season_bbe_allowed=("launch_speed", "size"),
-            season_hr_allowed=("is_hr", "sum"),
-            season_fb_allowed=("is_fly_ball", "sum"),
-            season_barrel_allowed=("is_barrel", "sum"),
-            season_hard_hit_allowed=("is_hard_hit", "sum"),
-            avg_ev_allowed=("launch_speed", "mean"),
-        )
+        .agg(**agg_dict)
         .reset_index()
     )
 
@@ -525,6 +518,9 @@ def build_season_stats_pitcher(
         season["season_hard_hit_allowed"] / season["season_bbe_allowed"] * 100
     ).round(2)
     season["avg_ev_allowed"] = season["avg_ev_allowed"].round(2)
+
+    if "pitcher_hand" not in season.columns:
+        season["pitcher_hand"] = ""
 
     return season
 
@@ -712,7 +708,7 @@ def build_pitcher_full(
     combined = combined[combined["pitcher_name"] != ""].copy()
     combined = combined.rename(columns={"pitcher": "pitcher_id"})
 
-    id_cols = ["pitcher_name", "pitcher_id", "pitcher_team", "opposing_team"]
+    id_cols = ["pitcher_name", "pitcher_id", "pitcher_team", "opposing_team", "pitcher_hand"]
     other_cols = [c for c in combined.columns if c not in id_cols]
     combined = combined[id_cols + other_cols]
 
