@@ -32,6 +32,12 @@ PLATOON_BONUS_WEIGHT = 0.8
 PITCH_MATCHUP_WEIGHT = 1.2
 WEATHER_WEIGHT = 0.4
 
+# ISO gap thresholds for platoon penalty
+ISO_GAP_SMALL    = 0.030   # negligible difference — no penalty
+ISO_GAP_MEDIUM   = 0.060   # moderate weakness — small penalty
+ISO_GAP_LARGE    = 0.100   # significant weakness — medium penalty
+ISO_GAP_SEVERE   = 0.150   # severe weakness — large penalty
+
 # Carbon color scheme
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT       = {"red": 0.149, "green": 0.149, "blue": 0.149}
@@ -39,7 +45,6 @@ COLOR_HEADER       = {"red": 0.067, "green": 0.067, "blue": 0.067}
 COLOR_ACCENT       = {"red": 0.114, "green": 0.533, "blue": 0.898}
 COLOR_ACCENT_DIM   = {"red": 0.055, "green": 0.180, "blue": 0.318}
 COLOR_WHITE        = {"red": 1.000, "green": 1.000, "blue": 1.000}
-COLOR_LIGHT_GRAY   = {"red": 0.800, "green": 0.800, "blue": 0.800}
 COLOR_GOLD         = {"red": 1.000, "green": 0.843, "blue": 0.000}
 COLOR_SILVER       = {"red": 0.753, "green": 0.753, "blue": 0.753}
 COLOR_BRONZE       = {"red": 0.804, "green": 0.498, "blue": 0.196}
@@ -123,95 +128,118 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
 
 def compute_platoon_score(row: pd.Series) -> tuple:
     """
-    Full two-sided platoon matchup:
-    - Batter's split stats vs pitcher's handedness
-    - Pitcher's split stats vs batter's handedness
-    Returns (score, description).
+    True two-sided platoon matchup using ISO gap analysis.
 
-    Favorable matchup = batter hits well vs pitcher's hand
-                      AND pitcher struggles vs batter's hand
-    Unfavorable = same handedness (typically harder for batter)
+    Logic:
+    - Get batter's ISO vs pitcher's hand (e.g. LHH facing LHP → iso_vs_lhp)
+    - Get batter's ISO vs opposite hand (e.g. LHH vs RHP → iso_vs_rhp)
+    - Calculate the gap: how much worse is the batter vs this pitcher's hand?
+    - Scale penalty based on gap size — small gap = no penalty, large gap = big penalty
+    - Also factor in pitcher's split vulnerability vs batter's hand
+
+    Returns (platoon_score, description, penalty)
     """
-    stand = str(row.get("stand", "")).strip().upper()
+    batter_hand = str(row.get("batter_hand", "")).strip().upper()
     p_throws = str(row.get("pitcher_hand", "")).strip().upper()
 
-    if not stand or not p_throws or stand == "NAN" or p_throws == "NAN":
-        # Try to infer from available data
-        stand = ""
-        p_throws = ""
-
     score = 0.0
-    description = ""
+    penalty = 0.0
+    parts = []
 
-    # Batter side — how does batter perform vs this pitcher's handedness?
+    # --- Batter ISO splits ---
+    iso_vs_lhp = safe_float(row.get("vs_lhp_iso", 0))
+    iso_vs_rhp = safe_float(row.get("vs_rhp_iso", 0))
+
+    # ISO vs this pitcher's hand and vs the opposite hand
     if p_throws == "L":
+        iso_vs_this = iso_vs_lhp
+        iso_vs_opp = iso_vs_rhp
         batter_barrel_vs = safe_float(row.get("vs_lhp_barrel_pct", 0))
         batter_hr_vs = safe_float(row.get("vs_lhp_hr_rate", 0))
-        batter_side_label = "vs LHP"
+        matchup_label = f"{batter_hand}HH vs LHP"
     elif p_throws == "R":
+        iso_vs_this = iso_vs_rhp
+        iso_vs_opp = iso_vs_lhp
         batter_barrel_vs = safe_float(row.get("vs_rhp_barrel_pct", 0))
         batter_hr_vs = safe_float(row.get("vs_rhp_hr_rate", 0))
-        batter_side_label = "vs RHP"
+        matchup_label = f"{batter_hand}HH vs RHP"
     else:
-        batter_barrel_vs = 0.0
-        batter_hr_vs = 0.0
-        batter_side_label = ""
+        # Unknown pitcher hand — use overall stats, no penalty
+        return 0.0, "", 0.0
 
-    # Pitcher side — how does pitcher perform vs this batter's handedness?
-    if stand == "R":
+    # --- Pitcher split vulnerability vs batter's hand ---
+    if batter_hand == "R":
         pitcher_barrel_vs = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
         pitcher_hr_vs = safe_float(row.get("pitcher_vs_rhh_hr_rate", 0))
-        pitcher_side_label = "vs RHH"
-    elif stand == "L":
+        pitcher_split_label = "vs RHH"
+    elif batter_hand == "L":
         pitcher_barrel_vs = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
         pitcher_hr_vs = safe_float(row.get("pitcher_vs_lhh_hr_rate", 0))
-        pitcher_side_label = "vs LHH"
+        pitcher_split_label = "vs LHH"
     else:
         pitcher_barrel_vs = 0.0
         pitcher_hr_vs = 0.0
-        pitcher_side_label = ""
+        pitcher_split_label = ""
 
-    # Platoon advantage flag
-    # Classic advantage: LHH vs RHP or RHH vs LHP
-    platoon_advantage = (
-        (stand == "L" and p_throws == "R") or
-        (stand == "R" and p_throws == "L")
-    )
-    platoon_disadvantage = (
-        (stand == "L" and p_throws == "L") or
-        (stand == "R" and p_throws == "R")
-    )
+    # --- ISO gap analysis ---
+    # Positive gap = batter is WORSE vs this pitcher's hand
+    # Negative gap = batter is BETTER vs this pitcher's hand (advantage)
+    iso_gap = iso_vs_opp - iso_vs_this  # positive = weakness
 
-    # Score from batter's split
-    score += batter_barrel_vs * 0.06
-    score += batter_hr_vs * 0.04
+    # Both ISOs being 0 means no data — skip penalty
+    has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
-    # Score from pitcher's split
+    if has_iso_data:
+        if iso_gap >= ISO_GAP_SEVERE:
+            # Severe weakness — e.g. LHH with .280 ISO vs RHP but .080 vs LHP
+            penalty = 2.5
+            parts.append(
+                f"🚨 Severe platoon weakness ({matchup_label}) — "
+                f"ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite"
+            )
+        elif iso_gap >= ISO_GAP_LARGE:
+            # Significant weakness
+            penalty = 1.5
+            parts.append(
+                f"❌ Platoon disadvantage ({matchup_label}) — "
+                f"ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite"
+            )
+        elif iso_gap >= ISO_GAP_MEDIUM:
+            # Moderate weakness
+            penalty = 0.7
+            parts.append(
+                f"⚠️ Moderate platoon weakness ({matchup_label}) — "
+                f"ISO {iso_vs_this:.3f} vs this hand"
+            )
+        elif iso_gap <= -ISO_GAP_MEDIUM:
+            # Platoon advantage — batter actually better vs this hand
+            score += 1.0
+            parts.append(
+                f"✅ Platoon advantage ({matchup_label}) — "
+                f"ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite"
+            )
+        else:
+            # Negligible gap — no meaningful platoon effect
+            parts.append(f"↔️ Neutral platoon ({matchup_label})")
+
+    # --- Add pitcher vulnerability to score ---
     score += pitcher_barrel_vs * 0.06
     score += pitcher_hr_vs * 0.04
 
-    # Platoon advantage/disadvantage multiplier
-    if platoon_advantage:
-        score *= 1.3
-    elif platoon_disadvantage:
-        score *= 0.7
+    if pitcher_split_label and pitcher_barrel_vs >= 8:
+        parts.append(
+            f"Pitcher {pitcher_barrel_vs:.1f}% barrel allowed {pitcher_split_label}"
+        )
+
+    # --- Add batter's actual performance vs this hand to score ---
+    score += batter_barrel_vs * 0.04
+    score += batter_hr_vs * 0.03
 
     score = round(score, 3)
+    penalty = round(penalty, 3)
+    description = " | ".join(parts) if parts else ""
 
-    # Build description
-    parts = []
-    if batter_side_label and batter_barrel_vs > 0:
-        parts.append(f"Batter {batter_barrel_vs:.1f}% barrel {batter_side_label}")
-    if pitcher_side_label and pitcher_barrel_vs > 0:
-        parts.append(f"Pitcher {pitcher_barrel_vs:.1f}% barrel allowed {pitcher_side_label}")
-    if platoon_advantage:
-        parts.append("✅ Platoon advantage")
-    elif platoon_disadvantage:
-        parts.append("❌ Platoon disadvantage")
-
-    description = " | ".join(parts)
-
-    return score, description
+    return score, description, penalty
 
 
 def prepare_combined(
@@ -244,19 +272,18 @@ def prepare_combined(
         "vs_rhh_barrel_pct":         "pitcher_vs_rhh_barrel_pct",
         "vs_lhh_hr_rate":            "pitcher_vs_lhh_hr_rate",
         "vs_rhh_hr_rate":            "pitcher_vs_rhh_hr_rate",
+        "pitcher_hand":              "pitcher_hand",
         "top_pitch_1":               "top_pitch_1",
         "top_pitch_1_pct":           "top_pitch_1_pct",
         "top_pitch_2":               "top_pitch_2",
         "top_pitch_2_pct":           "top_pitch_2_pct",
         "top_pitch_3":               "top_pitch_3",
         "top_pitch_3_pct":           "top_pitch_3_pct",
-        "pitcher_hand":              "pitcher_hand",
     }
     pitchers = pitchers.rename(
         columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns}
     )
 
-    # If pitcher_hand not in pitcher sheet, try to get p_throws from Statcast
     if "pitcher_hand" not in pitchers.columns:
         pitchers["pitcher_hand"] = ""
 
@@ -330,6 +357,7 @@ def prepare_combined(
         "pitcher_bf", "park_hr_factor",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "vs_lhp_hr_rate", "vs_rhp_hr_rate",
+        "vs_lhp_iso", "vs_rhp_iso",
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
         "pitcher_vs_lhh_hr_rate", "pitcher_vs_rhh_hr_rate",
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
@@ -342,10 +370,11 @@ def prepare_combined(
 
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
 
-    # Full two-sided platoon matchup
+    # Full platoon matchup with ISO gap analysis
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"] = platoon_results.apply(lambda x: x[0])
     combined["platoon_desc"] = platoon_results.apply(lambda x: x[1])
+    combined["platoon_penalty"] = platoon_results.apply(lambda x: x[2])
 
     # Pitch matchup score
     pitch_results = combined.apply(compute_pitch_matchup_score, axis=1)
@@ -361,7 +390,7 @@ def prepare_combined(
     # Weather raw additive
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
 
-    # Composite score
+    # Composite score — platoon penalty is now a direct subtraction
     combined["score"] = (
         normalize(combined["barrel_pct_7d"])            * WEIGHTS["barrel_pct_7d"] +
         normalize(combined["hr_per_pa"])                 * WEIGHTS["hr_per_pa"] +
@@ -376,7 +405,8 @@ def prepare_combined(
         combined["weather_score"]                        * WEATHER_WEIGHT +
         normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
         normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT -
-        combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"]
+        combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
+        combined["platoon_penalty"]                      # direct subtraction — not normalized
     )
 
     combined["score"] = combined["score"].round(3)
@@ -408,7 +438,6 @@ def build_reason(row) -> str:
     if p_hr_fb >= 15:
         reasons.append(f"🚀 Pitcher HR/FB% is {p_hr_fb:.1f}%")
 
-    # Full platoon description
     platoon_desc = str(row.get("platoon_desc", ""))
     if platoon_desc:
         reasons.append(f"🔄 {platoon_desc}")
@@ -452,8 +481,10 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
     output_cols = {
         "rank":                       "Rank",
         "player_name":                "Batter",
+        "batter_hand":                "Bats",
         "batter_team":                "Team",
         "opp_pitcher_name":           "Opposing Pitcher",
+        "pitcher_hand":               "Throws",
         "opp_pitcher_team":           "Pitcher Team",
         "park_name":                  "Park",
         "score":                      "HR Score",
@@ -462,6 +493,8 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "hr_per_pa":                  "HR/PA%",
         "hr_per_fb":                  "HR/FB%",
         "iso":                        "ISO",
+        "vs_lhp_iso":                 "ISO vs LHP",
+        "vs_rhp_iso":                 "ISO vs RHP",
         "avg_ev_7d":                  "Avg EV (7d)",
         "platoon_desc":               "Platoon Matchup",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
@@ -508,7 +541,8 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         normalize(ev_df["platoon_score"])       * 0.8 +
         normalize(ev_df["park_hr_factor_norm"]) * 0.5 +
         ev_df["weather_score"]                  * 0.3 -
-        ev_df["pitcher_quality_penalty"]        * 1.0
+        ev_df["pitcher_quality_penalty"]        * 1.0 -
+        ev_df["platoon_penalty"]
     ).round(3)
 
     top5 = ev_df.nlargest(5, "ev_score").copy()
@@ -544,8 +578,10 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
     output_cols = {
         "ev_rank":                    "Rank",
         "player_name":                "Batter",
+        "batter_hand":                "Bats",
         "batter_team":                "Team",
         "opp_pitcher_name":           "Opposing Pitcher",
+        "pitcher_hand":               "Throws",
         "opp_pitcher_team":           "Pitcher Team",
         "park_name":                  "Park",
         "ev_score":                   "EV Score",
@@ -554,6 +590,8 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "avg_launch_angle":           "Avg Launch Angle",
         "hard_hit_pct_7d":            "Hard Hit% (7d)",
         "hr_per_fb":                  "HR/FB%",
+        "vs_lhp_iso":                 "ISO vs LHP",
+        "vs_rhp_iso":                 "ISO vs RHP",
         "platoon_desc":               "Platoon Matchup",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":          "Pitcher HR/FB%",
@@ -600,7 +638,6 @@ def write_picks_to_sheet(
 
     all_values = []
 
-    # Main picks
     all_values.append(picks_clean.columns.tolist())
     for _, row in picks_clean.iterrows():
         all_values.append(row.astype(str).tolist())
@@ -608,13 +645,9 @@ def write_picks_to_sheet(
     main_row_count = len(picks_clean)
     ev_start_row = len(all_values) + 2
 
-    # Spacer
     all_values.append([])
-
-    # EV section label
     all_values.append(["⚡  HIGH EXIT VELOCITY — LAUNCH ANGLE UPSIDE PICKS"])
 
-    # EV column headers + data
     ev_col_header_row = ev_start_row + 1
     ev_data_row_count = 0
 
@@ -642,8 +675,8 @@ def format_picks_sheet(
     ws = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols = 29
-    ev_cols = 23
+    main_cols = 31
+    ev_cols = 26
     total_rows = ev_col_header_row + ev_data_row_count + 2
 
     reqs = []
@@ -781,8 +814,8 @@ def format_picks_sheet(
                 "sheetId": ws_id,
                 "startRowIndex": 1,
                 "endRowIndex": main_row_count + 1,
-                "startColumnIndex": 6,
-                "endColumnIndex": 7,
+                "startColumnIndex": 8,
+                "endColumnIndex": 9,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -798,7 +831,7 @@ def format_picks_sheet(
         }
     })
 
-    # EV section label row
+    # EV section label
     reqs.append({
         "repeatCell": {
             "range": {
@@ -825,7 +858,7 @@ def format_picks_sheet(
         }
     })
 
-    # EV column header row
+    # EV column header
     reqs.append({
         "repeatCell": {
             "range": {
@@ -870,54 +903,31 @@ def format_picks_sheet(
             }
         })
 
-    # EV rank column
+    # EV rank and score columns
     if ev_data_row_count > 0:
-        reqs.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": ws_id,
-                    "startRowIndex": ev_col_header_row + 1,
-                    "endRowIndex": ev_col_header_row + 1 + ev_data_row_count,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 1,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "textFormat": {
-                            "bold": True,
-                            "fontSize": 14,
-                            "foregroundColor": COLOR_ORANGE,
-                        },
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-            }
-        })
-
-        # EV Score column
-        reqs.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": ws_id,
-                    "startRowIndex": ev_col_header_row + 1,
-                    "endRowIndex": ev_col_header_row + 1 + ev_data_row_count,
-                    "startColumnIndex": 6,
-                    "endColumnIndex": 7,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "textFormat": {
-                            "bold": True,
-                            "fontSize": 12,
-                            "foregroundColor": COLOR_ORANGE,
-                        },
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-            }
-        })
+        for col_idx, color in [(0, COLOR_ORANGE), (8, COLOR_ORANGE)]:
+            reqs.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": ws_id,
+                        "startRowIndex": ev_col_header_row + 1,
+                        "endRowIndex": ev_col_header_row + 1 + ev_data_row_count,
+                        "startColumnIndex": col_idx,
+                        "endColumnIndex": col_idx + 1,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "textFormat": {
+                                "bold": True,
+                                "fontSize": 12 if col_idx == 0 else 11,
+                                "foregroundColor": color,
+                            },
+                            "horizontalAlignment": "CENTER",
+                        }
+                    },
+                    "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+                }
+            })
 
     # Freeze header
     reqs.append({
@@ -960,8 +970,10 @@ def format_picks_sheet(
     col_widths = [
         50,   # Rank
         160,  # Batter
+        50,   # Bats
         55,   # Team
         175,  # Opposing Pitcher
+        55,   # Throws
         75,   # Pitcher Team
         175,  # Park
         75,   # HR Score
@@ -970,6 +982,8 @@ def format_picks_sheet(
         75,   # HR/PA%
         75,   # HR/FB%
         65,   # ISO
+        80,   # ISO vs LHP
+        80,   # ISO vs RHP
         85,   # Avg EV
         220,  # Platoon Matchup
         120,  # Pitcher Barrel%
@@ -985,8 +999,6 @@ def format_picks_sheet(
         240,  # Pitch Matchup
         75,   # Park HR Factor
         75,   # Weather Boost
-        180,  # Wind
-        70,   # Temp
     ]
     for i, width in enumerate(col_widths):
         reqs.append({
@@ -1052,11 +1064,11 @@ def main() -> None:
         return
 
     print("\nTop 10 HR Picks:")
-    print(picks[["Rank", "Batter", "Team", "Opposing Pitcher", "HR Score"]].to_string(index=False))
+    print(picks[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "HR Score"]].to_string(index=False))
 
     if not ev_section.empty:
         print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Team", "Avg EV (7d)", "Avg Launch Angle"]].to_string(index=False))
+        print(ev_section[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Avg EV (7d)", "Avg Launch Angle"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(
         gc, sheet_id, picks, ev_section
