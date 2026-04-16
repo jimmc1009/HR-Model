@@ -32,19 +32,21 @@ PLATOON_BONUS_WEIGHT = 0.6
 PITCH_MATCHUP_WEIGHT = 1.2
 WEATHER_WEIGHT = 0.4
 
-# Dark mode color palette
-COLOR_BG_DARK      = {"red": 0.102, "green": 0.102, "blue": 0.180}
-COLOR_BG_MID       = {"red": 0.067, "green": 0.118, "blue": 0.227}
-COLOR_BG_ALT       = {"red": 0.118, "green": 0.118, "blue": 0.196}
-COLOR_HEADER       = {"red": 0.059, "green": 0.204, "blue": 0.376}
-COLOR_SUBHEADER    = {"red": 0.200, "green": 0.100, "blue": 0.000}
+# Carbon color scheme
+COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}  # #1d1d1d
+COLOR_BG_ALT       = {"red": 0.149, "green": 0.149, "blue": 0.149}  # #262626
+COLOR_HEADER       = {"red": 0.067, "green": 0.067, "blue": 0.067}  # #111111
+COLOR_ACCENT       = {"red": 0.114, "green": 0.533, "blue": 0.898}  # #1d88e5 electric blue
+COLOR_ACCENT_DIM   = {"red": 0.055, "green": 0.180, "blue": 0.318}  # #0e2e51 dark blue
+COLOR_WHITE        = {"red": 1.000, "green": 1.000, "blue": 1.000}
+COLOR_LIGHT_GRAY   = {"red": 0.800, "green": 0.800, "blue": 0.800}
 COLOR_GOLD         = {"red": 1.000, "green": 0.843, "blue": 0.000}
 COLOR_SILVER       = {"red": 0.753, "green": 0.753, "blue": 0.753}
 COLOR_BRONZE       = {"red": 0.804, "green": 0.498, "blue": 0.196}
-COLOR_WHITE        = {"red": 1.000, "green": 1.000, "blue": 1.000}
-COLOR_ACCENT_BLUE  = {"red": 0.204, "green": 0.596, "blue": 0.859}
 COLOR_GREEN        = {"red": 0.180, "green": 0.800, "blue": 0.443}
-COLOR_ORANGE       = {"red": 0.945, "green": 0.502, "blue": 0.059}
+COLOR_ORANGE       = {"red": 0.980, "green": 0.502, "blue": 0.059}
+COLOR_RED          = {"red": 0.906, "green": 0.298, "blue": 0.235}
+COLOR_EV_HEADER    = {"red": 0.100, "green": 0.100, "blue": 0.100}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -84,7 +86,6 @@ def normalize(series: pd.Series) -> pd.Series:
 
 
 def normalize_inverted(series: pd.Series) -> pd.Series:
-    """Normalize and invert — high values become low scores (for pitcher quality penalty)."""
     mn = series.min()
     mx = series.max()
     if mx == mn:
@@ -126,10 +127,6 @@ def prepare_combined(
     parks: pd.DataFrame,
     weather: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Join all four data sources into one combined DataFrame
-    for use in both main picks and subsection picks.
-    """
     if batters.empty or pitchers.empty:
         print("Missing batter or pitcher data.")
         return pd.DataFrame()
@@ -137,7 +134,6 @@ def prepare_combined(
     pitchers = pitchers.copy()
     pitchers.columns = [c.strip() for c in pitchers.columns]
 
-    # Explicit rename for all pitcher columns
     pitcher_rename = {
         "pitcher_name":              "opp_pitcher_name",
         "pitcher_team":              "opp_pitcher_team",
@@ -160,7 +156,9 @@ def prepare_combined(
         "top_pitch_3":               "top_pitch_3",
         "top_pitch_3_pct":           "top_pitch_3_pct",
     }
-    pitchers = pitchers.rename(columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns})
+    pitchers = pitchers.rename(
+        columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns}
+    )
 
     parks = parks.copy()
     parks.columns = [c.strip() for c in parks.columns]
@@ -168,6 +166,7 @@ def prepare_combined(
 
     weather = weather.copy()
     weather.columns = [c.strip() for c in weather.columns]
+    # Weather home_team join — works for both today and tomorrow games
     weather = weather.rename(columns={"home_team": "weather_home_team"})
 
     batters = batters.copy()
@@ -196,6 +195,7 @@ def prepare_combined(
         print("No batter-pitcher matchups found.")
         return pd.DataFrame()
 
+    # Park factors — join on pitcher's home team
     if not parks.empty:
         combined = combined.merge(
             parks[["home_team", "park_hr_factor", "park_name", "small_sample"]],
@@ -208,6 +208,7 @@ def prepare_combined(
         combined["park_name"] = ""
         combined["small_sample"] = False
 
+    # Weather — join on pitcher's home team (works for today and tomorrow)
     if not weather.empty:
         combined = combined.merge(
             weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]],
@@ -215,17 +216,21 @@ def prepare_combined(
             right_on="weather_home_team",
             how="left",
         )
+        # Fill missing weather with neutral values
+        combined["hr_weather_boost"] = combined["hr_weather_boost"].fillna(0.0).apply(safe_float)
+        combined["wind_context"] = combined["wind_context"].fillna("Unknown")
+        combined["temp_f"] = combined["temp_f"].fillna(72.0).apply(safe_float)
     else:
         combined["hr_weather_boost"] = 0.0
         combined["wind_context"] = ""
         combined["temp_f"] = 72.0
 
-    # Convert scoring columns to float
+    # Convert all scoring columns to float
     score_cols = [
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d", "avg_launch_angle",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
-        "pitcher_bf", "park_hr_factor", "hr_weather_boost",
+        "pitcher_bf", "park_hr_factor",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
@@ -251,20 +256,17 @@ def prepare_combined(
         if "stand" in combined.columns else 0.0
 
     # Pitch matchup score
-    pitch_matchup_results = combined.apply(compute_pitch_matchup_score, axis=1)
-    combined["pitch_matchup_score"] = pitch_matchup_results.apply(lambda x: x[0])
-    combined["pitch_matchup_desc"] = pitch_matchup_results.apply(lambda x: x[1])
+    pitch_results = combined.apply(compute_pitch_matchup_score, axis=1)
+    combined["pitch_matchup_score"] = pitch_results.apply(lambda x: x[0])
+    combined["pitch_matchup_desc"] = pitch_results.apply(lambda x: x[1])
 
     # Pitcher quality penalty — elite pitchers drag score down
-    # Uses inverted barrel% and inverted hard hit% allowed
-    # A pitcher with 0 barrels and low hard hit% gets a HIGH penalty score
     combined["pitcher_quality_penalty"] = (
         normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
         normalize_inverted(combined["pitcher_hard_hit_pct"]) * 0.4
     )
 
-    # Weather as raw additive — can be negative
-    # Clamp to reasonable range (-2 to +2) then scale
+    # Weather as raw additive — negative weather hurts score
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
 
     # Composite score
@@ -286,7 +288,6 @@ def prepare_combined(
     )
 
     combined["score"] = combined["score"].round(3)
-
     return combined
 
 
@@ -348,92 +349,7 @@ def build_reason(row) -> str:
     return " | ".join(reasons)
 
 
-def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
-    """
-    Top 5 batters with high exit velocity but low launch angle
-    who have favorable pitcher matchups.
-    Criteria: avg_ev_7d > 92 AND avg_launch_angle < 20
-    """
-    if combined.empty:
-        return pd.DataFrame()
-
-    # Filter to high EV / low launch angle batters
-    ev_df = combined[
-        (combined["avg_ev_7d"] > 92) &
-        (combined["avg_launch_angle"] < 20) &
-        (combined["avg_launch_angle"] > -90)  # exclude missing data
-    ].copy()
-
-    if ev_df.empty:
-        print("No high EV / low launch angle candidates found.")
-        return pd.DataFrame()
-
-    # Score based on EV quality + pitcher vulnerability + pitch matchup
-    # Don't heavily weight HR rate since launch angle is suppressing it
-    ev_df["ev_score"] = (
-        normalize(ev_df["avg_ev_7d"])              * 2.0 +
-        normalize(ev_df["hard_hit_pct_7d"])        * 1.5 +
-        normalize(ev_df["pitcher_barrel_pct"])     * 1.5 +
-        normalize(ev_df["pitcher_hr_per_fb"])      * 1.2 +
-        normalize(ev_df["pitch_matchup_score"])    * 1.0 +
-        normalize(ev_df["park_hr_factor_norm"])    * 0.5 +
-        ev_df["weather_score"]                     * 0.3 -
-        ev_df["pitcher_quality_penalty"]           * 1.0
-    )
-
-    ev_df["ev_score"] = ev_df["ev_score"].round(3)
-
-    top5 = ev_df.nlargest(5, "ev_score").copy()
-    top5["ev_rank"] = range(1, len(top5) + 1)
-
-    def build_ev_reason(row) -> str:
-        reasons = []
-        ev = safe_float(row.get("avg_ev_7d"))
-        la = safe_float(row.get("avg_launch_angle"))
-        reasons.append(f"💥 Avg EV {ev:.1f} mph but launch angle only {la:.1f}°")
-
-        hh = safe_float(row.get("hard_hit_pct_7d"))
-        if hh >= 40:
-            reasons.append(f"🔨 {hh:.1f}% hard hit rate")
-
-        p_barrel = safe_float(row.get("pitcher_barrel_pct"))
-        if p_barrel >= 8:
-            reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
-
-        pitch_desc = str(row.get("pitch_matchup_desc", ""))
-        if pitch_desc:
-            reasons.append(f"🎳 {pitch_desc}")
-
-        reasons.append("⬆️ Launch angle correction could mean HR upside")
-        return " | ".join(reasons)
-
-    top5["ev_reason"] = top5.apply(build_ev_reason, axis=1)
-
-    output_cols = {
-        "ev_rank":            "Rank",
-        "player_name":        "Batter",
-        "batter_team":        "Team",
-        "opp_pitcher_name":   "Opposing Pitcher",
-        "park_name":          "Park",
-        "ev_score":           "EV Score",
-        "ev_reason":          "Why They're Here",
-        "avg_ev_7d":          "Avg EV (7d)",
-        "avg_launch_angle":   "Avg Launch Angle",
-        "hard_hit_pct_7d":    "Hard Hit% (7d)",
-        "pitcher_barrel_pct": "Pitcher Barrel% Allowed",
-        "pitcher_hr_per_fb":  "Pitcher HR/FB%",
-        "pitch_matchup_desc": "Pitch Matchup",
-        "park_hr_factor":     "Park HR Factor",
-    }
-
-    available = {k: v for k, v in output_cols.items() if k in top5.columns}
-    return top5[list(available.keys())].rename(columns=available)
-
-
-def build_picks(combined: pd.DataFrame) -> pd.DataFrame:
-    if combined.empty:
-        return pd.DataFrame()
-
+def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
     combined = combined.copy()
     combined["reason"] = combined.apply(build_reason, axis=1)
 
@@ -456,11 +372,11 @@ def build_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "avg_ev_7d":            "Avg EV (7d)",
         "pitcher_barrel_pct":   "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":    "Pitcher HR/FB% Allowed",
-        "top_pitch_1":          "Pitcher Top Pitch 1",
+        "top_pitch_1":          "Top Pitch 1",
         "top_pitch_1_pct":      "Top Pitch 1 %",
-        "top_pitch_2":          "Pitcher Top Pitch 2",
+        "top_pitch_2":          "Top Pitch 2",
         "top_pitch_2_pct":      "Top Pitch 2 %",
-        "top_pitch_3":          "Pitcher Top Pitch 3",
+        "top_pitch_3":          "Top Pitch 3",
         "top_pitch_3_pct":      "Top Pitch 3 %",
         "pitch_matchup_desc":   "Pitch Matchup",
         "park_hr_factor":       "Park HR Factor",
@@ -473,286 +389,86 @@ def build_picks(combined: pd.DataFrame) -> pd.DataFrame:
     return top10[list(available.keys())].rename(columns=available)
 
 
-def format_picks_sheet(
-    gc: gspread.Client,
-    sheet_id: str,
-    num_main_rows: int,
-    num_ev_rows: int,
-) -> None:
-    print("Applying dark mode formatting...")
-    sh = gc.open_by_key(sheet_id)
-    ws = sh.worksheet("Top_HR_Picks")
-    sheet_id_int = ws.id
-    num_cols = 24
-    total_rows = num_main_rows + num_ev_rows + 5  # buffer for spacer rows
+def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
+    """
+    Top 5 batters: avg EV > 92 AND avg launch angle < 20 degrees
+    with good pitcher matchups. Uses its own focused column set.
+    """
+    if combined.empty:
+        return pd.DataFrame()
 
-    requests_body = []
+    ev_df = combined[
+        (combined["avg_ev_7d"] > 92) &
+        (combined["avg_launch_angle"] < 20) &
+        (combined["avg_launch_angle"] > -90)
+    ].copy()
 
-    # Full sheet dark background
-    requests_body.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "startRowIndex": 0,
-                "endRowIndex": total_rows + 2,
-                "startColumnIndex": 0,
-                "endColumnIndex": num_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_BG_DARK,
-                    "textFormat": {
-                        "foregroundColor": COLOR_WHITE,
-                        "fontFamily": "Roboto Mono",
-                        "fontSize": 10,
-                    },
-                    "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
-        }
-    })
+    if ev_df.empty:
+        print("No high EV / low launch angle candidates found.")
+        return pd.DataFrame()
 
-    # Main picks header row (row 0)
-    requests_body.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "startRowIndex": 0,
-                "endRowIndex": 1,
-                "startColumnIndex": 0,
-                "endColumnIndex": num_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_HEADER,
-                    "textFormat": {
-                        "foregroundColor": COLOR_WHITE,
-                        "bold": True,
-                        "fontFamily": "Roboto",
-                        "fontSize": 11,
-                    },
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
+    ev_df["ev_score"] = (
+        normalize(ev_df["avg_ev_7d"])           * 2.0 +
+        normalize(ev_df["hard_hit_pct_7d"])     * 1.5 +
+        normalize(ev_df["pitcher_barrel_pct"])  * 1.5 +
+        normalize(ev_df["pitcher_hr_per_fb"])   * 1.2 +
+        normalize(ev_df["pitch_matchup_score"]) * 1.0 +
+        normalize(ev_df["park_hr_factor_norm"]) * 0.5 +
+        ev_df["weather_score"]                  * 0.3 -
+        ev_df["pitcher_quality_penalty"]        * 1.0
+    ).round(3)
 
-    # Alternating rows for main picks
-    for i in range(num_main_rows):
-        row_idx = i + 1
-        bg = COLOR_BG_MID if i % 2 == 0 else COLOR_BG_ALT
-        requests_body.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id_int,
-                    "startRowIndex": row_idx,
-                    "endRowIndex": row_idx + 1,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": num_cols,
-                },
-                "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-                "fields": "userEnteredFormat(backgroundColor)",
-            }
-        })
+    top5 = ev_df.nlargest(5, "ev_score").copy()
+    top5["ev_rank"] = range(1, len(top5) + 1)
 
-    # Gold / Silver / Bronze rows
-    medal_rows = [
-        (1, {"red": 0.200, "green": 0.157, "blue": 0.000}, COLOR_GOLD),
-        (2, {"red": 0.150, "green": 0.150, "blue": 0.160}, COLOR_SILVER),
-        (3, {"red": 0.180, "green": 0.120, "blue": 0.050}, COLOR_BRONZE),
-    ]
-    for row_idx, bg, fg in medal_rows:
-        if num_main_rows >= row_idx:
-            requests_body.append({
-                "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id_int,
-                        "startRowIndex": row_idx,
-                        "endRowIndex": row_idx + 1,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": num_cols,
-                    },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": bg,
-                            "textFormat": {"foregroundColor": fg, "bold": True},
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat)",
-                }
-            })
+    def build_ev_reason(row) -> str:
+        reasons = []
+        ev = safe_float(row.get("avg_ev_7d"))
+        la = safe_float(row.get("avg_launch_angle"))
+        reasons.append(f"💥 Avg EV {ev:.1f} mph, launch angle {la:.1f}°")
 
-    # EV subsection header row
-    ev_header_row = num_main_rows + 2
-    requests_body.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "startRowIndex": ev_header_row,
-                "endRowIndex": ev_header_row + 1,
-                "startColumnIndex": 0,
-                "endColumnIndex": num_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_SUBHEADER,
-                    "textFormat": {
-                        "foregroundColor": COLOR_ORANGE,
-                        "bold": True,
-                        "fontFamily": "Roboto",
-                        "fontSize": 11,
-                    },
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
+        hh = safe_float(row.get("hard_hit_pct_7d"))
+        if hh >= 40:
+            reasons.append(f"🔨 {hh:.1f}% hard hit rate")
 
-    # EV subsection data rows
-    for i in range(num_ev_rows):
-        row_idx = ev_header_row + 1 + i
-        bg = COLOR_BG_MID if i % 2 == 0 else COLOR_BG_ALT
-        requests_body.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id_int,
-                    "startRowIndex": row_idx,
-                    "endRowIndex": row_idx + 1,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": num_cols,
-                },
-                "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-                "fields": "userEnteredFormat(backgroundColor)",
-            }
-        })
+        p_barrel = safe_float(row.get("pitcher_barrel_pct"))
+        if p_barrel >= 8:
+            reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
 
-    # Freeze header
-    requests_body.append({
-        "updateSheetProperties": {
-            "properties": {
-                "sheetId": sheet_id_int,
-                "gridProperties": {"frozenRowCount": 1},
-            },
-            "fields": "gridProperties.frozenRowCount",
-        }
-    })
+        pitch_desc = str(row.get("pitch_matchup_desc", ""))
+        if pitch_desc:
+            reasons.append(f"🎳 {pitch_desc}")
 
-    # Row heights
-    requests_body.append({
-        "updateDimensionProperties": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "dimension": "ROWS",
-                "startIndex": 0,
-                "endIndex": 1,
-            },
-            "properties": {"pixelSize": 40},
-            "fields": "pixelSize",
-        }
-    })
-    requests_body.append({
-        "updateDimensionProperties": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "dimension": "ROWS",
-                "startIndex": 1,
-                "endIndex": total_rows + 2,
-            },
-            "properties": {"pixelSize": 60},
-            "fields": "pixelSize",
-        }
-    })
+        reasons.append("⬆️ Launch angle correction = HR upside")
+        return " | ".join(reasons)
 
-    # Column widths
-    col_widths = [
-        50, 160, 60, 180, 80, 180, 80, 400,
-        90, 80, 80, 70, 90, 120, 120,
-        100, 80, 100, 80, 100, 80, 250, 80, 80,
-    ]
-    for i, width in enumerate(col_widths):
-        requests_body.append({
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": sheet_id_int,
-                    "dimension": "COLUMNS",
-                    "startIndex": i,
-                    "endIndex": i + 1,
-                },
-                "properties": {"pixelSize": width},
-                "fields": "pixelSize",
-            }
-        })
+    top5["why"] = top5.apply(build_ev_reason, axis=1)
 
-    # Rank column styling
-    requests_body.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "startRowIndex": 1,
-                "endRowIndex": num_main_rows + 1,
-                "startColumnIndex": 0,
-                "endColumnIndex": 1,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "textFormat": {
-                        "bold": True,
-                        "fontSize": 14,
-                        "foregroundColor": COLOR_ACCENT_BLUE,
-                    },
-                    "horizontalAlignment": "CENTER",
-                }
-            },
-            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-        }
-    })
+    # EV subsection has its own focused columns — not influenced by main picks columns
+    output_cols = {
+        "ev_rank":            "Rank",
+        "player_name":        "Batter",
+        "batter_team":        "Team",
+        "opp_pitcher_name":   "Opposing Pitcher",
+        "opp_pitcher_team":   "Pitcher Team",
+        "park_name":          "Park",
+        "ev_score":           "EV Score",
+        "why":                "Why They're Here",
+        "avg_ev_7d":          "Avg EV (7d)",
+        "avg_launch_angle":   "Avg Launch Angle",
+        "hard_hit_pct_7d":    "Hard Hit% (7d)",
+        "hr_per_fb":          "HR/FB%",
+        "pitcher_barrel_pct": "Pitcher Barrel% Allowed",
+        "pitcher_hr_per_fb":  "Pitcher HR/FB%",
+        "pitch_matchup_desc": "Pitch Matchup",
+        "park_hr_factor":     "Park HR Factor",
+        "hr_weather_boost":   "Weather Boost",
+        "wind_context":       "Wind",
+        "temp_f":             "Temp (°F)",
+    }
 
-    # HR Score column
-    requests_body.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id_int,
-                "startRowIndex": 1,
-                "endRowIndex": num_main_rows + 1,
-                "startColumnIndex": 6,
-                "endColumnIndex": 7,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "textFormat": {
-                        "bold": True,
-                        "fontSize": 12,
-                        "foregroundColor": COLOR_GREEN,
-                    },
-                    "horizontalAlignment": "CENTER",
-                }
-            },
-            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-        }
-    })
-
-    # Tab color
-    requests_body.append({
-        "updateSheetProperties": {
-            "properties": {
-                "sheetId": sheet_id_int,
-                "tabColorStyle": {"rgbColor": COLOR_ACCENT_BLUE},
-            },
-            "fields": "tabColorStyle",
-        }
-    })
-
-    try:
-        sh.batch_update({"requests": requests_body})
-        print("Dark mode formatting applied successfully!")
-    except APIError as e:
-        print(f"Formatting failed: {e}")
+    available = {k: v for k, v in output_cols.items() if k in top5.columns}
+    return top5[list(available.keys())].rename(columns=available)
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
@@ -772,10 +488,10 @@ def write_picks_to_sheet(
     sheet_id: str,
     picks: pd.DataFrame,
     ev_section: pd.DataFrame,
-) -> None:
+) -> tuple:
     """
-    Write main picks and EV subsection to the same sheet
-    with a spacer and section label between them.
+    Write main picks and EV subsection as two clean separate tables.
+    Returns (main_row_count, ev_row_count, ev_start_row).
     """
     sh = gc.open_by_key(sheet_id)
     try:
@@ -787,28 +503,422 @@ def write_picks_to_sheet(
     picks_clean = clean_for_sheets(picks)
     ev_clean = clean_for_sheets(ev_section)
 
-    # Main picks
-    values = [picks_clean.columns.tolist()] + picks_clean.astype(str).values.tolist()
+    all_values = []
 
-    # Spacer row
-    values.append([""] * len(picks_clean.columns))
+    # Main picks table
+    all_values.append(picks_clean.columns.tolist())
+    for _, row in picks_clean.iterrows():
+        all_values.append(row.astype(str).tolist())
 
-    # EV subsection header label
-    ev_label = ["⚡ HIGH EXIT VELOCITY — LAUNCH ANGLE UPSIDE CANDIDATES"] + \
-               [""] * (len(picks_clean.columns) - 1)
-    values.append(ev_label)
+    main_row_count = len(picks_clean)
+    ev_start_row = len(all_values) + 2  # +2 for spacer + EV header label
 
-    # EV subsection columns header
+    # Spacer
+    all_values.append([])
+
+    # EV section label row (will be formatted as its own header)
+    all_values.append(["⚡  HIGH EXIT VELOCITY — LAUNCH ANGLE UPSIDE PICKS"])
+
+    # EV column headers
     if not ev_clean.empty:
-        ev_cols = ev_clean.columns.tolist()
-        ev_cols_padded = ev_cols + [""] * max(0, len(picks_clean.columns) - len(ev_cols))
-        values.append(ev_cols_padded)
+        all_values.append(ev_clean.columns.tolist())
         for _, row in ev_clean.iterrows():
-            row_vals = row.astype(str).tolist()
-            row_padded = row_vals + [""] * max(0, len(picks_clean.columns) - len(row_vals))
-            values.append(row_padded)
+            all_values.append(row.astype(str).tolist())
 
-    ws.update(values)
+    ev_col_header_row = ev_start_row + 1
+    ev_data_row_count = len(ev_clean)
+
+    ws.update(all_values)
+
+    return main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row
+
+
+def format_picks_sheet(
+    gc: gspread.Client,
+    sheet_id: str,
+    main_row_count: int,
+    ev_data_row_count: int,
+    ev_start_row: int,
+    ev_col_header_row: int,
+) -> None:
+    print("Applying Carbon dark mode formatting...")
+    sh = gc.open_by_key(sheet_id)
+    ws = sh.worksheet("Top_HR_Picks")
+    ws_id = ws.id
+
+    main_cols = 27
+    ev_cols = 19
+    total_rows = ev_col_header_row + ev_data_row_count + 2
+
+    reqs = []
+
+    # ── Full sheet base style ──────────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": 0,
+                "endRowIndex": total_rows,
+                "startColumnIndex": 0,
+                "endColumnIndex": max(main_cols, ev_cols),
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": COLOR_BG,
+                    "textFormat": {
+                        "foregroundColor": COLOR_WHITE,
+                        "fontFamily": "Roboto Mono",
+                        "fontSize": 10,
+                    },
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "WRAP",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+        }
+    })
+
+    # ── Main picks header (row 0) ──────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": 0,
+                "endRowIndex": 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": main_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": COLOR_ACCENT_DIM,
+                    "textFormat": {
+                        "foregroundColor": COLOR_ACCENT,
+                        "bold": True,
+                        "fontFamily": "Roboto",
+                        "fontSize": 11,
+                    },
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+        }
+    })
+
+    # ── Alternating main pick rows ─────────────────────────────────────────
+    for i in range(main_row_count):
+        row_idx = i + 1
+        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
+        reqs.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws_id,
+                    "startRowIndex": row_idx,
+                    "endRowIndex": row_idx + 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": main_cols,
+                },
+                "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                "fields": "userEnteredFormat(backgroundColor)",
+            }
+        })
+
+    # ── Medal rows ─────────────────────────────────────────────────────────
+    medals = [
+        (1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
+        (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER),
+        (3, {"red": 0.16, "green": 0.10, "blue": 0.04}, COLOR_BRONZE),
+    ]
+    for rank, bg, fg in medals:
+        if main_row_count >= rank:
+            reqs.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": ws_id,
+                        "startRowIndex": rank,
+                        "endRowIndex": rank + 1,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": main_cols,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": bg,
+                            "textFormat": {
+                                "foregroundColor": fg,
+                                "bold": True,
+                                "fontSize": 10,
+                            },
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)",
+                }
+            })
+
+    # ── Rank column ────────────────────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": 1,
+                "endRowIndex": main_row_count + 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": 1,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "textFormat": {
+                        "bold": True,
+                        "fontSize": 14,
+                        "foregroundColor": COLOR_ACCENT,
+                    },
+                    "horizontalAlignment": "CENTER",
+                }
+            },
+            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+        }
+    })
+
+    # ── HR Score column ────────────────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": 1,
+                "endRowIndex": main_row_count + 1,
+                "startColumnIndex": 6,
+                "endColumnIndex": 7,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "textFormat": {
+                        "bold": True,
+                        "fontSize": 12,
+                        "foregroundColor": COLOR_GREEN,
+                    },
+                    "horizontalAlignment": "CENTER",
+                }
+            },
+            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+        }
+    })
+
+    # ── EV section label row ───────────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": ev_start_row,
+                "endRowIndex": ev_start_row + 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": ev_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": COLOR_ACCENT_DIM,
+                    "textFormat": {
+                        "foregroundColor": COLOR_ORANGE,
+                        "bold": True,
+                        "fontFamily": "Roboto",
+                        "fontSize": 12,
+                    },
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+        }
+    })
+
+    # ── EV column header row ───────────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": ev_col_header_row,
+                "endRowIndex": ev_col_header_row + 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": ev_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": COLOR_EV_HEADER,
+                    "textFormat": {
+                        "foregroundColor": COLOR_ORANGE,
+                        "bold": True,
+                        "fontFamily": "Roboto",
+                        "fontSize": 11,
+                    },
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+        }
+    })
+
+    # ── EV data rows alternating ───────────────────────────────────────────
+    for i in range(ev_data_row_count):
+        row_idx = ev_col_header_row + 1 + i
+        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
+        reqs.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws_id,
+                    "startRowIndex": row_idx,
+                    "endRowIndex": row_idx + 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": ev_cols,
+                },
+                "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                "fields": "userEnteredFormat(backgroundColor)",
+            }
+        })
+
+    # ── EV rank column ─────────────────────────────────────────────────────
+    if ev_data_row_count > 0:
+        reqs.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws_id,
+                    "startRowIndex": ev_col_header_row + 1,
+                    "endRowIndex": ev_col_header_row + 1 + ev_data_row_count,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {
+                            "bold": True,
+                            "fontSize": 14,
+                            "foregroundColor": COLOR_ORANGE,
+                        },
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }
+        })
+
+        # EV Score column
+        reqs.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws_id,
+                    "startRowIndex": ev_col_header_row + 1,
+                    "endRowIndex": ev_col_header_row + 1 + ev_data_row_count,
+                    "startColumnIndex": 6,
+                    "endColumnIndex": 7,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {
+                            "bold": True,
+                            "fontSize": 12,
+                            "foregroundColor": COLOR_ORANGE,
+                        },
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }
+        })
+
+    # ── Freeze header ──────────────────────────────────────────────────────
+    reqs.append({
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": ws_id,
+                "gridProperties": {"frozenRowCount": 1},
+            },
+            "fields": "gridProperties.frozenRowCount",
+        }
+    })
+
+    # ── Row heights ────────────────────────────────────────────────────────
+    reqs.append({
+        "updateDimensionProperties": {
+            "range": {
+                "sheetId": ws_id,
+                "dimension": "ROWS",
+                "startIndex": 0,
+                "endIndex": 1,
+            },
+            "properties": {"pixelSize": 42},
+            "fields": "pixelSize",
+        }
+    })
+    reqs.append({
+        "updateDimensionProperties": {
+            "range": {
+                "sheetId": ws_id,
+                "dimension": "ROWS",
+                "startIndex": 1,
+                "endIndex": total_rows,
+            },
+            "properties": {"pixelSize": 58},
+            "fields": "pixelSize",
+        }
+    })
+
+    # ── Column widths (main picks columns) ────────────────────────────────
+    col_widths = [
+        50,   # Rank
+        160,  # Batter
+        55,   # Team
+        175,  # Opposing Pitcher
+        75,   # Pitcher Team
+        175,  # Park
+        75,   # HR Score
+        380,  # Key Reasons
+        90,   # Barrel% 7d
+        75,   # HR/PA%
+        75,   # HR/FB%
+        65,   # ISO
+        85,   # Avg EV
+        120,  # Pitcher Barrel%
+        120,  # Pitcher HR/FB%
+        90,   # Top Pitch 1
+        75,   # Top Pitch 1 %
+        90,   # Top Pitch 2
+        75,   # Top Pitch 2 %
+        90,   # Top Pitch 3
+        75,   # Top Pitch 3 %
+        240,  # Pitch Matchup
+        75,   # Park HR Factor
+        75,   # Weather Boost
+        180,  # Wind
+        70,   # Temp
+    ]
+    for i, width in enumerate(col_widths):
+        reqs.append({
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": ws_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": i,
+                    "endIndex": i + 1,
+                },
+                "properties": {"pixelSize": width},
+                "fields": "pixelSize",
+            }
+        })
+
+    # ── Tab color ──────────────────────────────────────────────────────────
+    reqs.append({
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": ws_id,
+                "tabColorStyle": {"rgbColor": COLOR_ACCENT},
+            },
+            "fields": "tabColorStyle",
+        }
+    })
+
+    try:
+        sh.batch_update({"requests": reqs})
+        print("Carbon formatting applied successfully!")
+    except APIError as e:
+        print(f"Formatting failed: {e}")
 
 
 def main() -> None:
@@ -829,10 +939,10 @@ def main() -> None:
     combined = prepare_combined(batters, pitchers, parks, weather)
 
     if combined.empty:
-        print("WARNING: No combined data — check that all sheets have data.")
+        print("WARNING: No combined data — check all sheets have data.")
         return
 
-    picks = build_picks(combined)
+    picks = build_main_picks(combined)
     ev_section = build_ev_subsection(combined)
 
     print(f"Built {len(picks)} main picks")
@@ -843,19 +953,23 @@ def main() -> None:
         return
 
     print("\nTop 10 HR Picks:")
-    print(picks[["Rank", "Batter", "Team", "Opposing Pitcher", "HR Score", "Key Reasons"]].to_string(index=False))
+    print(picks[["Rank", "Batter", "Team", "Opposing Pitcher", "HR Score"]].to_string(index=False))
 
     if not ev_section.empty:
         print("\nHigh EV / Launch Angle Upside:")
         print(ev_section[["Rank", "Batter", "Team", "Avg EV (7d)", "Avg Launch Angle"]].to_string(index=False))
 
-    write_picks_to_sheet(gc, sheet_id, picks, ev_section)
+    main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(
+        gc, sheet_id, picks, ev_section
+    )
     print("Written to Top_HR_Picks")
 
     format_picks_sheet(
         gc, sheet_id,
-        num_main_rows=len(picks),
-        num_ev_rows=len(ev_section) + 2,  # +2 for label and column header rows
+        main_row_count=main_row_count,
+        ev_data_row_count=ev_data_row_count,
+        ev_start_row=ev_start_row,
+        ev_col_header_row=ev_col_header_row,
     )
 
 
