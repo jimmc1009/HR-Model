@@ -37,6 +37,8 @@ ISO_GAP_MEDIUM   = 0.060
 ISO_GAP_LARGE    = 0.100
 ISO_GAP_SEVERE   = 0.150
 
+MIN_BATTING_AVG  = 0.225
+
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT       = {"red": 0.149, "green": 0.149, "blue": 0.149}
 COLOR_ACCENT       = {"red": 0.114, "green": 0.533, "blue": 0.898}
@@ -112,7 +114,6 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if iso > 0 or hr_rate > 0:
             pitch_score = (iso * 3 + hr_rate / 10 + barrel / 20) * (pitch_pct / 100)
             scores.append(pitch_score)
-            # Lowered threshold: ISO >= 0.150 and usage >= 15%
             if iso >= 0.150 and pitch_pct >= 15:
                 descriptions.append(
                     f"ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
@@ -124,10 +125,6 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
 
 
 def compute_platoon_score(row: pd.Series) -> tuple:
-    """
-    Full two-sided platoon matchup using ISO gap analysis + HR/9 by handedness.
-    Returns (platoon_score, description, penalty).
-    """
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
     p_throws = str(row.get("pitcher_hand", "")).strip().upper()
 
@@ -224,12 +221,13 @@ def compute_platoon_score(row: pd.Series) -> tuple:
 
 
 def assign_confidence(row: pd.Series) -> str:
-    """High / Medium / Low confidence tier."""
     batter_bbe = safe_float(row.get("season_bbe", 0))
     batter_pa = safe_float(row.get("pa", 0))
     pitcher_bbe = safe_float(row.get("pitcher_bbe_allowed", 0))
     small_sample_park = str(row.get("small_sample", "False")).lower() == "true"
-    weather_available = str(row.get("wind_context", "")).strip() not in ("", "Unknown", "Weather unavailable")
+    weather_available = str(row.get("wind_context", "")).strip() not in (
+        "", "Unknown", "Weather unavailable"
+    )
 
     points = 0
 
@@ -368,6 +366,18 @@ def prepare_combined(
         combined["hr_weather_boost"] = 0.0
         combined["wind_context"] = ""
         combined["temp_f"] = 72.0
+
+    # ── Batting average filter ─────────────────────────────────────────────
+    if "batting_avg" in combined.columns:
+        combined["batting_avg"] = combined["batting_avg"].apply(safe_float)
+        before = len(combined)
+        combined = combined[combined["batting_avg"] >= MIN_BATTING_AVG].copy()
+        removed = before - len(combined)
+        print(f"BA filter: {removed} batters removed (below .225 avg), {len(combined)} remaining")
+
+    if combined.empty:
+        print("No batters remaining after BA filter.")
+        return pd.DataFrame()
 
     score_cols = [
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
@@ -508,6 +518,7 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "score":                      "HR Score",
         "confidence":                 "Confidence",
         "reason":                     "Key Reasons",
+        "batting_avg":                "Batting Avg",
         "barrel_pct_7d":              "Barrel% (7d)",
         "hr_per_pa":                  "HR/PA%",
         "hr_per_fb":                  "HR/FB%",
@@ -617,6 +628,7 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "ev_score":                   "EV Score",
         "confidence":                 "Confidence",
         "why":                        "Why They're Here",
+        "batting_avg":                "Batting Avg",
         "avg_ev_7d":                  "Avg EV (7d)",
         "avg_la_7d":                  "Avg Launch Angle (7d)",
         "avg_launch_angle":           "Avg Launch Angle (Season)",
@@ -648,9 +660,6 @@ def log_todays_picks(
     picks: pd.DataFrame,
     ev_section: pd.DataFrame,
 ) -> None:
-    """
-    Append today's picks to Picks_Log and check yesterday's picks for HR outcomes.
-    """
     today_str = date.today().strftime("%Y-%m-%d")
     sh = gc.open_by_key(sheet_id)
 
@@ -661,7 +670,6 @@ def log_todays_picks(
         ws = sh.add_worksheet(title="Picks_Log", rows=5000, cols=20)
         existing = pd.DataFrame()
 
-    # Remove any existing rows for today to avoid duplicates on re-run
     if not existing.empty and "date" in existing.columns:
         existing = existing[existing["date"] != today_str].copy()
 
@@ -699,7 +707,11 @@ def log_todays_picks(
         return
 
     new_df = pd.DataFrame(new_rows)
-    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined_log = (
+        pd.concat([existing, new_df], ignore_index=True)
+        if not existing.empty
+        else new_df
+    )
 
     ws.clear()
     values = [combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()
@@ -708,7 +720,6 @@ def log_todays_picks(
 
 
 def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
-    """Rebuild scorecard from current Picks_Log."""
     sh = gc.open_by_key(sheet_id)
 
     try:
@@ -722,7 +733,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         print("Picks_Log is empty — skipping scorecard update.")
         return
 
-    # Only score rows with actual outcomes
     scored = picks_log[picks_log["hit_hr"].isin(["Yes", "No"])].copy()
     if scored.empty:
         print("No scored picks yet — skipping scorecard update.")
@@ -759,8 +769,10 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         add_row("By Section", section, scored[scored["section"] == section])
 
     max_date = scored["date"].max()
-    add_row("Rolling", "Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
-    add_row("Rolling", "Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
+    add_row("Rolling", "Last 7 Days",
+            scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
+    add_row("Rolling", "Last 30 Days",
+            scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
     scorecard = pd.DataFrame(rows)
 
@@ -840,8 +852,8 @@ def format_picks_sheet(
     ws = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols = 36
-    ev_cols = 30
+    main_cols = 37
+    ev_cols = 31
     total_rows = ev_col_header_row + ev_data_row_count + 2
 
     reqs = []
@@ -1131,6 +1143,7 @@ def format_picks_sheet(
         75,   # HR Score
         80,   # Confidence
         380,  # Key Reasons
+        75,   # Batting Avg
         90,   # Barrel% 7d
         75,   # HR/PA%
         75,   # HR/FB%
@@ -1220,11 +1233,11 @@ def main() -> None:
         return
 
     print("\nTop 10 HR Picks:")
-    print(picks[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Confidence", "HR Score"]].to_string(index=False))
+    print(picks[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score"]].to_string(index=False))
 
     if not ev_section.empty:
         print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Bats", "Avg EV (7d)", "Avg Launch Angle (7d)", "Confidence"]].to_string(index=False))
+        print(ev_section[["Rank", "Batter", "Bats", "Avg EV (7d)", "Avg Launch Angle (7d)", "Batting Avg", "Confidence"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(
         gc, sheet_id, picks, ev_section
