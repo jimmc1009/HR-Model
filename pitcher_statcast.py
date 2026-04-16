@@ -551,32 +551,66 @@ def build_season_stats_pitcher(
 
     return season
 
-
 def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Platoon splits per pitcher including HR/9 vs LHH and RHH.
+    Innings pitched estimated from outs recorded in Statcast data.
+    """
     if "stand" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
+    # Estimate innings pitched per pitcher per handedness
+    # Each out = 1/3 inning. Statcast events include outs.
+    out_events = {
+        "field_out", "grounded_into_double_play", "double_play",
+        "triple_play", "fielders_choice_out", "force_out",
+        "sac_fly", "sac_fly_double_play", "sac_bunt",
+        "sac_bunt_double_play", "other_out", "strikeout",
+        "strikeout_double_play",
+    }
+
+    # Need full bbe df including strikeouts for IP estimation
+    # We'll calculate IP from the passed bbe which already has events
+    bbe = bbe.copy()
+    bbe["is_out"] = bbe["events"].astype("string").str.lower().isin(out_events)
+
     splits = []
     for hand, label in [("L", "vs_lhh"), ("R", "vs_rhh")]:
-        sub = bbe[bbe["stand"] == hand]
+        sub = bbe[bbe["stand"] == hand].copy()
+
+        # Outs and IP per pitcher vs this handedness
+        ip_grp = (
+            sub.groupby("pitcher", dropna=False)
+            .agg(outs=("is_out", "sum"))
+            .reset_index()
+        )
+        ip_grp[f"{label}_ip"] = (ip_grp["outs"] / 3).round(2)
+
         grp = (
             sub.groupby("pitcher", dropna=False)
             .agg(
                 **{
-                    f"{label}_bbe": ("launch_speed", "size"),
-                    f"{label}_hr": ("is_hr", "sum"),
+                    f"{label}_bbe":        ("launch_speed", "size"),
+                    f"{label}_hr":         ("is_hr", "sum"),
                     f"{label}_barrel_pct": ("is_barrel", "mean"),
                 }
             )
             .reset_index()
         )
+
+        grp = grp.merge(ip_grp[["pitcher", f"{label}_ip"]], on="pitcher", how="left")
         grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
         grp[f"{label}_hr_rate"] = (
             grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
         ).round(2)
+        grp[f"{label}_hr9"] = (
+            grp[f"{label}_hr"] / grp[f"{label}_ip"].replace(0, pd.NA) * 9
+        ).round(2)
+
         splits.append(grp)
 
     return splits[0].merge(splits[1], on="pitcher", how="outer")
+
 
 
 def build_rolling_stats_pitcher(
