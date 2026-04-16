@@ -467,7 +467,23 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
 
     result = group_pivot.merge(total, on="pitcher", how="left")
     result = result.merge(top3_df, on="pitcher", how="left")
-    result = result.merge(individual_pivot, on="pitcher", how="left")
+
+    # Drop any individual pivot columns that would clash with top3 columns
+    top3_cols = [
+        "top_pitch_1", "top_pitch_1_pct",
+        "top_pitch_2", "top_pitch_2_pct",
+        "top_pitch_3", "top_pitch_3_pct",
+    ]
+    safe_individual = individual_pivot.drop(
+        columns=[c for c in top3_cols if c in individual_pivot.columns],
+        errors="ignore"
+    )
+    result = result.merge(safe_individual, on="pitcher", how="left")
+
+    # Ensure top3 pct columns are numeric
+    for col in ["top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct"]:
+        if col in result.columns:
+            result[col] = pd.to_numeric(result[col], errors="coerce").round(2)
 
     return result
 
