@@ -171,14 +171,17 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     if batter_hand == "R":
         pitcher_barrel_vs = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
         pitcher_hr_vs = safe_float(row.get("pitcher_vs_rhh_hr_rate", 0))
+        pitcher_hr9_vs = safe_float(row.get("pitcher_vs_rhh_hr9", 0))
         pitcher_split_label = "vs RHH"
     elif batter_hand == "L":
         pitcher_barrel_vs = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
         pitcher_hr_vs = safe_float(row.get("pitcher_vs_lhh_hr_rate", 0))
+        pitcher_hr9_vs = safe_float(row.get("pitcher_vs_lhh_hr9", 0))
         pitcher_split_label = "vs LHH"
     else:
         pitcher_barrel_vs = 0.0
         pitcher_hr_vs = 0.0
+        pitcher_hr9_vs = 0.0
         pitcher_split_label = ""
 
     # --- ISO gap analysis ---
@@ -225,10 +228,15 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     # --- Add pitcher vulnerability to score ---
     score += pitcher_barrel_vs * 0.06
     score += pitcher_hr_vs * 0.04
+    score += pitcher_hr9_vs * 0.08  # HR/9 weighted slightly higher — cleaner rate stat
 
     if pitcher_split_label and pitcher_barrel_vs >= 8:
         parts.append(
             f"Pitcher {pitcher_barrel_vs:.1f}% barrel allowed {pitcher_split_label}"
+        )
+    if pitcher_split_label and pitcher_hr9_vs >= 1.5:
+        parts.append(
+            f"Pitcher {pitcher_hr9_vs:.2f} HR/9 {pitcher_split_label}"
         )
 
     # --- Add batter's actual performance vs this hand to score ---
