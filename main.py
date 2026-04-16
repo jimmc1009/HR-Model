@@ -287,11 +287,13 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
             season_barrel=("is_barrel", "sum"),
             total_bases=("total_bases", "sum"),
             hits=("is_hit", "sum"),
+            avg_launch_angle=("launch_angle", "mean"),
         )
         .reset_index()
     )
 
     season = season.merge(pa_counts, on="batter", how="left")
+    season["avg_launch_angle"] = season["avg_launch_angle"].round(2)
     season["hr_per_pa"] = (season["season_hr"] / season["pa"] * 100).round(2)
     season["hr_per_fb"] = (
         season["season_hr"] / season["season_fb"].replace(0, pd.NA) * 100
@@ -319,7 +321,6 @@ def build_platoon_splits(bbe: pd.DataFrame) -> pd.DataFrame:
         {"single", "double", "triple", "home_run"}
     )
 
-    # Capture batter handedness
     stand_map = (
         bbe[bbe["stand"].notna()]
         .groupby("batter")["stand"]
@@ -363,7 +364,6 @@ def build_platoon_splits(bbe: pd.DataFrame) -> pd.DataFrame:
 
     result = splits[0].merge(splits[1], on="batter", how="outer")
 
-    # Add batter handedness
     if not stand_map.empty:
         result = result.merge(stand_map, on="batter", how="left")
     else:
@@ -384,11 +384,12 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
             window_df.groupby("batter", dropna=False)
             .agg(
                 **{
-                    f"bbe_{days}d": ("launch_speed", "size"),
-                    f"avg_ev_{days}d": ("launch_speed", "mean"),
-                    f"barrel_pct_{days}d": ("is_barrel", "mean"),
+                    f"bbe_{days}d":          ("launch_speed", "size"),
+                    f"avg_ev_{days}d":       ("launch_speed", "mean"),
+                    f"avg_la_{days}d":       ("launch_angle", "mean"),
+                    f"barrel_pct_{days}d":   ("is_barrel", "mean"),
                     f"hard_hit_pct_{days}d": ("is_hard_hit", "mean"),
-                    f"hr_{days}d": ("is_hr", "sum"),
+                    f"hr_{days}d":           ("is_hr", "sum"),
                 }
             )
             .reset_index()
@@ -397,6 +398,7 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
         pct_cols = [f"barrel_pct_{days}d", f"hard_hit_pct_{days}d"]
         grp[pct_cols] = (grp[pct_cols] * 100).round(2)
         grp[f"avg_ev_{days}d"] = grp[f"avg_ev_{days}d"].round(2)
+        grp[f"avg_la_{days}d"] = grp[f"avg_la_{days}d"].round(2)
         results.append(grp)
 
     rolling = results[0]
