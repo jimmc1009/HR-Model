@@ -950,9 +950,9 @@ def format_picks_sheet(
     ws = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols = 41
-    ev_cols = 35
-    total_rows = ev_col_header_row + ev_data_row_count + 2
+    main_cols = 42
+    ev_cols = 36
+    total_rows = ev_col_header_row + ev_data_row_count + 5
 
     reqs = []
 
@@ -963,7 +963,7 @@ def format_picks_sheet(
                 "startRowIndex": 0,
                 "endRowIndex": total_rows,
                 "startColumnIndex": 0,
-                "endColumnIndex": max(main_cols, ev_cols),
+                "endColumnIndex": 45,
             },
             "cell": {
                 "userEnteredFormat": {
