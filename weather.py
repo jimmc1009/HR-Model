@@ -14,6 +14,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# ESPN to MLB abbreviation mapping
 ESPN_TO_MLB = {
     "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
     "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
@@ -58,6 +59,9 @@ PARKS = [
     {"team": "WSH", "park": "Nationals Park",              "lat": 38.8730, "lon": -77.0074,  "roof": False, "cf_direction": 5},
 ]
 
+# Build lookup by team abbr for fast access
+PARK_BY_TEAM = {p["team"]: p for p in PARKS}
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -67,6 +71,11 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_today_games() -> Dict[str, dict]:
+    """
+    Returns {home_team_abbr: {away_team, game_time_utc}} for today's games.
+    Tries MLB API first, falls back to ESPN.
+    Normalizes abbreviations to MLB standard.
+    """
     def fetch_mlb_games() -> Dict[str, dict]:
         today_str = date.today().strftime("%Y-%m-%d")
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today_str}&hydrate=venue"
@@ -119,8 +128,13 @@ def get_today_games() -> Dict[str, dict]:
         print("Fetching today's games from MLB API...")
         games = fetch_mlb_games()
         if games:
-            print(f"MLB API found {len(games)} games.")
-            return games
+            # Normalize abbreviations
+            normalized = {}
+            for abbr, info in games.items():
+                mlb_abbr = ESPN_TO_MLB.get(abbr, abbr)
+                normalized[mlb_abbr] = info
+            print(f"MLB API found {len(normalized)} games.")
+            return normalized
         print("MLB API returned no games.")
     except Exception as e:
         print(f"MLB API failed: {e}")
@@ -213,13 +227,30 @@ def fetch_weather_for_park(lat: float, lon: float) -> dict:
 
 
 def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
+    """
+    Fetch weather for all parks hosting games today.
+    If no games found from API, fetch all 30 parks as fallback.
+    Also validates that home team abbreviations match our PARKS list
+    and corrects any mismatches.
+    """
     rows = []
-    playing_home_teams = set(games.keys())
+
+    # Determine which teams to fetch weather for
+    if games:
+        playing_home_teams = set(games.keys())
+        # Validate all teams exist in PARK_BY_TEAM
+        unmatched = playing_home_teams - set(PARK_BY_TEAM.keys())
+        if unmatched:
+            print(f"Warning: No park data for teams: {unmatched} — fetching all parks as fallback")
+            playing_home_teams = set(PARK_BY_TEAM.keys())
+    else:
+        print("No games found — fetching weather for all 30 parks.")
+        playing_home_teams = set(PARK_BY_TEAM.keys())
 
     for park in PARKS:
         team = park["team"]
 
-        if playing_home_teams and team not in playing_home_teams:
+        if team not in playing_home_teams:
             continue
 
         print(f"  Fetching weather for {park['park']} ({team})...")
@@ -321,9 +352,6 @@ def main() -> None:
     print("Fetching today's games...")
     games = get_today_games()
     print(f"Games today: {len(games)} — home teams: {list(games.keys())}")
-
-    if not games:
-        print("No games found — fetching weather for all parks anyway.")
 
     print("Fetching weather for each park...")
     weather_df = build_weather_table(games)
