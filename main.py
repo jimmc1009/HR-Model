@@ -40,8 +40,6 @@ PITCH_GROUP_MAP = {
     **{p: "knuckleball" for p in KNUCKLEBALL},
 }
 
-# AB events — excludes walks, HBP, sac flies, interference
-# ISO = (Total Bases - Hits) / AB
 AB_EVENTS = {
     "single", "double", "triple", "home_run",
     "field_out", "grounded_into_double_play", "double_play",
@@ -275,10 +273,6 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_ab_counts(full_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Count at-bats per batter — excludes walks, HBP, sac flies, catcher interference.
-    AB is the correct denominator for ISO.
-    """
     ab_df = full_df[
         full_df["events"].astype("string").str.lower().isin(AB_EVENTS)
     ].copy()
@@ -288,10 +282,6 @@ def build_ab_counts(full_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_ab_counts_by_hand(full_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Count at-bats per batter per pitcher handedness.
-    Used for platoon ISO calculation.
-    """
     if "p_throws" not in full_df.columns:
         return pd.DataFrame(columns=["batter", "p_throws", "ab_vs_hand"])
 
@@ -309,13 +299,11 @@ def build_ab_counts_by_hand(full_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame:
-    # PA count for hr_per_pa
     pa_df = full_df[full_df["events"].notna()].copy()
     pa_dedupe = [c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
     pa_df = pa_df.drop_duplicates(subset=pa_dedupe)
     pa_counts = pa_df.groupby("batter").size().reset_index(name="pa")
 
-    # AB count for ISO
     ab_counts = build_ab_counts(full_df)
 
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
@@ -347,16 +335,18 @@ def build_season_stats(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame
     season["avg_launch_angle"] = season["avg_launch_angle"].round(2)
     season["hr_per_pa"] = (season["season_hr"] / season["pa"] * 100).round(2)
     season["hr_per_fb"] = (
-        season["season_hr"] / season["season_fb"].replace(0, pd.NA) * 100
+        season["season_hr"] / season["season_fb"].replace(0, np.nan) * 100
     ).round(2)
     season["fb_rate"] = (season["season_fb"] / season["season_bbe"] * 100).round(2)
     season["pull_rate"] = (season["season_pull"] / season["season_bbe"] * 100).round(2)
     season["season_barrel_pct"] = (
         season["season_barrel"] / season["season_bbe"] * 100
     ).round(2)
-    # ISO uses AB as denominator — standard definition
     season["iso"] = (
-        (season["total_bases"] - season["hits"]) / season["ab"].replace(0, pd.NA)
+        (season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)
+    ).round(3)
+    season["batting_avg"] = (
+        season["hits"] / season["ab"].replace(0, np.nan)
     ).round(3)
 
     return season
@@ -373,7 +363,6 @@ def build_platoon_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFra
         {"single", "double", "triple", "home_run"}
     )
 
-    # AB by handedness for correct ISO denominator
     ab_by_hand = build_ab_counts_by_hand(full_df)
 
     stand_map = (
@@ -388,7 +377,6 @@ def build_platoon_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFra
     for hand, label in [("L", "vs_lhp"), ("R", "vs_rhp")]:
         sub = bbe[bbe["p_throws"] == hand].copy()
 
-        # AB vs this handedness
         ab_sub = ab_by_hand[ab_by_hand["p_throws"] == hand][["batter", "ab_vs_hand"]]
 
         grp = (
@@ -412,10 +400,9 @@ def build_platoon_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFra
         grp[f"{label}_hr_rate"] = (
             grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
         ).round(2)
-        # ISO vs this handedness using AB as denominator
         grp[f"{label}_iso"] = (
             (grp[f"{label}_tb"] - grp[f"{label}_hits"]) /
-            grp["ab_vs_hand"].replace(0, pd.NA)
+            grp["ab_vs_hand"].replace(0, np.nan)
         ).round(3)
 
         grp = grp.drop(columns=[f"{label}_tb", f"{label}_hits", "ab_vs_hand"])
@@ -468,10 +455,6 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
 
 
 def build_pitch_type_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Per batter per pitch type: ISO (using AB denominator), HR rate,
-    FB%, Pull%, barrel%.
-    """
     if "pitch_type" not in bbe.columns:
         return pd.DataFrame(columns=["batter"])
 
@@ -483,7 +466,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.Data
     )
     bbe["pitch_type"] = bbe["pitch_type"].astype("string").str.upper().str.strip()
 
-    # AB per batter per pitch type for ISO denominator
     if "pitch_type" in full_df.columns:
         ab_df = full_df[
             full_df["events"].astype("string").str.lower().isin(AB_EVENTS) &
@@ -541,13 +523,12 @@ def build_pitch_type_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.Data
         if grp.empty:
             continue
 
-        # Merge AB vs this pitch type
         ab_sub = ab_by_pitch[ab_by_pitch["pitch_type"] == pt][["batter", "ab_vs_pitch"]]
         grp = grp.merge(ab_sub, on="batter", how="left")
         grp["ab_vs_pitch"] = grp["ab_vs_pitch"].fillna(0)
 
         grp[f"iso_vs_{pt}"] = (
-            (grp["total_bases"] - grp["hits"]) / grp["ab_vs_pitch"].replace(0, pd.NA)
+            (grp["total_bases"] - grp["hits"]) / grp["ab_vs_pitch"].replace(0, np.nan)
         ).round(3)
         grp[f"hr_rate_vs_{pt}"] = (grp["hr_count"] / grp["bbe_count"] * 100).round(2)
         grp[f"fb_rate_vs_{pt}"] = (grp["fb_count"] / grp["bbe_count"] * 100).round(2)
@@ -590,12 +571,11 @@ def build_pitch_type_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.Data
         if grp.empty:
             continue
 
-        # AB vs this pitch group
         if not ab_by_pitch.empty and "pitch_type" in full_df.columns:
             group_types = {
-                "fastball": FASTBALLS,
-                "breaking": BREAKING,
-                "offspeed": OFFSPEED,
+                "fastball":   FASTBALLS,
+                "breaking":   BREAKING,
+                "offspeed":   OFFSPEED,
                 "knuckleball": KNUCKLEBALL,
             }.get(group, set())
             ab_group = ab_by_pitch[
@@ -607,7 +587,7 @@ def build_pitch_type_splits(bbe: pd.DataFrame, full_df: pd.DataFrame) -> pd.Data
             grp["ab_vs_group"] = 0
 
         grp[f"iso_vs_{group}"] = (
-            (grp["total_bases"] - grp["hits"]) / grp["ab_vs_group"].replace(0, pd.NA)
+            (grp["total_bases"] - grp["hits"]) / grp["ab_vs_group"].replace(0, np.nan)
         ).round(3)
         grp[f"hr_rate_vs_{group}"] = (grp["hr_count"] / grp["bbe_count"] * 100).round(2)
         grp[f"fb_rate_vs_{group}"] = (grp["fb_count"] / grp["bbe_count"] * 100).round(2)
