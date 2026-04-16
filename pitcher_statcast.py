@@ -530,8 +530,26 @@ def build_season_stats_pitcher(
         .reset_index()
     )
 
-    season = season.merge(bf_counts, on="pitcher", how="left")
+    # Estimate overall IP from all outs in full dataset
+    out_events = {
+        "field_out", "grounded_into_double_play", "double_play",
+        "triple_play", "fielders_choice_out", "force_out",
+        "sac_fly", "sac_fly_double_play", "sac_bunt",
+        "sac_bunt_double_play", "other_out", "strikeout",
+        "strikeout_double_play",
+    }
+    ip_df = full_df[
+        full_df["pitcher"].isin(probable_ids) &
+        full_df["events"].astype("string").str.lower().isin(out_events)
+    ].copy()
+    ip_counts = ip_df.groupby("pitcher").size().reset_index(name="outs")
+    ip_counts["ip"] = (ip_counts["outs"] / 3).round(2)
+
+    season = season.merge(ip_counts[["pitcher", "ip"]], on="pitcher", how="left")
     season["hr_per_bf"] = (season["season_hr_allowed"] / season["bf"] * 100).round(2)
+    season["hr9"] = (
+        season["season_hr_allowed"] / season["ip"].replace(0, pd.NA) * 9
+    ).round(2)
     season["hr_per_fb_allowed"] = (
         season["season_hr_allowed"] / season["season_fb_allowed"].replace(0, pd.NA) * 100
     ).round(2)
