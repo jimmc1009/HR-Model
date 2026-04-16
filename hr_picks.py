@@ -99,6 +99,7 @@ def normalize_inverted(series: pd.Series) -> pd.Series:
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
     scores = []
     descriptions = []
+    pitch_penalty = 0.0
 
     for rank in range(1, 4):
         pitch_type = str(row.get(f"top_pitch_{rank}", "")).strip().upper()
@@ -110,18 +111,27 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
         hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
         barrel = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
+        has_data = (iso > 0 or hr_rate > 0)
 
-        if iso > 0 or hr_rate > 0:
+        if has_data:
             pitch_score = (iso * 3 + hr_rate / 10 + barrel / 20) * (pitch_pct / 100)
             scores.append(pitch_score)
+
             if iso >= 0.150 and pitch_pct >= 15:
                 descriptions.append(
-                    f"ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
+                    f"✅ ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
+                )
+            elif iso < 0.100 and pitch_pct >= 15:
+                # Batter struggles vs a heavily used pitch — penalty scales with usage
+                penalty_amount = round((0.100 - iso) * (pitch_pct / 100) * 10, 3)
+                pitch_penalty = max(pitch_penalty, penalty_amount)
+                descriptions.append(
+                    f"⚠️ Weak vs {pitch_type} — ISO {iso:.3f} ({pitch_pct:.0f}% usage)"
                 )
 
     total_score = sum(scores)
     desc = " + ".join(descriptions) if descriptions else ""
-    return total_score, desc
+    return total_score, desc, pitch_penalty
 
 
 def compute_platoon_score(row: pd.Series) -> tuple:
@@ -409,6 +419,10 @@ def prepare_combined(
     pitch_results = combined.apply(compute_pitch_matchup_score, axis=1)
     combined["pitch_matchup_score"] = pitch_results.apply(lambda x: x[0])
     combined["pitch_matchup_desc"] = pitch_results.apply(lambda x: x[1])
+    combined["pitch_penalty"] = pitch_results.apply(lambda x: x[2])
+
+    # Take the larger of platoon or pitch penalty — don't double penalize
+    combined["total_penalty"] = combined[["platoon_penalty", "pitch_penalty"]].max(axis=1)
 
     combined["pitcher_quality_penalty"] = (
         normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
@@ -434,7 +448,7 @@ def prepare_combined(
         normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
         normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT -
         combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
-        combined["platoon_penalty"]
+        combined["total_penalty"]
     )
 
     combined["score"] = combined["score"].round(3)
@@ -581,7 +595,7 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         normalize(ev_df["park_hr_factor_norm"]) * 0.5 +
         ev_df["weather_score"]                  * 0.3 -
         ev_df["pitcher_quality_penalty"]        * 1.0 -
-        ev_df["platoon_penalty"]
+        ev_df["total_penalty"]
     ).round(3)
 
     top5 = ev_df.nlargest(5, "ev_score").copy()
