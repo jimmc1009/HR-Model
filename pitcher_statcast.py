@@ -40,6 +40,14 @@ PITCH_GROUP_MAP = {
     **{p: "knuckleball" for p in KNUCKLEBALL},
 }
 
+OUT_EVENTS = {
+    "field_out", "grounded_into_double_play", "double_play",
+    "triple_play", "fielders_choice_out", "force_out",
+    "sac_fly", "sac_fly_double_play", "sac_bunt",
+    "sac_bunt_double_play", "other_out", "strikeout",
+    "strikeout_double_play",
+}
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -382,12 +390,6 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
-    """
-    For each pitcher calculate:
-    1. % of each pitch group (fastball/breaking/offspeed/knuckleball/other)
-    2. Top 3 individual pitch types by usage % stored as separate columns
-    3. % of each individual pitch type as pitch_pct_XX columns
-    """
     if "pitch_type" not in df.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -397,20 +399,19 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     ].copy()
 
     pitch_df["pitch_type"] = pitch_df["pitch_type"].astype("string").str.upper().str.strip()
-    pitch_df = pitch_df[~pitch_df["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])]
-
+    pitch_df = pitch_df[
+        ~pitch_df["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])
+    ]
     pitch_df["pitch_group"] = pitch_df["pitch_type"].apply(
         lambda p: PITCH_GROUP_MAP.get(str(p), "other")
     )
 
-    # Total pitches per pitcher
     total = (
         pitch_df.groupby("pitcher")
         .size()
         .reset_index(name="total_pitches")
     )
 
-    # --- Group level percentages ---
     group_counts = (
         pitch_df.groupby(["pitcher", "pitch_group"])
         .size()
@@ -436,7 +437,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         else:
             group_pivot[col] = 0.0
 
-    # --- Individual pitch type percentages ---
     individual_counts = (
         pitch_df.groupby(["pitcher", "pitch_type"])
         .size()
@@ -447,8 +447,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         individual_counts["count"] / individual_counts["total_pitches"] * 100
     ).round(2)
 
-    # --- Top 3 pitch types per pitcher built DIRECTLY from individual_counts ---
-    # Sort by pitcher then descending pct, take top 3 per pitcher
     individual_counts_sorted = individual_counts.sort_values(
         ["pitcher", "pct"], ascending=[True, False]
     )
@@ -460,7 +458,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         for i, (_, row) in enumerate(top3.iterrows(), start=1):
             record[f"top_pitch_{i}"] = row["pitch_type"]
             record[f"top_pitch_{i}_pct"] = row["pct"]
-        # Fill missing ranks with empty
         for i in range(len(top3) + 1, 4):
             record[f"top_pitch_{i}"] = ""
             record[f"top_pitch_{i}_pct"] = 0.0
@@ -468,7 +465,6 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
 
     top3_df = pd.DataFrame(top3_records)
 
-    # --- Individual pitch type pivot (pitch_pct_FF, pitch_pct_SL etc) ---
     individual_pivot = individual_counts.pivot_table(
         index="pitcher",
         columns="pitch_type",
@@ -481,17 +477,10 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         for c in individual_pivot.columns
     ]
 
-    # --- Merge all together ---
-    # Start with group pivot + total
     result = group_pivot.merge(total, on="pitcher", how="left")
-
-    # Merge top3 — these columns are ONLY in top3_df, no clash risk
     result = result.merge(top3_df, on="pitcher", how="left")
-
-    # Merge individual pivot — prefix already applied so no clash with top3
     result = result.merge(individual_pivot, on="pitcher", how="left")
 
-    # Ensure pct columns are numeric
     for col in ["top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct"]:
         if col in result.columns:
             result[col] = pd.to_numeric(result[col], errors="coerce").fillna(0.0).round(2)
@@ -504,6 +493,7 @@ def build_season_stats_pitcher(
     full_df: pd.DataFrame,
     probable_ids: Set[int],
 ) -> pd.DataFrame:
+    # Batters faced
     bf_df = full_df[
         full_df["pitcher"].isin(probable_ids) &
         full_df["events"].notna()
@@ -512,14 +502,22 @@ def build_season_stats_pitcher(
     bf_df = bf_df.drop_duplicates(subset=bf_dedupe)
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
-    # Capture pitcher handedness
+    # Innings pitched from outs
+    ip_df = full_df[
+        full_df["pitcher"].isin(probable_ids) &
+        full_df["events"].astype("string").str.lower().isin(OUT_EVENTS)
+    ].copy()
+    ip_counts = ip_df.groupby("pitcher").size().reset_index(name="outs")
+    ip_counts["ip"] = (ip_counts["outs"] / 3).round(2)
+
+    # Pitcher handedness
     agg_dict = {
-        "season_bbe_allowed": ("launch_speed", "size"),
-        "season_hr_allowed":  ("is_hr", "sum"),
-        "season_fb_allowed":  ("is_fly_ball", "sum"),
-        "season_barrel_allowed": ("is_barrel", "sum"),
+        "season_bbe_allowed":      ("launch_speed", "size"),
+        "season_hr_allowed":       ("is_hr", "sum"),
+        "season_fb_allowed":       ("is_fly_ball", "sum"),
+        "season_barrel_allowed":   ("is_barrel", "sum"),
         "season_hard_hit_allowed": ("is_hard_hit", "sum"),
-        "avg_ev_allowed":     ("launch_speed", "mean"),
+        "avg_ev_allowed":          ("launch_speed", "mean"),
     }
     if "p_throws" in bbe.columns:
         agg_dict["pitcher_hand"] = ("p_throws", "first")
@@ -530,23 +528,16 @@ def build_season_stats_pitcher(
         .reset_index()
     )
 
-    # Estimate overall IP from all outs in full dataset
-    out_events = {
-        "field_out", "grounded_into_double_play", "double_play",
-        "triple_play", "fielders_choice_out", "force_out",
-        "sac_fly", "sac_fly_double_play", "sac_bunt",
-        "sac_bunt_double_play", "other_out", "strikeout",
-        "strikeout_double_play",
-    }
-    ip_df = full_df[
-        full_df["pitcher"].isin(probable_ids) &
-        full_df["events"].astype("string").str.lower().isin(out_events)
-    ].copy()
-    ip_counts = ip_df.groupby("pitcher").size().reset_index(name="outs")
-    ip_counts["ip"] = (ip_counts["outs"] / 3).round(2)
-
+    season = season.merge(bf_counts, on="pitcher", how="left")
     season = season.merge(ip_counts[["pitcher", "ip"]], on="pitcher", how="left")
-    season["hr_per_bf"] = (season["season_hr_allowed"] / season["bf"] * 100).round(2)
+
+    # Fill NaN to avoid KeyError
+    season["bf"] = season["bf"].fillna(0)
+    season["ip"] = season["ip"].fillna(0)
+
+    season["hr_per_bf"] = (
+        season["season_hr_allowed"] / season["bf"].replace(0, pd.NA) * 100
+    ).round(2)
     season["hr9"] = (
         season["season_hr_allowed"] / season["ip"].replace(0, pd.NA) * 9
     ).round(2)
@@ -569,34 +560,22 @@ def build_season_stats_pitcher(
 
     return season
 
+
 def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
     """
     Platoon splits per pitcher including HR/9 vs LHH and RHH.
-    Innings pitched estimated from outs recorded in Statcast data.
     """
     if "stand" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
-    # Estimate innings pitched per pitcher per handedness
-    # Each out = 1/3 inning. Statcast events include outs.
-    out_events = {
-        "field_out", "grounded_into_double_play", "double_play",
-        "triple_play", "fielders_choice_out", "force_out",
-        "sac_fly", "sac_fly_double_play", "sac_bunt",
-        "sac_bunt_double_play", "other_out", "strikeout",
-        "strikeout_double_play",
-    }
-
-    # Need full bbe df including strikeouts for IP estimation
-    # We'll calculate IP from the passed bbe which already has events
     bbe = bbe.copy()
-    bbe["is_out"] = bbe["events"].astype("string").str.lower().isin(out_events)
+    bbe["is_out"] = bbe["events"].astype("string").str.lower().isin(OUT_EVENTS)
 
     splits = []
     for hand, label in [("L", "vs_lhh"), ("R", "vs_rhh")]:
         sub = bbe[bbe["stand"] == hand].copy()
 
-        # Outs and IP per pitcher vs this handedness
+        # IP per pitcher vs this handedness
         ip_grp = (
             sub.groupby("pitcher", dropna=False)
             .agg(outs=("is_out", "sum"))
@@ -617,6 +596,7 @@ def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
         )
 
         grp = grp.merge(ip_grp[["pitcher", f"{label}_ip"]], on="pitcher", how="left")
+        grp[f"{label}_ip"] = grp[f"{label}_ip"].fillna(0)
         grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
         grp[f"{label}_hr_rate"] = (
             grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
@@ -628,7 +608,6 @@ def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
         splits.append(grp)
 
     return splits[0].merge(splits[1], on="pitcher", how="outer")
-
 
 
 def build_rolling_stats_pitcher(
