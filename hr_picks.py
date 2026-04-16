@@ -32,13 +32,11 @@ PLATOON_BONUS_WEIGHT = 0.8
 PITCH_MATCHUP_WEIGHT = 1.2
 WEATHER_WEIGHT = 0.4
 
-# ISO gap thresholds for platoon penalty
-ISO_GAP_SMALL    = 0.030   # negligible difference — no penalty
-ISO_GAP_MEDIUM   = 0.060   # moderate weakness — small penalty
-ISO_GAP_LARGE    = 0.100   # significant weakness — medium penalty
-ISO_GAP_SEVERE   = 0.150   # severe weakness — large penalty
+ISO_GAP_SMALL    = 0.030
+ISO_GAP_MEDIUM   = 0.060
+ISO_GAP_LARGE    = 0.100
+ISO_GAP_SEVERE   = 0.150
 
-# Carbon color scheme
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT       = {"red": 0.149, "green": 0.149, "blue": 0.149}
 COLOR_HEADER       = {"red": 0.067, "green": 0.067, "blue": 0.067}
@@ -128,16 +126,8 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
 
 def compute_platoon_score(row: pd.Series) -> tuple:
     """
-    True two-sided platoon matchup using ISO gap analysis.
-
-    Logic:
-    - Get batter's ISO vs pitcher's hand (e.g. LHH facing LHP → iso_vs_lhp)
-    - Get batter's ISO vs opposite hand (e.g. LHH vs RHP → iso_vs_rhp)
-    - Calculate the gap: how much worse is the batter vs this pitcher's hand?
-    - Scale penalty based on gap size — small gap = no penalty, large gap = big penalty
-    - Also factor in pitcher's split vulnerability vs batter's hand
-
-    Returns (platoon_score, description, penalty)
+    Full two-sided platoon matchup using ISO gap analysis + HR/9 by handedness.
+    Returns (platoon_score, description, penalty).
     """
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
     p_throws = str(row.get("pitcher_hand", "")).strip().upper()
@@ -146,11 +136,9 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     penalty = 0.0
     parts = []
 
-    # --- Batter ISO splits ---
     iso_vs_lhp = safe_float(row.get("vs_lhp_iso", 0))
     iso_vs_rhp = safe_float(row.get("vs_rhp_iso", 0))
 
-    # ISO vs this pitcher's hand and vs the opposite hand
     if p_throws == "L":
         iso_vs_this = iso_vs_lhp
         iso_vs_opp = iso_vs_rhp
@@ -164,10 +152,8 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         batter_hr_vs = safe_float(row.get("vs_rhp_hr_rate", 0))
         matchup_label = f"{batter_hand}HH vs RHP"
     else:
-        # Unknown pitcher hand — use overall stats, no penalty
         return 0.0, "", 0.0
 
-    # --- Pitcher split vulnerability vs batter's hand ---
     if batter_hand == "R":
         pitcher_barrel_vs = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
         pitcher_hr_vs = safe_float(row.get("pitcher_vs_rhh_hr_rate", 0))
@@ -184,51 +170,42 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         pitcher_hr9_vs = 0.0
         pitcher_split_label = ""
 
-    # --- ISO gap analysis ---
-    # Positive gap = batter is WORSE vs this pitcher's hand
-    # Negative gap = batter is BETTER vs this pitcher's hand (advantage)
-    iso_gap = iso_vs_opp - iso_vs_this  # positive = weakness
-
-    # Both ISOs being 0 means no data — skip penalty
+    # ISO gap analysis
+    iso_gap = iso_vs_opp - iso_vs_this
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
     if has_iso_data:
         if iso_gap >= ISO_GAP_SEVERE:
-            # Severe weakness — e.g. LHH with .280 ISO vs RHP but .080 vs LHP
             penalty = 2.5
             parts.append(
                 f"🚨 Severe platoon weakness ({matchup_label}) — "
                 f"ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite"
             )
         elif iso_gap >= ISO_GAP_LARGE:
-            # Significant weakness
             penalty = 1.5
             parts.append(
                 f"❌ Platoon disadvantage ({matchup_label}) — "
                 f"ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite"
             )
         elif iso_gap >= ISO_GAP_MEDIUM:
-            # Moderate weakness
             penalty = 0.7
             parts.append(
                 f"⚠️ Moderate platoon weakness ({matchup_label}) — "
                 f"ISO {iso_vs_this:.3f} vs this hand"
             )
         elif iso_gap <= -ISO_GAP_MEDIUM:
-            # Platoon advantage — batter actually better vs this hand
             score += 1.0
             parts.append(
                 f"✅ Platoon advantage ({matchup_label}) — "
                 f"ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite"
             )
         else:
-            # Negligible gap — no meaningful platoon effect
             parts.append(f"↔️ Neutral platoon ({matchup_label})")
 
-    # --- Add pitcher vulnerability to score ---
+    # Pitcher vulnerability vs batter handedness
     score += pitcher_barrel_vs * 0.06
     score += pitcher_hr_vs * 0.04
-    score += pitcher_hr9_vs * 0.08  # HR/9 weighted slightly higher — cleaner rate stat
+    score += pitcher_hr9_vs * 0.08
 
     if pitcher_split_label and pitcher_barrel_vs >= 8:
         parts.append(
@@ -239,7 +216,7 @@ def compute_platoon_score(row: pd.Series) -> tuple:
             f"Pitcher {pitcher_hr9_vs:.2f} HR/9 {pitcher_split_label}"
         )
 
-    # --- Add batter's actual performance vs this hand to score ---
+    # Batter performance vs this hand
     score += batter_barrel_vs * 0.04
     score += batter_hr_vs * 0.03
 
@@ -280,6 +257,8 @@ def prepare_combined(
         "vs_rhh_barrel_pct":         "pitcher_vs_rhh_barrel_pct",
         "vs_lhh_hr_rate":            "pitcher_vs_lhh_hr_rate",
         "vs_rhh_hr_rate":            "pitcher_vs_rhh_hr_rate",
+        "vs_lhh_hr9":                "pitcher_vs_lhh_hr9",
+        "vs_rhh_hr9":                "pitcher_vs_rhh_hr9",
         "pitcher_hand":              "pitcher_hand",
         "top_pitch_1":               "top_pitch_1",
         "top_pitch_1_pct":           "top_pitch_1_pct",
@@ -315,6 +294,7 @@ def prepare_combined(
         "pitcher_pct_offspeed", "pitcher_pct_knuckleball",
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
         "pitcher_vs_lhh_hr_rate", "pitcher_vs_rhh_hr_rate",
+        "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
         "pitcher_hand",
         "top_pitch_1", "top_pitch_1_pct",
         "top_pitch_2", "top_pitch_2_pct",
@@ -368,6 +348,7 @@ def prepare_combined(
         "vs_lhp_iso", "vs_rhp_iso",
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
         "pitcher_vs_lhh_hr_rate", "pitcher_vs_rhh_hr_rate",
+        "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
     ]
     for col in score_cols:
@@ -378,27 +359,22 @@ def prepare_combined(
 
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
 
-    # Full platoon matchup with ISO gap analysis
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"] = platoon_results.apply(lambda x: x[0])
     combined["platoon_desc"] = platoon_results.apply(lambda x: x[1])
     combined["platoon_penalty"] = platoon_results.apply(lambda x: x[2])
 
-    # Pitch matchup score
     pitch_results = combined.apply(compute_pitch_matchup_score, axis=1)
     combined["pitch_matchup_score"] = pitch_results.apply(lambda x: x[0])
     combined["pitch_matchup_desc"] = pitch_results.apply(lambda x: x[1])
 
-    # Pitcher quality penalty
     combined["pitcher_quality_penalty"] = (
         normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
         normalize_inverted(combined["pitcher_hard_hit_pct"]) * 0.4
     )
 
-    # Weather raw additive
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
 
-    # Composite score — platoon penalty is now a direct subtraction
     combined["score"] = (
         normalize(combined["barrel_pct_7d"])            * WEIGHTS["barrel_pct_7d"] +
         normalize(combined["hr_per_pa"])                 * WEIGHTS["hr_per_pa"] +
@@ -414,7 +390,7 @@ def prepare_combined(
         normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
         normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT -
         combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
-        combined["platoon_penalty"]                      # direct subtraction — not normalized
+        combined["platoon_penalty"]
     )
 
     combined["score"] = combined["score"].round(3)
@@ -509,6 +485,8 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "pitcher_hr_per_fb":          "Pitcher HR/FB% Allowed",
         "pitcher_vs_lhh_barrel_pct":  "Pitcher Barrel% vs LHH",
         "pitcher_vs_rhh_barrel_pct":  "Pitcher Barrel% vs RHH",
+        "pitcher_vs_lhh_hr9":         "Pitcher HR/9 vs LHH",
+        "pitcher_vs_rhh_hr9":         "Pitcher HR/9 vs RHH",
         "top_pitch_1":                "Top Pitch 1",
         "top_pitch_1_pct":            "Top Pitch 1 %",
         "top_pitch_2":                "Top Pitch 2",
@@ -605,6 +583,8 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "pitcher_hr_per_fb":          "Pitcher HR/FB%",
         "pitcher_vs_lhh_barrel_pct":  "Pitcher Barrel% vs LHH",
         "pitcher_vs_rhh_barrel_pct":  "Pitcher Barrel% vs RHH",
+        "pitcher_vs_lhh_hr9":         "Pitcher HR/9 vs LHH",
+        "pitcher_vs_rhh_hr9":         "Pitcher HR/9 vs RHH",
         "pitch_matchup_desc":         "Pitch Matchup",
         "park_hr_factor":             "Park HR Factor",
         "hr_weather_boost":           "Weather Boost",
@@ -683,8 +663,8 @@ def format_picks_sheet(
     ws = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols = 31
-    ev_cols = 26
+    main_cols = 33
+    ev_cols = 28
     total_rows = ev_col_header_row + ev_data_row_count + 2
 
     reqs = []
@@ -742,7 +722,7 @@ def format_picks_sheet(
         }
     })
 
-    # Alternating main pick rows
+    # Alternating main rows
     for i in range(main_row_count):
         row_idx = i + 1
         bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
@@ -815,7 +795,7 @@ def format_picks_sheet(
         }
     })
 
-    # HR Score column
+    # HR Score column (col 8)
     reqs.append({
         "repeatCell": {
             "range": {
@@ -911,9 +891,9 @@ def format_picks_sheet(
             }
         })
 
-    # EV rank and score columns
+    # EV rank and score styling
     if ev_data_row_count > 0:
-        for col_idx, color in [(0, COLOR_ORANGE), (8, COLOR_ORANGE)]:
+        for col_idx, font_size in [(0, 14), (8, 11)]:
             reqs.append({
                 "repeatCell": {
                     "range": {
@@ -927,8 +907,8 @@ def format_picks_sheet(
                         "userEnteredFormat": {
                             "textFormat": {
                                 "bold": True,
-                                "fontSize": 12 if col_idx == 0 else 11,
-                                "foregroundColor": color,
+                                "fontSize": font_size,
+                                "foregroundColor": COLOR_ORANGE,
                             },
                             "horizontalAlignment": "CENTER",
                         }
@@ -998,6 +978,8 @@ def format_picks_sheet(
         120,  # Pitcher HR/FB%
         130,  # Pitcher Barrel% vs LHH
         130,  # Pitcher Barrel% vs RHH
+        90,   # Pitcher HR/9 vs LHH
+        90,   # Pitcher HR/9 vs RHH
         90,   # Top Pitch 1
         75,   # Top Pitch 1 %
         90,   # Top Pitch 2
