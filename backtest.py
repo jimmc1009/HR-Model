@@ -151,7 +151,6 @@ def get_game_dates() -> List[date]:
 def get_teams_for_date(game_date: date) -> Set[str]:
     """Get teams playing on a given date from MLB or ESPN API."""
     date_str = game_date.strftime("%Y-%m-%d")
-
     try:
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
         resp = requests.get(url, timeout=10)
@@ -240,7 +239,7 @@ def get_matchups_for_date(game_date: date) -> Dict[str, str]:
     return {}
 
 
-# ── Statcast feature builders (simplified from main.py) ───────────────────
+# ── Statcast feature builders ──────────────────────────────────────────────
 
 def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -302,16 +301,12 @@ def build_batter_features(
     today_teams: Set[str],
     as_of_date: date,
 ) -> pd.DataFrame:
-    """
-    Build batter feature table using only data BEFORE as_of_date.
-    Mirrors main.py logic.
-    """
+    """Build batter features using only data BEFORE as_of_date."""
     df = history_df[history_df["game_date"] < pd.Timestamp(as_of_date)].copy()
 
     if df.empty:
         return pd.DataFrame()
 
-    # Infer batting team
     if "batting_team" in df.columns:
         df["team"] = df["batting_team"].fillna("").astype(str)
     elif {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
@@ -374,15 +369,19 @@ def build_batter_features(
     season = season.merge(pa_counts, on="batter", how="left")
     season = season.merge(ab_counts, on="batter", how="left")
     season["ab"] = season["ab"].fillna(0)
-    season["hr_per_pa"] = (season["season_hr"] / season["pa"] * 100).round(2)
+    season["pa"] = season["pa"].fillna(0)
+
+    season["hr_per_pa"] = (
+        season["season_hr"] / season["pa"].replace(0, np.nan) * 100
+    ).round(2)
     season["hr_per_fb"] = (
-        season["season_hr"] / season["season_fb"].replace(0, pd.NA) * 100
+        season["season_hr"] / season["season_fb"].replace(0, np.nan) * 100
     ).round(2)
     season["season_barrel_pct"] = (
-        season["season_barrel"] / season["season_bbe"] * 100
+        season["season_barrel"] / season["season_bbe"].replace(0, np.nan) * 100
     ).round(2)
     season["iso"] = (
-        (season["total_bases"] - season["hits"]) / season["ab"].replace(0, pd.NA)
+        (season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)
     ).round(3)
 
     # Rolling 7d
@@ -407,7 +406,7 @@ def build_batter_features(
 
     combined = season.merge(r7, on="batter", how="left")
 
-    # Platoon splits with ISO
+    # Platoon splits with ISO using AB denominator
     if "p_throws" in bbe.columns and "stand" in bbe.columns:
         stand_map = (
             bbe[bbe["stand"].notna()]
@@ -424,10 +423,15 @@ def build_batter_features(
                 combined[f"{label}_hr_rate"] = np.nan
                 continue
 
-            ab_hand = ab_df[
-                ab_df["p_throws"] == hand
-            ].groupby("batter").size().reset_index(name=f"ab_{label}") \
-                if "p_throws" in ab_df.columns else pd.DataFrame(columns=["batter", f"ab_{label}"])
+            if "p_throws" in ab_df.columns:
+                ab_hand = (
+                    ab_df[ab_df["p_throws"] == hand]
+                    .groupby("batter")
+                    .size()
+                    .reset_index(name=f"ab_{label}")
+                )
+            else:
+                ab_hand = pd.DataFrame(columns=["batter", f"ab_{label}"])
 
             grp = (
                 sub.groupby("batter", dropna=False)
@@ -446,11 +450,11 @@ def build_batter_features(
             grp[f"ab_{label}"] = grp[f"ab_{label}"].fillna(0)
             grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
             grp[f"{label}_hr_rate"] = (
-                grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
+                grp[f"{label}_hr"] / grp[f"{label}_bbe"].replace(0, np.nan) * 100
             ).round(2)
             grp[f"{label}_iso"] = (
                 (grp[f"{label}_tb"] - grp[f"{label}_hits"]) /
-                grp[f"ab_{label}"].replace(0, pd.NA)
+                grp[f"ab_{label}"].replace(0, np.nan)
             ).round(3)
             grp = grp.drop(columns=[f"{label}_tb", f"{label}_hits", f"ab_{label}"])
             combined = combined.merge(grp, on="batter", how="left")
@@ -467,7 +471,7 @@ def build_batter_features(
     )
     combined = combined.merge(team_map, on="batter", how="left")
 
-    # Filter minimum sample
+    # Minimum sample filter
     combined = combined[
         (combined["season_bbe"] >= 10) &
         (combined["pa"] >= 10)
@@ -482,15 +486,12 @@ def build_pitcher_features(
     matchups: Dict[str, str],
     as_of_date: date,
 ) -> pd.DataFrame:
-    """
-    Build pitcher feature table using only data BEFORE as_of_date.
-    """
+    """Build pitcher features using only data BEFORE as_of_date."""
     df = history_df[history_df["game_date"] < pd.Timestamp(as_of_date)].copy()
 
     if df.empty or not probable_pitcher_ids:
         return pd.DataFrame()
 
-    # Infer pitching team
     if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
         df["pitching_team"] = df.apply(
             lambda r: str(r["home_team"]).strip()
@@ -536,7 +537,7 @@ def build_pitcher_features(
     )
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
-    # IP
+    # IP from full out events
     ip_df = df[
         df["pitcher"].isin(probable_pitcher_ids) &
         df["events"].astype("string").str.lower().isin(OUT_EVENTS)
@@ -562,17 +563,17 @@ def build_pitcher_features(
     season["ip"] = season["ip"].fillna(0)
 
     season["hr_per_fb_allowed"] = (
-        season["season_hr_allowed"] / season["season_fb_allowed"].replace(0, pd.NA) * 100
+        season["season_hr_allowed"] / season["season_fb_allowed"].replace(0, np.nan) * 100
     ).round(2)
     season["season_barrel_pct_allowed"] = (
-        season["season_barrel_allowed"] / season["season_bbe_allowed"] * 100
+        season["season_barrel_allowed"] / season["season_bbe_allowed"].replace(0, np.nan) * 100
     ).round(2)
     season["hard_hit_pct_allowed"] = (
-        season["season_hard_hit_allowed"] / season["season_bbe_allowed"] * 100
+        season["season_hard_hit_allowed"] / season["season_bbe_allowed"].replace(0, np.nan) * 100
     ).round(2)
     season["avg_ev_allowed"] = season["avg_ev_allowed"].round(2)
     season["hr9"] = (
-        season["season_hr_allowed"] / season["ip"].replace(0, pd.NA) * 9
+        season["season_hr_allowed"] / season["ip"].replace(0, np.nan) * 9
     ).round(2)
 
     if "pitcher_hand" not in season.columns:
@@ -608,10 +609,10 @@ def build_pitcher_features(
             grp[f"{label}_ip"] = grp[f"{label}_ip"].fillna(0)
             grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
             grp[f"{label}_hr_rate"] = (
-                grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
+                grp[f"{label}_hr"] / grp[f"{label}_bbe"].replace(0, np.nan) * 100
             ).round(2)
             grp[f"{label}_hr9"] = (
-                grp[f"{label}_hr"] / grp[f"{label}_ip"].replace(0, pd.NA) * 9
+                grp[f"{label}_hr"] / grp[f"{label}_ip"].replace(0, np.nan) * 9
             ).round(2)
             season = season.merge(grp, on="pitcher", how="left")
 
@@ -639,7 +640,6 @@ def compute_platoon_score(row: pd.Series) -> Tuple[float, str, float]:
 
     score = 0.0
     penalty = 0.0
-    parts = []
 
     iso_vs_lhp = safe_float(row.get("vs_lhp_iso", 0))
     iso_vs_rhp = safe_float(row.get("vs_rhp_iso", 0))
@@ -649,13 +649,11 @@ def compute_platoon_score(row: pd.Series) -> Tuple[float, str, float]:
         iso_vs_opp = iso_vs_rhp
         batter_barrel_vs = safe_float(row.get("vs_lhp_barrel_pct", 0))
         batter_hr_vs = safe_float(row.get("vs_lhp_hr_rate", 0))
-        matchup_label = f"{batter_hand}HH vs LHP"
     elif p_throws == "R":
         iso_vs_this = iso_vs_rhp
         iso_vs_opp = iso_vs_lhp
         batter_barrel_vs = safe_float(row.get("vs_rhp_barrel_pct", 0))
         batter_hr_vs = safe_float(row.get("vs_rhp_hr_rate", 0))
-        matchup_label = f"{batter_hand}HH vs RHP"
     else:
         return 0.0, "", 0.0
 
@@ -727,8 +725,8 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
         else:
             combined[col] = 0.0
 
-    combined["park_hr_factor_norm"] = combined.get("park_hr_factor", pd.Series(100.0, index=combined.index)) - 100
-    combined["weather_score"] = combined.get("hr_weather_boost", pd.Series(0.0, index=combined.index)).clip(-2, 2) / 2
+    combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
+    combined["weather_score"] = 0.0  # no weather in backtest
 
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"] = platoon_results.apply(lambda x: x[0])
@@ -751,7 +749,6 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
         normalize(combined["pitcher_hr_per_fb"])         * WEIGHTS["pitcher_hr_per_fb"] +
         normalize(combined["pitcher_hard_hit_pct"])      * WEIGHTS["pitcher_hard_hit_pct"] +
         normalize(combined["park_hr_factor_norm"])       * WEIGHTS["park_hr_factor"] +
-        combined["weather_score"]                        * WEATHER_WEIGHT +
         normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
         normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT -
         combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
@@ -762,9 +759,7 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_actual_hrs(full_df: pd.DataFrame, game_date: date) -> Dict[int, bool]:
-    """
-    Returns {player_id: True} for every batter who hit a HR on game_date.
-    """
+    """Returns {player_id: True} for every batter who hit a HR on game_date."""
     day_df = full_df[
         (full_df["game_date"] == pd.Timestamp(game_date)) &
         (full_df["events"].astype("string").str.lower().eq("home_run"))
@@ -773,12 +768,7 @@ def get_actual_hrs(full_df: pd.DataFrame, game_date: date) -> Dict[int, bool]:
 
 
 def assign_confidence(row: pd.Series) -> str:
-    """
-    High / Medium / Low based on:
-    - Batter sample (season_bbe, pa)
-    - Pitcher sample (season_bbe_allowed / bf)
-    - Park factor sample flag
-    """
+    """High / Medium / Low confidence tier."""
     batter_bbe = safe_float(row.get("season_bbe", 0))
     batter_pa = safe_float(row.get("pa", 0))
     pitcher_bbe = safe_float(row.get("pitcher_bbe_allowed", 0))
@@ -786,19 +776,16 @@ def assign_confidence(row: pd.Series) -> str:
 
     points = 0
 
-    # Batter sample
     if batter_bbe >= 60 and batter_pa >= 100:
         points += 2
     elif batter_bbe >= 30 and batter_pa >= 50:
         points += 1
 
-    # Pitcher sample
     if pitcher_bbe >= 80:
         points += 2
     elif pitcher_bbe >= 40:
         points += 1
 
-    # Park factor reliability
     if not small_sample_park:
         points += 1
 
@@ -810,6 +797,124 @@ def assign_confidence(row: pd.Series) -> str:
         return "Low"
 
 
+def build_park_factors(df: pd.DataFrame) -> pd.DataFrame:
+    """Simplified park factor calculation."""
+    pa_df = df[df["events"].notna()].copy()
+    ab_dedupe = [c for c in ["game_pk", "at_bat_number", "home_team"] if c in pa_df.columns]
+    pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
+    pa_df["is_hr"] = pa_df["events"].astype("string").str.lower().eq("home_run")
+
+    park_stats = (
+        pa_df.groupby("home_team", dropna=False)
+        .agg(pa=("is_hr", "size"), hr=("is_hr", "sum"))
+        .reset_index()
+    )
+    park_stats = park_stats[park_stats["home_team"].notna()].copy()
+    park_stats["hr_rate"] = park_stats["hr"] / park_stats["pa"].replace(0, np.nan)
+
+    league_hr_rate = park_stats["hr"].sum() / park_stats["pa"].sum()
+    park_stats["park_hr_factor"] = (
+        park_stats["hr_rate"] / league_hr_rate * 100
+    ).round(1)
+    park_stats["small_sample"] = park_stats["pa"] < 50
+    park_stats = park_stats.rename(columns={"home_team": "team"})
+
+    return park_stats[["team", "park_hr_factor", "small_sample"]]
+
+
+def build_scorecard(picks_log: pd.DataFrame) -> pd.DataFrame:
+    """Build running accuracy scorecard from picks log."""
+    if picks_log.empty:
+        return pd.DataFrame()
+
+    picks_log = picks_log.copy()
+    picks_log["hit_hr_bool"] = picks_log["hit_hr"] == "Yes"
+
+    rows = []
+
+    # Overall
+    total = len(picks_log)
+    hits = picks_log["hit_hr_bool"].sum()
+    rows.append({
+        "category":      "Overall",
+        "subcategory":   "All Picks",
+        "total_picks":   total,
+        "hr_count":      int(hits),
+        "hit_rate_pct":  round(hits / total * 100, 1) if total > 0 else 0,
+    })
+
+    # By rank
+    for rank in range(1, 11):
+        sub = picks_log[picks_log["rank"] == rank]
+        if sub.empty:
+            continue
+        h = sub["hit_hr_bool"].sum()
+        rows.append({
+            "category":     "By Rank",
+            "subcategory":  f"Rank {rank}",
+            "total_picks":  len(sub),
+            "hr_count":     int(h),
+            "hit_rate_pct": round(h / len(sub) * 100, 1),
+        })
+
+    # By confidence
+    for tier in ["High", "Medium", "Low"]:
+        sub = picks_log[picks_log["confidence"] == tier]
+        if sub.empty:
+            continue
+        h = sub["hit_hr_bool"].sum()
+        rows.append({
+            "category":     "By Confidence",
+            "subcategory":  tier,
+            "total_picks":  len(sub),
+            "hr_count":     int(h),
+            "hit_rate_pct": round(h / len(sub) * 100, 1),
+        })
+
+    # By section
+    for section in picks_log["section"].unique():
+        sub = picks_log[picks_log["section"] == section]
+        if sub.empty:
+            continue
+        h = sub["hit_hr_bool"].sum()
+        rows.append({
+            "category":     "By Section",
+            "subcategory":  section,
+            "total_picks":  len(sub),
+            "hr_count":     int(h),
+            "hit_rate_pct": round(h / len(sub) * 100, 1),
+        })
+
+    # Rolling 7-day
+    picks_log["date"] = pd.to_datetime(picks_log["date"])
+    cutoff_7d = picks_log["date"].max() - timedelta(days=7)
+    sub_7d = picks_log[picks_log["date"] >= cutoff_7d]
+    if not sub_7d.empty:
+        h = sub_7d["hit_hr_bool"].sum()
+        rows.append({
+            "category":     "Rolling",
+            "subcategory":  "Last 7 Days",
+            "total_picks":  len(sub_7d),
+            "hr_count":     int(h),
+            "hit_rate_pct": round(h / len(sub_7d) * 100, 1),
+        })
+
+    # Rolling 30-day
+    cutoff_30d = picks_log["date"].max() - timedelta(days=30)
+    sub_30d = picks_log[picks_log["date"] >= cutoff_30d]
+    if not sub_30d.empty:
+        h = sub_30d["hit_hr_bool"].sum()
+        rows.append({
+            "category":     "Rolling",
+            "subcategory":  "Last 30 Days",
+            "total_picks":  len(sub_30d),
+            "hr_count":     int(h),
+            "hit_rate_pct": round(h / len(sub_30d) * 100, 1),
+        })
+
+    return pd.DataFrame(rows)
+
+
 # ── Main backtest loop ─────────────────────────────────────────────────────
 
 def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -819,8 +924,6 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     2. Generate top 10 picks
     3. Check actual HR outcomes
     4. Log results
-
-    Returns (picks_log_df, scorecard_df)
     """
     game_dates = get_game_dates()
     print(f"Back-testing {len(game_dates)} dates from {game_dates[0]} to {game_dates[-1]}")
@@ -829,9 +932,6 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     full_df["game_date"] = pd.to_datetime(full_df["game_date"])
 
     all_picks = []
-
-    # Park factors precomputed from full season (no lookahead bias issue
-    # since park factors are structural, not performance-based)
     park_factors = build_park_factors(full_df)
 
     for i, game_date in enumerate(game_dates):
@@ -845,19 +945,16 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if not matchups:
             continue
 
-        # Build batter features using only pre-game-date data
         batters = build_batter_features(full_df, today_teams, game_date)
         if batters.empty:
             continue
 
-        # Get probable pitcher IDs from Statcast data for this date
-        # Use pitchers who actually pitched on this date as proxy
+        # Use pitchers who actually pitched on this date
         day_pitchers = full_df[
             full_df["game_date"] == pd.Timestamp(game_date)
         ]["pitcher"].dropna().astype(int).unique()
-
-        # Filter to pitchers whose team is playing today
         probable_ids = set(day_pitchers)
+
         if not probable_ids:
             continue
 
@@ -865,7 +962,6 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if pitchers.empty:
             continue
 
-        # Rename pitcher columns to match scoring function
         pitcher_rename = {
             "pitcher_hand":              "pitcher_hand",
             "season_barrel_pct_allowed": "pitcher_barrel_pct",
@@ -884,11 +980,8 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         pitchers = pitchers.rename(
             columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns}
         )
-
-        # Rename batter team column
         batters = batters.rename(columns={"team": "batter_team"})
 
-        # Join
         pitcher_cols = [c for c in [
             "batter_team", "pitcher", "pitcher_hand",
             "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
@@ -909,37 +1002,31 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
         # Add park factors
         combined = combined.merge(
-            park_factors[["team", "park_hr_factor", "park_name", "small_sample"]],
+            park_factors[["team", "park_hr_factor", "small_sample"]],
             left_on="batter_team",
             right_on="team",
             how="left",
         )
         combined["park_hr_factor"] = combined["park_hr_factor"].fillna(100.0)
         combined["small_sample"] = combined["small_sample"].fillna(False)
-        combined["hr_weather_boost"] = 0.0  # no weather in backtest
+        combined["hr_weather_boost"] = 0.0
 
-        # Score
         combined = score_matchups(combined)
         if combined.empty:
             continue
 
         combined["score"] = combined["score"].round(3)
-
-        # Confidence tier
         combined["confidence"] = combined.apply(assign_confidence, axis=1)
 
-        # Top 10
         top10 = combined.nlargest(10, "score").copy()
         top10["rank"] = range(1, len(top10) + 1)
 
-        # Look up player names
         batter_ids = top10["batter"].dropna().astype(int).tolist()
         name_map = lookup_player_names(batter_ids)
         top10["player_name"] = top10["batter"].map(
             lambda x: name_map.get(int(x), str(x)) if pd.notna(x) else ""
         )
 
-        # Check actual HR outcomes
         actual_hrs = get_actual_hrs(full_df, game_date)
 
         for _, row in top10.iterrows():
@@ -947,146 +1034,26 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
             hit_hr = actual_hrs.get(batter_id, False) if batter_id else False
 
             all_picks.append({
-                "date":           game_date.strftime("%Y-%m-%d"),
-                "rank":           int(row["rank"]),
-                "player_name":    row.get("player_name", ""),
-                "player_id":      batter_id,
-                "team":           str(row.get("batter_team", "")),
-                "pitcher_id":     int(row["pitcher"]) if pd.notna(row.get("pitcher")) else None,
-                "park_name":      str(row.get("park_name", "")),
-                "hr_score":       round(float(row["score"]), 3),
-                "confidence":     str(row.get("confidence", "")),
-                "hit_hr":         "Yes" if hit_hr else "No",
-                "section":        "Main",
+                "date":        game_date.strftime("%Y-%m-%d"),
+                "rank":        int(row["rank"]),
+                "player_name": row.get("player_name", ""),
+                "player_id":   batter_id,
+                "team":        str(row.get("batter_team", "")),
+                "pitcher_id":  int(row["pitcher"]) if pd.notna(row.get("pitcher")) else None,
+                "park_name":   str(row.get("park_name", "")),
+                "hr_score":    round(float(row["score"]), 3),
+                "confidence":  str(row.get("confidence", "")),
+                "hit_hr":      "Yes" if hit_hr else "No",
+                "section":     "Main",
             })
 
     if not all_picks:
         return pd.DataFrame(), pd.DataFrame()
 
     picks_log = pd.DataFrame(all_picks)
-
-    # Build scorecard
     scorecard = build_scorecard(picks_log)
 
     return picks_log, scorecard
-
-
-def build_park_factors(df: pd.DataFrame) -> pd.DataFrame:
-    """Simplified park factor calculation for backtest."""
-    pa_df = df[df["events"].notna()].copy()
-    ab_dedupe = [c for c in ["game_pk", "at_bat_number", "home_team"] if c in pa_df.columns]
-    pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
-    pa_df["is_hr"] = pa_df["events"].astype("string").str.lower().eq("home_run")
-
-    park_stats = (
-        pa_df.groupby("home_team", dropna=False)
-        .agg(pa=("is_hr", "size"), hr=("is_hr", "sum"))
-        .reset_index()
-    )
-    park_stats = park_stats[park_stats["home_team"].notna()].copy()
-    park_stats["hr_rate"] = park_stats["hr"] / park_stats["pa"]
-
-    league_hr_rate = park_stats["hr"].sum() / park_stats["pa"].sum()
-    park_stats["park_hr_factor"] = (park_stats["hr_rate"] / league_hr_rate * 100).round(1)
-    park_stats["small_sample"] = park_stats["pa"] < 50
-    park_stats = park_stats.rename(columns={"home_team": "team"})
-
-    return park_stats[["team", "park_hr_factor", "small_sample"]]
-
-
-def build_scorecard(picks_log: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build running accuracy scorecard from picks log.
-    """
-    if picks_log.empty:
-        return pd.DataFrame()
-
-    picks_log = picks_log.copy()
-    picks_log["hit_hr_bool"] = picks_log["hit_hr"] == "Yes"
-
-    rows = []
-
-    # Overall hit rate
-    total = len(picks_log)
-    hits = picks_log["hit_hr_bool"].sum()
-    rows.append({
-        "category": "Overall",
-        "subcategory": "All Picks",
-        "total_picks": total,
-        "hr_count": int(hits),
-        "hit_rate_pct": round(hits / total * 100, 1) if total > 0 else 0,
-    })
-
-    # By rank
-    for rank in range(1, 11):
-        sub = picks_log[picks_log["rank"] == rank]
-        if sub.empty:
-            continue
-        h = sub["hit_hr_bool"].sum()
-        rows.append({
-            "category": "By Rank",
-            "subcategory": f"Rank {rank}",
-            "total_picks": len(sub),
-            "hr_count": int(h),
-            "hit_rate_pct": round(h / len(sub) * 100, 1),
-        })
-
-    # By confidence tier
-    for tier in ["High", "Medium", "Low"]:
-        sub = picks_log[picks_log["confidence"] == tier]
-        if sub.empty:
-            continue
-        h = sub["hit_hr_bool"].sum()
-        rows.append({
-            "category": "By Confidence",
-            "subcategory": tier,
-            "total_picks": len(sub),
-            "hr_count": int(h),
-            "hit_rate_pct": round(h / len(sub) * 100, 1),
-        })
-
-    # By section
-    for section in picks_log["section"].unique():
-        sub = picks_log[picks_log["section"] == section]
-        if sub.empty:
-            continue
-        h = sub["hit_hr_bool"].sum()
-        rows.append({
-            "category": "By Section",
-            "subcategory": section,
-            "total_picks": len(sub),
-            "hr_count": int(h),
-            "hit_rate_pct": round(h / len(sub) * 100, 1),
-        })
-
-    # Rolling 7-day
-    picks_log["date"] = pd.to_datetime(picks_log["date"])
-    cutoff_7d = picks_log["date"].max() - timedelta(days=7)
-    sub_7d = picks_log[picks_log["date"] >= cutoff_7d]
-    if not sub_7d.empty:
-        h = sub_7d["hit_hr_bool"].sum()
-        rows.append({
-            "category": "Rolling",
-            "subcategory": "Last 7 Days",
-            "total_picks": len(sub_7d),
-            "hr_count": int(h),
-            "hit_rate_pct": round(h / len(sub_7d) * 100, 1),
-        })
-
-    # Rolling 30-day
-    cutoff_30d = picks_log["date"].max() - timedelta(days=30)
-    sub_30d = picks_log[picks_log["date"] >= cutoff_30d]
-    if not sub_30d.empty:
-        h = sub_30d["hit_hr_bool"].sum()
-        rows.append({
-            "category": "Rolling",
-            "subcategory": "Last 30 Days",
-            "total_picks": len(sub_30d),
-            "hr_count": int(h),
-            "hit_rate_pct": round(h / len(sub_30d) * 100, 1),
-        })
-
-    return pd.DataFrame(rows)
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
@@ -1149,8 +1116,10 @@ def main() -> None:
         print("No picks generated — backtest produced no results.")
         return
 
-    print(f"\nBacktest complete: {len(picks_log)} picks logged")
-    print(f"Overall HR hit rate: {picks_log[picks_log['hit_hr'] == 'Yes'].shape[0] / len(picks_log) * 100:.1f}%")
+    total = len(picks_log)
+    hits = (picks_log["hit_hr"] == "Yes").sum()
+    print(f"\nBacktest complete: {total} picks logged")
+    print(f"Overall HR hit rate: {hits / total * 100:.1f}%")
 
     print("\nScorecard:")
     print(scorecard.to_string(index=False))
