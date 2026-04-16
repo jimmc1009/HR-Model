@@ -382,6 +382,12 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
+    """
+    For each pitcher calculate:
+    1. % of each pitch group (fastball/breaking/offspeed/knuckleball/other)
+    2. Top 3 individual pitch types by usage % stored as separate columns
+    3. % of each individual pitch type as pitch_pct_XX columns
+    """
     if "pitch_type" not in df.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -391,23 +397,29 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     ].copy()
 
     pitch_df["pitch_type"] = pitch_df["pitch_type"].astype("string").str.upper().str.strip()
+    pitch_df = pitch_df[~pitch_df["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])]
+
     pitch_df["pitch_group"] = pitch_df["pitch_type"].apply(
         lambda p: PITCH_GROUP_MAP.get(str(p), "other")
     )
 
+    # Total pitches per pitcher
     total = (
         pitch_df.groupby("pitcher")
         .size()
         .reset_index(name="total_pitches")
     )
 
+    # --- Group level percentages ---
     group_counts = (
         pitch_df.groupby(["pitcher", "pitch_group"])
         .size()
         .reset_index(name="count")
     )
     group_counts = group_counts.merge(total, on="pitcher", how="left")
-    group_counts["pct"] = (group_counts["count"] / group_counts["total_pitches"] * 100).round(2)
+    group_counts["pct"] = (
+        group_counts["count"] / group_counts["total_pitches"] * 100
+    ).round(2)
 
     group_pivot = group_counts.pivot_table(
         index="pitcher",
@@ -415,6 +427,7 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         values="pct",
         fill_value=0,
     ).reset_index()
+    group_pivot.columns.name = None
 
     for group in ["fastball", "breaking", "offspeed", "knuckleball", "other"]:
         col = f"pitch_pct_{group}"
@@ -423,6 +436,7 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         else:
             group_pivot[col] = 0.0
 
+    # --- Individual pitch type percentages ---
     individual_counts = (
         pitch_df.groupby(["pitcher", "pitch_type"])
         .size()
@@ -433,57 +447,54 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         individual_counts["count"] / individual_counts["total_pitches"] * 100
     ).round(2)
 
-    top3 = (
-        individual_counts
-        .sort_values(["pitcher", "pct"], ascending=[True, False])
-        .groupby("pitcher")
-        .head(3)
-        .reset_index(drop=True)
+    # --- Top 3 pitch types per pitcher built DIRECTLY from individual_counts ---
+    # Sort by pitcher then descending pct, take top 3 per pitcher
+    individual_counts_sorted = individual_counts.sort_values(
+        ["pitcher", "pct"], ascending=[True, False]
     )
 
-    top3_wide: Dict = {}
-    for _, row in top3.iterrows():
-        pid = row["pitcher"]
-        if pid not in top3_wide:
-            top3_wide[pid] = {}
-        rank = len(top3_wide[pid]) + 1
-        if rank <= 3:
-            top3_wide[pid][f"top_pitch_{rank}"] = row["pitch_type"]
-            top3_wide[pid][f"top_pitch_{rank}_pct"] = row["pct"]
+    top3_records = []
+    for pitcher_id, group in individual_counts_sorted.groupby("pitcher"):
+        top3 = group.head(3).reset_index(drop=True)
+        record = {"pitcher": pitcher_id}
+        for i, (_, row) in enumerate(top3.iterrows(), start=1):
+            record[f"top_pitch_{i}"] = row["pitch_type"]
+            record[f"top_pitch_{i}_pct"] = row["pct"]
+        # Fill missing ranks with empty
+        for i in range(len(top3) + 1, 4):
+            record[f"top_pitch_{i}"] = ""
+            record[f"top_pitch_{i}_pct"] = 0.0
+        top3_records.append(record)
 
-    top3_df = pd.DataFrame.from_dict(top3_wide, orient="index").reset_index()
-    top3_df = top3_df.rename(columns={"index": "pitcher"})
+    top3_df = pd.DataFrame(top3_records)
 
+    # --- Individual pitch type pivot (pitch_pct_FF, pitch_pct_SL etc) ---
     individual_pivot = individual_counts.pivot_table(
         index="pitcher",
         columns="pitch_type",
         values="pct",
         fill_value=0,
     ).reset_index()
+    individual_pivot.columns.name = None
     individual_pivot.columns = [
         f"pitch_pct_{c}" if c != "pitcher" else c
         for c in individual_pivot.columns
     ]
 
+    # --- Merge all together ---
+    # Start with group pivot + total
     result = group_pivot.merge(total, on="pitcher", how="left")
+
+    # Merge top3 — these columns are ONLY in top3_df, no clash risk
     result = result.merge(top3_df, on="pitcher", how="left")
 
-    # Drop any individual pivot columns that would clash with top3 columns
-    top3_cols = [
-        "top_pitch_1", "top_pitch_1_pct",
-        "top_pitch_2", "top_pitch_2_pct",
-        "top_pitch_3", "top_pitch_3_pct",
-    ]
-    safe_individual = individual_pivot.drop(
-        columns=[c for c in top3_cols if c in individual_pivot.columns],
-        errors="ignore"
-    )
-    result = result.merge(safe_individual, on="pitcher", how="left")
+    # Merge individual pivot — prefix already applied so no clash with top3
+    result = result.merge(individual_pivot, on="pitcher", how="left")
 
-    # Ensure top3 pct columns are numeric
+    # Ensure pct columns are numeric
     for col in ["top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct"]:
         if col in result.columns:
-            result[col] = pd.to_numeric(result[col], errors="coerce").round(2)
+            result[col] = pd.to_numeric(result[col], errors="coerce").fillna(0.0).round(2)
 
     return result
 
