@@ -718,19 +718,42 @@ def compute_platoon_score(row: pd.Series) -> Tuple[float, str, float]:
     return round(score, 3), "", round(penalty, 3)
 
 
-def compute_pitch_matchup_score(row: pd.Series) -> float:
+def compute_pitch_matchup_score(row: pd.Series) -> tuple:
     scores = []
+    descriptions = []
+    pitch_penalty = 0.0
+
     for rank in range(1, 4):
         pitch_type = str(row.get(f"top_pitch_{rank}", "")).strip().upper()
         pitch_pct = safe_float(row.get(f"top_pitch_{rank}_pct", 0))
+
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
+
         iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
         hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
         barrel = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
-        if iso > 0 or hr_rate > 0:
-            scores.append((iso * 3 + hr_rate / 10 + barrel / 20) * (pitch_pct / 100))
-    return sum(scores)
+        has_data = (iso > 0 or hr_rate > 0)
+
+        if has_data:
+            pitch_score = (iso * 3 + hr_rate / 10 + barrel / 20) * (pitch_pct / 100)
+            scores.append(pitch_score)
+
+            if iso >= 0.150 and pitch_pct >= 15:
+                descriptions.append(
+                    f"✅ ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
+                )
+            elif iso > 0 and iso < 0.100 and pitch_pct >= 15:
+                # Batter struggles vs a heavily used pitch — penalty scales with usage
+                penalty_amount = round((0.100 - iso) * (pitch_pct / 100) * 10, 3)
+                pitch_penalty = max(pitch_penalty, penalty_amount)
+                descriptions.append(
+                    f"⚠️ Weak vs {pitch_type} — ISO {iso:.3f} ({pitch_pct:.0f}% usage)"
+                )
+
+    total_score = sum(scores)
+    desc = " + ".join(descriptions) if descriptions else ""
+    return total_score, desc, pitch_penalty
 
 
 def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
