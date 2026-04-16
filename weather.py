@@ -1,7 +1,8 @@
 import os
 import json
+import time
 from datetime import date, datetime
-from typing import Dict, Set
+from typing import Dict, List, Set
 
 import pandas as pd
 import numpy as np
@@ -14,7 +15,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# ESPN to MLB abbreviation mapping
 ESPN_TO_MLB = {
     "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
     "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
@@ -59,8 +59,8 @@ PARKS = [
     {"team": "WSH", "park": "Nationals Park",              "lat": 38.8730, "lon": -77.0074,  "roof": False, "cf_direction": 5},
 ]
 
-# Build lookup by team abbr for fast access
 PARK_BY_TEAM = {p["team"]: p for p in PARKS}
+GAME_HOUR = 19  # assume 7pm local time for weather forecast
 
 
 def get_gspread_client() -> gspread.Client:
@@ -71,11 +71,6 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_today_games() -> Dict[str, dict]:
-    """
-    Returns {home_team_abbr: {away_team, game_time_utc}} for today's games.
-    Tries MLB API first, falls back to ESPN.
-    Normalizes abbreviations to MLB standard.
-    """
     def fetch_mlb_games() -> Dict[str, dict]:
         today_str = date.today().strftime("%Y-%m-%d")
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today_str}&hydrate=venue"
@@ -128,11 +123,7 @@ def get_today_games() -> Dict[str, dict]:
         print("Fetching today's games from MLB API...")
         games = fetch_mlb_games()
         if games:
-            # Normalize abbreviations
-            normalized = {}
-            for abbr, info in games.items():
-                mlb_abbr = ESPN_TO_MLB.get(abbr, abbr)
-                normalized[mlb_abbr] = info
+            normalized = {ESPN_TO_MLB.get(k, k): v for k, v in games.items()}
             print(f"MLB API found {len(normalized)} games.")
             return normalized
         print("MLB API returned no games.")
@@ -150,6 +141,124 @@ def get_today_games() -> Dict[str, dict]:
         print(f"ESPN API failed: {e}")
 
     return {}
+
+
+def fetch_weather_batch(parks_to_fetch: List[dict]) -> Dict[str, dict]:
+    """
+    Fetch weather for multiple parks in a single Open-Meteo API call
+    using the bulk/multi-location endpoint. Falls back to individual
+    requests if bulk fails.
+    Returns {team: {temp_f, wind_mph, wind_dir_deg}} or empty dict on failure.
+    """
+    if not parks_to_fetch:
+        return {}
+
+    # Build bulk request — Open-Meteo supports comma-separated lat/lon
+    lats = ",".join(str(p["lat"]) for p in parks_to_fetch)
+    lons = ",".join(str(p["lon"]) for p in parks_to_fetch)
+
+    url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lats}"
+        f"&longitude={lons}"
+        f"&hourly=temperature_2m,windspeed_10m,winddirection_10m"
+        f"&temperature_unit=fahrenheit"
+        f"&windspeed_unit=mph"
+        f"&forecast_days=1"
+        f"&timezone=auto"
+    )
+
+    results: Dict[str, dict] = {}
+
+    # Try bulk first with retry logic
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Bulk response is a list when multiple locations requested
+            if isinstance(data, list):
+                for i, park_data in enumerate(data):
+                    team = parks_to_fetch[i]["team"]
+                    hourly = park_data.get("hourly", {})
+                    temps = hourly.get("temperature_2m", [])
+                    winds = hourly.get("windspeed_10m", [])
+                    dirs = hourly.get("winddirection_10m", [])
+                    if temps:
+                        idx = min(GAME_HOUR, len(temps) - 1)
+                        results[team] = {
+                            "temp_f":       round(temps[idx], 1),
+                            "wind_mph":     round(winds[idx], 1) if winds else None,
+                            "wind_dir_deg": round(dirs[idx], 1) if dirs else None,
+                        }
+                print(f"Bulk weather fetch succeeded for {len(results)} parks.")
+                return results
+            elif isinstance(data, dict):
+                # Single location returned as dict (only 1 park requested)
+                team = parks_to_fetch[0]["team"]
+                hourly = data.get("hourly", {})
+                temps = hourly.get("temperature_2m", [])
+                winds = hourly.get("windspeed_10m", [])
+                dirs = hourly.get("winddirection_10m", [])
+                if temps:
+                    idx = min(GAME_HOUR, len(temps) - 1)
+                    results[team] = {
+                        "temp_f":       round(temps[idx], 1),
+                        "wind_mph":     round(winds[idx], 1) if winds else None,
+                        "wind_dir_deg": round(dirs[idx], 1) if dirs else None,
+                    }
+                return results
+
+        except requests.exceptions.Timeout:
+            wait = 2 ** attempt
+            print(f"  Bulk weather timeout (attempt {attempt+1}/3) — retrying in {wait}s...")
+            time.sleep(wait)
+        except Exception as e:
+            print(f"  Bulk weather fetch failed (attempt {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    # Bulk failed — fall back to individual requests
+    print("Bulk fetch failed — falling back to individual park requests...")
+    for park in parks_to_fetch:
+        team = park["team"]
+        single_url = (
+            f"https://api.open-meteo.com/v1/forecast"
+            f"?latitude={park['lat']}&longitude={park['lon']}"
+            f"&hourly=temperature_2m,windspeed_10m,winddirection_10m"
+            f"&temperature_unit=fahrenheit"
+            f"&windspeed_unit=mph"
+            f"&forecast_days=1"
+            f"&timezone=auto"
+        )
+        for attempt in range(3):
+            try:
+                resp = requests.get(single_url, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                hourly = data.get("hourly", {})
+                temps = hourly.get("temperature_2m", [])
+                winds = hourly.get("windspeed_10m", [])
+                dirs = hourly.get("winddirection_10m", [])
+                if temps:
+                    idx = min(GAME_HOUR, len(temps) - 1)
+                    results[team] = {
+                        "temp_f":       round(temps[idx], 1),
+                        "wind_mph":     round(winds[idx], 1) if winds else None,
+                        "wind_dir_deg": round(dirs[idx], 1) if dirs else None,
+                    }
+                    print(f"  ✓ {park['park']} ({team})")
+                break
+            except requests.exceptions.Timeout:
+                wait = 2 ** attempt
+                print(f"  Timeout for {team} (attempt {attempt+1}/3) — retrying in {wait}s...")
+                time.sleep(wait)
+            except Exception as e:
+                print(f"  Failed for {team}: {e}")
+                break
+
+    return results
 
 
 def angle_difference(a: float, b: float) -> float:
@@ -188,124 +297,119 @@ def hr_weather_boost(
     return round(score, 2)
 
 
-def fetch_weather_for_park(lat: float, lon: float) -> dict:
-    url = (
-        f"https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        f"&hourly=temperature_2m,windspeed_10m,winddirection_10m"
-        f"&temperature_unit=fahrenheit"
-        f"&windspeed_unit=mph"
-        f"&forecast_days=1"
-        f"&timezone=auto"
-    )
-
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-
-        hourly = data.get("hourly", {})
-        temps = hourly.get("temperature_2m", [])
-        winds = hourly.get("windspeed_10m", [])
-        dirs = hourly.get("winddirection_10m", [])
-
-        if not temps:
-            return {}
-
-        game_hour = 19
-        idx = min(game_hour, len(temps) - 1)
-
-        return {
-            "temp_f": round(temps[idx], 1) if temps else None,
-            "wind_mph": round(winds[idx], 1) if winds else None,
-            "wind_dir_deg": round(dirs[idx], 1) if dirs else None,
-        }
-
-    except Exception as e:
-        print(f"  Weather fetch failed for ({lat}, {lon}): {e}")
-        return {}
-
-
 def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
     """
-    Fetch weather for all parks hosting games today.
-    If no games found from API, fetch all 30 parks as fallback.
-    Also validates that home team abbreviations match our PARKS list
-    and corrects any mismatches.
+    Fetch weather for all parks hosting games today using bulk API call.
+    Roof stadiums always neutral. Falls back to all 30 parks if no games.
     """
-    rows = []
-
-    # Determine which teams to fetch weather for
+    # Determine which teams need weather
     if games:
         playing_home_teams = set(games.keys())
-        # Validate all teams exist in PARK_BY_TEAM
         unmatched = playing_home_teams - set(PARK_BY_TEAM.keys())
         if unmatched:
-            print(f"Warning: No park data for teams: {unmatched} — fetching all parks as fallback")
+            print(f"Warning: No park data for teams: {unmatched} — fetching all parks")
             playing_home_teams = set(PARK_BY_TEAM.keys())
     else:
         print("No games found — fetching weather for all 30 parks.")
         playing_home_teams = set(PARK_BY_TEAM.keys())
 
+    # Separate roof parks (no weather needed) from outdoor parks
+    outdoor_parks = [
+        PARK_BY_TEAM[team] for team in playing_home_teams
+        if team in PARK_BY_TEAM and not PARK_BY_TEAM[team]["roof"]
+    ]
+    roof_parks = [
+        PARK_BY_TEAM[team] for team in playing_home_teams
+        if team in PARK_BY_TEAM and PARK_BY_TEAM[team]["roof"]
+    ]
+
+    print(f"Fetching weather for {len(outdoor_parks)} outdoor parks (batch)...")
+    print(f"Skipping weather fetch for {len(roof_parks)} roof stadiums (always neutral).")
+
+    # Batch fetch all outdoor parks in one API call
+    weather_data = fetch_weather_batch(outdoor_parks)
+
+    rows = []
+
     for park in PARKS:
         team = park["team"]
-
         if team not in playing_home_teams:
             continue
 
-        print(f"  Fetching weather for {park['park']} ({team})...")
-        weather = fetch_weather_for_park(park["lat"], park["lon"])
-
-        temp_f = weather.get("temp_f")
-        wind_mph = weather.get("wind_mph")
-        wind_dir = weather.get("wind_dir_deg")
         roof = park["roof"]
         cf_direction = park["cf_direction"]
-
-        wind_label = wind_direction_label(wind_dir) if wind_dir is not None else "Unknown"
-        boost = hr_weather_boost(
-            temp_f or 72.0,
-            wind_mph or 0.0,
-            wind_dir or 0.0,
-            roof,
-            cf_direction,
-        )
-
-        if roof:
-            wind_context = "Roof — weather neutral"
-        elif wind_mph and wind_mph >= 5:
-            diff = abs(angle_difference(
-                (wind_dir + 180) % 360 if wind_dir else 0,
-                cf_direction
-            ))
-            if diff <= 45:
-                wind_context = f"Wind blowing OUT at {wind_mph} mph"
-            elif diff >= 135:
-                wind_context = f"Wind blowing IN at {wind_mph} mph"
-            else:
-                wind_context = f"Crosswind at {wind_mph} mph"
-        else:
-            wind_context = "Calm"
-
         game_info = games.get(team, {})
 
-        rows.append({
-            "home_team": team,
-            "away_team": game_info.get("away_team", ""),
-            "park": park["park"],
-            "has_roof": roof,
-            "temp_f": temp_f,
-            "wind_mph": wind_mph,
-            "wind_dir_deg": wind_dir,
-            "wind_direction": wind_label,
-            "wind_context": wind_context,
-            "hr_weather_boost": boost,
-            "boost_note": "Roof — weather neutral" if roof else (
-                "HR friendly" if boost >= 1.0
-                else "HR suppressing" if boost <= -1.0
-                else "Neutral"
-            ),
-        })
+        if roof:
+            # Roof stadiums — always neutral regardless of weather
+            rows.append({
+                "home_team":        team,
+                "away_team":        game_info.get("away_team", ""),
+                "park":             park["park"],
+                "has_roof":         True,
+                "temp_f":           "",
+                "wind_mph":         "",
+                "wind_dir_deg":     "",
+                "wind_direction":   "N/A",
+                "wind_context":     "Roof — weather neutral",
+                "hr_weather_boost": 0.0,
+                "boost_note":       "Roof — weather neutral",
+            })
+        else:
+            w = weather_data.get(team, {})
+            temp_f    = w.get("temp_f")
+            wind_mph  = w.get("wind_mph")
+            wind_dir  = w.get("wind_dir_deg")
+
+            if not w:
+                # Weather fetch failed for this park
+                wind_label   = "Unknown"
+                wind_context = "Weather unavailable"
+                boost        = 0.0
+                boost_note   = "Weather unavailable"
+            else:
+                wind_label = wind_direction_label(wind_dir) if wind_dir is not None else "Unknown"
+                boost = hr_weather_boost(
+                    temp_f or 72.0,
+                    wind_mph or 0.0,
+                    wind_dir or 0.0,
+                    roof,
+                    cf_direction,
+                )
+
+                if wind_mph and wind_mph >= 5:
+                    diff = abs(angle_difference(
+                        (wind_dir + 180) % 360 if wind_dir else 0,
+                        cf_direction
+                    ))
+                    if diff <= 45:
+                        wind_context = f"Wind blowing OUT at {wind_mph:.0f} mph"
+                    elif diff >= 135:
+                        wind_context = f"Wind blowing IN at {wind_mph:.0f} mph"
+                    else:
+                        wind_context = f"Crosswind at {wind_mph:.0f} mph"
+                else:
+                    wind_context = "Calm"
+
+                boost_note = (
+                    "HR friendly" if boost >= 1.0
+                    else "HR suppressing" if boost <= -1.0
+                    else "Neutral"
+                )
+
+            rows.append({
+                "home_team":        team,
+                "away_team":        game_info.get("away_team", ""),
+                "park":             park["park"],
+                "has_roof":         False,
+                "temp_f":           temp_f,
+                "wind_mph":         wind_mph,
+                "wind_dir_deg":     wind_dir,
+                "wind_direction":   wind_label,
+                "wind_context":     wind_context,
+                "hr_weather_boost": boost,
+                "boost_note":       boost_note,
+            })
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -353,9 +457,12 @@ def main() -> None:
     games = get_today_games()
     print(f"Games today: {len(games)} — home teams: {list(games.keys())}")
 
-    print("Fetching weather for each park...")
+    print("Fetching weather...")
     weather_df = build_weather_table(games)
     print(f"Built weather rows for {len(weather_df)} parks")
+
+    if not weather_df.empty:
+        print(weather_df[["home_team", "park", "temp_f", "wind_mph", "wind_context", "hr_weather_boost"]].to_string(index=False))
 
     write_dataframe_to_sheet(gc, sheet_id, "Weather", weather_df)
     print("Written to Weather")
