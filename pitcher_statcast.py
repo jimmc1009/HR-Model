@@ -502,7 +502,7 @@ def build_season_stats_pitcher(
     bf_df = bf_df.drop_duplicates(subset=bf_dedupe)
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
-    # Innings pitched from outs
+    # Innings pitched from ALL outs in full dataset
     ip_df = full_df[
         full_df["pitcher"].isin(probable_ids) &
         full_df["events"].astype("string").str.lower().isin(OUT_EVENTS)
@@ -531,7 +531,6 @@ def build_season_stats_pitcher(
     season = season.merge(bf_counts, on="pitcher", how="left")
     season = season.merge(ip_counts[["pitcher", "ip"]], on="pitcher", how="left")
 
-    # Fill NaN to avoid KeyError
     season["bf"] = season["bf"].fillna(0)
     season["ip"] = season["ip"].fillna(0)
 
@@ -561,30 +560,39 @@ def build_season_stats_pitcher(
     return season
 
 
-def build_platoon_splits_pitcher(bbe: pd.DataFrame) -> pd.DataFrame:
+def build_platoon_splits_pitcher(
+    bbe: pd.DataFrame,
+    full_df: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Platoon splits per pitcher including HR/9 vs LHH and RHH.
+    IP calculated from full dataset to include all outs including strikeouts.
     """
     if "stand" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
-    bbe = bbe.copy()
-    bbe["is_out"] = bbe["events"].astype("string").str.lower().isin(OUT_EVENTS)
+    pitcher_ids = bbe["pitcher"].unique()
 
     splits = []
     for hand, label in [("L", "vs_lhh"), ("R", "vs_rhh")]:
-        sub = bbe[bbe["stand"] == hand].copy()
+        sub_bbe = bbe[bbe["stand"] == hand].copy()
 
-        # IP per pitcher vs this handedness
+        # IP from full dataset for this handedness — includes strikeouts
+        sub_full = full_df[
+            full_df["pitcher"].isin(pitcher_ids) &
+            (full_df["stand"] == hand) &
+            full_df["events"].astype("string").str.lower().isin(OUT_EVENTS)
+        ].copy()
+
         ip_grp = (
-            sub.groupby("pitcher", dropna=False)
-            .agg(outs=("is_out", "sum"))
-            .reset_index()
+            sub_full.groupby("pitcher")
+            .size()
+            .reset_index(name="outs")
         )
         ip_grp[f"{label}_ip"] = (ip_grp["outs"] / 3).round(2)
 
         grp = (
-            sub.groupby("pitcher", dropna=False)
+            sub_bbe.groupby("pitcher", dropna=False)
             .agg(
                 **{
                     f"{label}_bbe":        ("launch_speed", "size"),
@@ -739,7 +747,7 @@ def build_pitcher_full(
     bbe = add_pitcher_flags(bbe)
 
     season_stats = build_season_stats_pitcher(bbe, df, probable_ids)
-    platoon_splits = build_platoon_splits_pitcher(bbe)
+    platoon_splits = build_platoon_splits_pitcher(bbe, df)
     rolling_stats = build_rolling_stats_pitcher(bbe)
     pitch_mix = build_pitch_mix(df, probable_ids)
 
