@@ -312,27 +312,64 @@ def build_platoon_splits(bbe: pd.DataFrame) -> pd.DataFrame:
     if "p_throws" not in bbe.columns:
         return pd.DataFrame(columns=["batter"])
 
+    tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+    bbe = bbe.copy()
+    bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+    bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
+        {"single", "double", "triple", "home_run"}
+    )
+
+    # Capture batter handedness
+    stand_map = (
+        bbe[bbe["stand"].notna()]
+        .groupby("batter")["stand"]
+        .first()
+        .reset_index()
+        .rename(columns={"stand": "batter_hand"})
+    ) if "stand" in bbe.columns else pd.DataFrame(columns=["batter", "batter_hand"])
+
     splits = []
     for hand, label in [("L", "vs_lhp"), ("R", "vs_rhp")]:
-        sub = bbe[bbe["p_throws"] == hand]
+        sub = bbe[bbe["p_throws"] == hand].copy()
+
+        pa_count = sub.groupby("batter").size().reset_index(name=f"{label}_pa")
+
         grp = (
             sub.groupby("batter", dropna=False)
             .agg(
                 **{
-                    f"{label}_bbe": ("launch_speed", "size"),
-                    f"{label}_hr": ("is_hr", "sum"),
+                    f"{label}_bbe":        ("launch_speed", "size"),
+                    f"{label}_hr":         ("is_hr", "sum"),
                     f"{label}_barrel_pct": ("is_barrel", "mean"),
+                    f"{label}_tb":         ("total_bases", "sum"),
+                    f"{label}_hits":       ("is_hit", "sum"),
                 }
             )
             .reset_index()
         )
+
+        grp = grp.merge(pa_count, on="batter", how="left")
         grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
         grp[f"{label}_hr_rate"] = (
             grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
         ).round(2)
+        grp[f"{label}_iso"] = (
+            (grp[f"{label}_tb"] - grp[f"{label}_hits"]) /
+            grp[f"{label}_pa"].replace(0, pd.NA)
+        ).round(3)
+
+        grp = grp.drop(columns=[f"{label}_tb", f"{label}_hits", f"{label}_pa"])
         splits.append(grp)
 
-    return splits[0].merge(splits[1], on="batter", how="outer")
+    result = splits[0].merge(splits[1], on="batter", how="outer")
+
+    # Add batter handedness
+    if not stand_map.empty:
+        result = result.merge(stand_map, on="batter", how="left")
+    else:
+        result["batter_hand"] = ""
+
+    return result
 
 
 def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> pd.DataFrame:
@@ -370,13 +407,6 @@ def build_rolling_stats(bbe: pd.DataFrame, windows: List[int] = [7, 14, 30]) -> 
 
 
 def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
-    """
-    Per batter, per individual pitch type:
-    ISO, HR rate, FB%, Pull%, barrel%.
-    Only includes pitch types with at least 5 BBE.
-    Columns named iso_vs_FF, iso_vs_SL, etc.
-    Also includes group-level splits for use in picks scoring.
-    """
     if "pitch_type" not in bbe.columns:
         return pd.DataFrame(columns=["batter"])
 
@@ -388,7 +418,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
     )
     bbe["pitch_type"] = bbe["pitch_type"].astype("string").str.upper().str.strip()
 
-    # Get all pitch types with enough data
     pitch_counts = (
         bbe.groupby(["batter", "pitch_type"])
         .size()
@@ -424,7 +453,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
             .reset_index()
         )
 
-        # Filter to batter/pitch combos with enough sample
         grp = grp[
             grp.apply(lambda r: (r["batter"], pt) in valid_combos, axis=1)
         ].copy()
@@ -452,7 +480,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
         ]
         results_individual.append(grp[keep_cols])
 
-    # Also build group-level splits for scoring
     results_group = []
     for group in ["fastball", "breaking", "offspeed", "knuckleball"]:
         sub = bbe[bbe["pitch_group"] == group].copy()
@@ -499,7 +526,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
     if not results_individual and not results_group:
         return pd.DataFrame(columns=["batter"])
 
-    # Merge individual pitch type splits
     if results_individual:
         combined_individual = results_individual[0]
         for r in results_individual[1:]:
@@ -507,7 +533,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
     else:
         combined_individual = pd.DataFrame(columns=["batter"])
 
-    # Merge group splits
     if results_group:
         combined_group = results_group[0]
         for r in results_group[1:]:
@@ -515,7 +540,6 @@ def build_pitch_type_splits(bbe: pd.DataFrame) -> pd.DataFrame:
     else:
         combined_group = pd.DataFrame(columns=["batter"])
 
-    # Merge individual and group together
     if combined_individual.empty:
         return combined_group
     if combined_group.empty:
@@ -576,7 +600,7 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
 
     combined = combined.rename(columns={"batter": "player_id"})
 
-    id_cols = ["player_name", "player_id", "team"]
+    id_cols = ["player_name", "player_id", "team", "batter_hand"]
     other_cols = [c for c in combined.columns if c not in id_cols]
     combined = combined[id_cols + other_cols]
 
