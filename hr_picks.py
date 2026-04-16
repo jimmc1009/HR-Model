@@ -28,9 +28,10 @@ WEIGHTS = {
     "pitcher_quality_penalty":  1.2,
 }
 
-PLATOON_BONUS_WEIGHT = 0.8
-PITCH_MATCHUP_WEIGHT = 1.2
-WEATHER_WEIGHT = 0.4
+PLATOON_BONUS_WEIGHT  = 0.8
+PITCH_MATCHUP_WEIGHT  = 1.2
+WEATHER_WEIGHT        = 0.4
+PULL_PARK_WEIGHT      = 0.6   # weight for pull hitter park boost in score formula
 
 ISO_GAP_SMALL    = 0.030
 ISO_GAP_MEDIUM   = 0.060
@@ -96,6 +97,48 @@ def normalize_inverted(series: pd.Series) -> pd.Series:
     return 1 - (series - mn) / (mx - mn)
 
 
+def compute_pull_park_score(row: pd.Series) -> tuple:
+    """
+    Calculate a pull hitter park boost based on:
+    - Batter handedness (RHH pulls to LF, LHH pulls to RF)
+    - Batter pull rate (how often they actually pull the ball)
+    - Park dimension boost for the relevant wall
+
+    Returns (score, description)
+    """
+    batter_hand = str(row.get("batter_hand", "")).strip().upper()
+    pull_rate = safe_float(row.get("pull_rate", 0))
+
+    if batter_hand == "R":
+        park_boost = safe_float(row.get("pull_boost_rhh", 0))
+        wall_dist = safe_float(row.get("lf_dist", 0))
+        wall_ht = safe_float(row.get("lf_height", 0))
+        side = "LF"
+    elif batter_hand == "L":
+        park_boost = safe_float(row.get("pull_boost_lhh", 0))
+        wall_dist = safe_float(row.get("rf_dist", 0))
+        wall_ht = safe_float(row.get("rf_height", 0))
+        side = "RF"
+    else:
+        return 0.0, ""
+
+    if pull_rate <= 0 or wall_dist <= 0:
+        return 0.0, ""
+
+    # Scale by pull rate — a 45% pull hitter gets full boost, 25% pull hitter gets half
+    pull_rate_scalar = min(pull_rate / 45.0, 1.2)
+    score = round(park_boost * pull_rate_scalar, 3)
+
+    # Only generate a description if the effect is meaningful
+    desc = ""
+    if score >= 0.15:
+        desc = f"🏟️ Pull hitter ({pull_rate:.0f}% pull) → short {side} ({wall_dist:.0f}ft, {wall_ht:.0f}ft wall)"
+    elif score <= -0.15:
+        desc = f"🏟️ Pull hitter ({pull_rate:.0f}% pull) → deep {side} ({wall_dist:.0f}ft, {wall_ht:.0f}ft wall)"
+
+    return score, desc
+
+
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
     scores = []
     descriptions = []
@@ -122,7 +165,6 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
                     f"✅ ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
                 )
             elif iso < 0.100 and pitch_pct >= 15:
-                # Batter struggles vs a heavily used pitch — penalty scales with usage
                 penalty_amount = round((0.100 - iso) * (pitch_pct / 100) * 10, 3)
                 pitch_penalty = max(pitch_penalty, penalty_amount)
                 descriptions.append(
@@ -350,9 +392,15 @@ def prepare_combined(
         print("No batter-pitcher matchups found.")
         return pd.DataFrame()
 
+    # Park merge — now includes dimension columns
     if not parks.empty:
+        park_cols = [c for c in [
+            "home_team", "park_hr_factor", "park_name", "small_sample",
+            "lf_dist", "lf_height", "rf_dist", "rf_height",
+            "pull_boost_rhh", "pull_boost_lhh",
+        ] if c in parks.columns]
         combined = combined.merge(
-            parks[["home_team", "park_hr_factor", "park_name", "small_sample"]],
+            parks[park_cols],
             left_on="opp_pitcher_team",
             right_on="home_team",
             how="left",
@@ -361,6 +409,12 @@ def prepare_combined(
         combined["park_hr_factor"] = 100.0
         combined["park_name"] = ""
         combined["small_sample"] = False
+        combined["lf_dist"] = 331.0
+        combined["lf_height"] = 9.0
+        combined["rf_dist"] = 327.0
+        combined["rf_height"] = 9.0
+        combined["pull_boost_rhh"] = 0.0
+        combined["pull_boost_lhh"] = 0.0
 
     if not weather.empty:
         combined = combined.merge(
@@ -393,8 +447,11 @@ def prepare_combined(
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d",
         "avg_launch_angle", "avg_la_7d",
+        "pull_rate",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
         "pitcher_bf", "pitcher_bbe_allowed", "park_hr_factor",
+        "lf_dist", "lf_height", "rf_dist", "rf_height",
+        "pull_boost_rhh", "pull_boost_lhh",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "vs_lhp_hr_rate", "vs_rhp_hr_rate",
         "vs_lhp_iso", "vs_rhp_iso",
@@ -424,6 +481,11 @@ def prepare_combined(
     # Take the larger of platoon or pitch penalty — don't double penalize
     combined["total_penalty"] = combined[["platoon_penalty", "pitch_penalty"]].max(axis=1)
 
+    # Pull hitter park score
+    pull_results = combined.apply(compute_pull_park_score, axis=1)
+    combined["pull_park_score"] = pull_results.apply(lambda x: x[0])
+    combined["pull_park_desc"] = pull_results.apply(lambda x: x[1])
+
     combined["pitcher_quality_penalty"] = (
         normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
         normalize_inverted(combined["pitcher_hard_hit_pct"]) * 0.4
@@ -446,7 +508,8 @@ def prepare_combined(
         normalize(combined["park_hr_factor_norm"])       * WEIGHTS["park_hr_factor"] +
         combined["weather_score"]                        * WEATHER_WEIGHT +
         normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
-        normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT -
+        normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT +
+        combined["pull_park_score"]                      * PULL_PARK_WEIGHT -
         combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
         combined["total_penalty"]
     )
@@ -487,6 +550,10 @@ def build_reason(row) -> str:
     pitch_desc = str(row.get("pitch_matchup_desc", ""))
     if pitch_desc:
         reasons.append(f"🎳 Pitch matchup: {pitch_desc}")
+
+    pull_desc = str(row.get("pull_park_desc", ""))
+    if pull_desc:
+        reasons.append(pull_desc)
 
     park_factor = safe_float(row.get("park_hr_factor"), 100)
     park_name = str(row.get("park_name", ""))
@@ -542,6 +609,8 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "avg_ev_7d":                  "Avg EV (7d)",
         "avg_la_7d":                  "Avg Launch Angle (7d)",
         "avg_launch_angle":           "Avg Launch Angle (Season)",
+        "pull_rate":                  "Pull Rate%",
+        "pull_park_desc":             "Pull Park Matchup",
         "platoon_desc":               "Platoon Matchup",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":          "Pitcher HR/FB% Allowed",
@@ -557,6 +626,10 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "top_pitch_3_pct":            "Top Pitch 3 %",
         "pitch_matchup_desc":         "Pitch Matchup",
         "park_hr_factor":             "Park HR Factor",
+        "lf_dist":                    "LF Distance",
+        "lf_height":                  "LF Wall Height",
+        "rf_dist":                    "RF Distance",
+        "rf_height":                  "RF Wall Height",
         "hr_weather_boost":           "Weather Boost",
         "wind_context":               "Wind",
         "temp_f":                     "Temp (°F)",
@@ -593,6 +666,7 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         normalize(ev_df["pitch_matchup_score"]) * 1.0 +
         normalize(ev_df["platoon_score"])       * 0.8 +
         normalize(ev_df["park_hr_factor_norm"]) * 0.5 +
+        ev_df["pull_park_score"]                * 0.4 +
         ev_df["weather_score"]                  * 0.3 -
         ev_df["pitcher_quality_penalty"]        * 1.0 -
         ev_df["total_penalty"]
@@ -621,6 +695,10 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         if platoon_desc:
             reasons.append(f"🔄 {platoon_desc}")
 
+        pull_desc = str(row.get("pull_park_desc", ""))
+        if pull_desc:
+            reasons.append(pull_desc)
+
         pitch_desc = str(row.get("pitch_matchup_desc", ""))
         if pitch_desc:
             reasons.append(f"🎳 {pitch_desc}")
@@ -648,6 +726,8 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "avg_launch_angle":           "Avg Launch Angle (Season)",
         "hard_hit_pct_7d":            "Hard Hit% (7d)",
         "hr_per_fb":                  "HR/FB%",
+        "pull_rate":                  "Pull Rate%",
+        "pull_park_desc":             "Pull Park Matchup",
         "vs_lhp_iso":                 "ISO vs LHP",
         "vs_rhp_iso":                 "ISO vs RHP",
         "platoon_desc":               "Platoon Matchup",
@@ -659,6 +739,10 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "pitcher_vs_rhh_hr9":         "Pitcher HR/9 vs RHH",
         "pitch_matchup_desc":         "Pitch Matchup",
         "park_hr_factor":             "Park HR Factor",
+        "lf_dist":                    "LF Distance",
+        "lf_height":                  "LF Wall Height",
+        "rf_dist":                    "RF Distance",
+        "rf_height":                  "RF Wall Height",
         "hr_weather_boost":           "Weather Boost",
         "wind_context":               "Wind",
         "temp_f":                     "Temp (°F)",
@@ -824,7 +908,7 @@ def write_picks_to_sheet(
         ws = sh.worksheet("Top_HR_Picks")
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=40)
+        ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=45)
 
     picks_clean = clean_for_sheets(picks)
     ev_clean = clean_for_sheets(ev_section)
@@ -866,8 +950,8 @@ def format_picks_sheet(
     ws = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols = 37
-    ev_cols = 31
+    main_cols = 41
+    ev_cols = 35
     total_rows = ev_col_header_row + ev_data_row_count + 2
 
     reqs = []
@@ -1167,6 +1251,8 @@ def format_picks_sheet(
         85,   # Avg EV
         100,  # Avg Launch Angle 7d
         100,  # Avg Launch Angle Season
+        75,   # Pull Rate%
+        220,  # Pull Park Matchup
         220,  # Platoon Matchup
         120,  # Pitcher Barrel%
         120,  # Pitcher HR/FB%
@@ -1182,7 +1268,10 @@ def format_picks_sheet(
         75,   # Top Pitch 3 %
         240,  # Pitch Matchup
         75,   # Park HR Factor
-        75,   # Weather Boost
+        65,   # LF Distance
+        65,   # LF Wall Height
+        65,   # RF Distance
+        65,   # RF Wall Height
     ]
     for i, width in enumerate(col_widths):
         reqs.append({
@@ -1247,11 +1336,11 @@ def main() -> None:
         return
 
     print("\nTop 10 HR Picks:")
-    print(picks[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score"]].to_string(index=False))
+    print(picks[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Pull Rate%", "Batting Avg", "Confidence", "HR Score"]].to_string(index=False))
 
     if not ev_section.empty:
         print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Bats", "Avg EV (7d)", "Avg Launch Angle (7d)", "Batting Avg", "Confidence"]].to_string(index=False))
+        print(ev_section[["Rank", "Batter", "Bats", "Avg EV (7d)", "Avg Launch Angle (7d)", "Pull Rate%", "Batting Avg", "Confidence"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(
         gc, sheet_id, picks, ev_section
