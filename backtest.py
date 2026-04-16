@@ -137,7 +137,7 @@ def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
 
 
 def get_game_dates() -> List[date]:
-    """Return all game dates from season start through 2 days ago."""
+    """Return all dates from season start through 2 days ago."""
     end_dt = date.today() - timedelta(days=2)
     season_start = date.fromisoformat(SEASON_START)
     dates = []
@@ -149,7 +149,6 @@ def get_game_dates() -> List[date]:
 
 
 def get_teams_for_date(game_date: date) -> Set[str]:
-    """Get teams playing on a given date from MLB or ESPN API."""
     date_str = game_date.strftime("%Y-%m-%d")
     try:
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
@@ -190,7 +189,6 @@ def get_teams_for_date(game_date: date) -> Set[str]:
 
 
 def get_matchups_for_date(game_date: date) -> Dict[str, str]:
-    """Get team matchups for a given date."""
     date_str = game_date.strftime("%Y-%m-%d")
     matchups: Dict[str, str] = {}
 
@@ -239,7 +237,52 @@ def get_matchups_for_date(game_date: date) -> Dict[str, str]:
     return {}
 
 
-# ── Statcast feature builders ──────────────────────────────────────────────
+def get_probable_starters(
+    full_df: pd.DataFrame,
+    game_date: date,
+) -> Dict[str, int]:
+    """
+    Identify the probable starter per team on game_date by finding
+    the pitcher with the most batters faced on that day per team.
+    Returns {pitching_team: pitcher_id}.
+    """
+    day_df = full_df[full_df["game_date"] == pd.Timestamp(game_date)].copy()
+
+    if day_df.empty:
+        return {}
+
+    if {"inning_topbot", "home_team", "away_team"}.issubset(day_df.columns):
+        day_df["pitching_team"] = day_df.apply(
+            lambda r: str(r["home_team"]).strip()
+            if str(r["inning_topbot"]).lower().startswith("top")
+            else str(r["away_team"]).strip(), axis=1,
+        )
+    else:
+        return {}
+
+    # Deduplicate to one row per plate appearance per pitcher
+    pa_dedupe = [c for c in ["game_pk", "at_bat_number", "pitcher"] if c in day_df.columns]
+    pa_df = day_df[day_df["events"].notna()].drop_duplicates(subset=pa_dedupe)
+
+    # Count BF per pitcher per team
+    bf_counts = (
+        pa_df.groupby(["pitching_team", "pitcher"])
+        .size()
+        .reset_index(name="bf")
+    )
+
+    # Take pitcher with most BF per team — that's the starter
+    starters = (
+        bf_counts.sort_values("bf", ascending=False)
+        .drop_duplicates(subset=["pitching_team"], keep="first")
+        .set_index("pitching_team")["pitcher"]
+        .to_dict()
+    )
+
+    return {team: int(pid) for team, pid in starters.items()}
+
+
+# ── Feature builders ───────────────────────────────────────────────────────
 
 def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -337,21 +380,18 @@ def build_batter_features(
         {"single", "double", "triple", "home_run"}
     )
 
-    # PA
     pa_df = df[df["events"].notna()].copy()
     pa_df = pa_df.drop_duplicates(
         subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
     )
     pa_counts = pa_df.groupby("batter").size().reset_index(name="pa")
 
-    # AB for ISO
     ab_df = df[df["events"].astype("string").str.lower().isin(AB_EVENTS)].copy()
     ab_df = ab_df.drop_duplicates(
         subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in ab_df.columns]
     )
     ab_counts = ab_df.groupby("batter").size().reset_index(name="ab")
 
-    # Season stats
     season = (
         bbe.groupby("batter", dropna=False)
         .agg(
@@ -384,7 +424,6 @@ def build_batter_features(
         (season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)
     ).round(3)
 
-    # Rolling 7d
     cutoff_7d = pd.Timestamp(as_of_date) - timedelta(days=7)
     w7 = bbe[bbe["game_date"] >= cutoff_7d].copy()
     r7 = (
@@ -406,7 +445,6 @@ def build_batter_features(
 
     combined = season.merge(r7, on="batter", how="left")
 
-    # Platoon splits with ISO using AB denominator
     if "p_throws" in bbe.columns and "stand" in bbe.columns:
         stand_map = (
             bbe[bbe["stand"].notna()]
@@ -463,7 +501,6 @@ def build_batter_features(
     else:
         combined["batter_hand"] = ""
 
-    # Team
     team_map = (
         df.sort_values("game_date")
         .drop_duplicates(subset=["batter"], keep="last")
@@ -471,7 +508,6 @@ def build_batter_features(
     )
     combined = combined.merge(team_map, on="batter", how="left")
 
-    # Minimum sample filter
     combined = combined[
         (combined["season_bbe"] >= 10) &
         (combined["pa"] >= 10)
@@ -482,14 +518,15 @@ def build_batter_features(
 
 def build_pitcher_features(
     history_df: pd.DataFrame,
-    probable_pitcher_ids: Set[int],
+    starter_ids: Set[int],
     matchups: Dict[str, str],
     as_of_date: date,
+    starters_by_team: Dict[str, int],
 ) -> pd.DataFrame:
     """Build pitcher features using only data BEFORE as_of_date."""
     df = history_df[history_df["game_date"] < pd.Timestamp(as_of_date)].copy()
 
-    if df.empty or not probable_pitcher_ids:
+    if df.empty or not starter_ids:
         return pd.DataFrame()
 
     if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
@@ -511,7 +548,7 @@ def build_pitcher_features(
     }
 
     bbe = df[
-        df["pitcher"].isin(probable_pitcher_ids) &
+        df["pitcher"].isin(starter_ids) &
         df["events"].astype("string").str.lower().isin(batted_ball_events) &
         df["launch_speed"].notna() &
         df["launch_speed"].between(50, 120) &
@@ -528,18 +565,16 @@ def build_pitcher_features(
 
     bbe = add_flags(bbe)
 
-    # BF
     bf_df = df[
-        df["pitcher"].isin(probable_pitcher_ids) &
+        df["pitcher"].isin(starter_ids) &
         df["events"].notna()
     ].drop_duplicates(
         subset=[c for c in ["game_pk", "at_bat_number", "pitcher"] if c in df.columns]
     )
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
-    # IP from full out events
     ip_df = df[
-        df["pitcher"].isin(probable_pitcher_ids) &
+        df["pitcher"].isin(starter_ids) &
         df["events"].astype("string").str.lower().isin(OUT_EVENTS)
     ]
     ip_counts = ip_df.groupby("pitcher").size().reset_index(name="outs")
@@ -579,12 +614,11 @@ def build_pitcher_features(
     if "pitcher_hand" not in season.columns:
         season["pitcher_hand"] = ""
 
-    # Platoon splits with HR/9
     if "stand" in bbe.columns:
         for hand, label in [("L", "vs_lhh"), ("R", "vs_rhh")]:
             sub_bbe = bbe[bbe["stand"] == hand].copy()
             sub_full = df[
-                df["pitcher"].isin(probable_pitcher_ids) &
+                df["pitcher"].isin(starter_ids) &
                 (df["stand"] == hand) &
                 df["events"].astype("string").str.lower().isin(OUT_EVENTS)
             ]
@@ -616,16 +650,10 @@ def build_pitcher_features(
             ).round(2)
             season = season.merge(grp, on="pitcher", how="left")
 
-    # Team and opponent
-    team_lookup = (
-        df[df["pitcher"].isin(probable_pitcher_ids)]
-        .sort_values("game_date")
-        .drop_duplicates(subset=["pitcher"], keep="last")
-        .set_index("pitcher")["pitching_team"]
-        .to_dict()
-    )
+    # Map pitcher to their team using starters_by_team
+    team_by_pitcher = {v: k for k, v in starters_by_team.items()}
     season["pitcher_team"] = season["pitcher"].map(
-        lambda x: team_lookup.get(int(x), "") if pd.notna(x) else ""
+        lambda x: team_by_pitcher.get(int(x), "") if pd.notna(x) else ""
     )
     season["opposing_team"] = season["pitcher_team"].map(
         lambda t: matchups.get(str(t), "")
@@ -706,7 +734,6 @@ def compute_pitch_matchup_score(row: pd.Series) -> float:
 
 
 def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
-    """Apply the same scoring formula as hr_picks.py."""
     if combined.empty:
         return pd.DataFrame()
 
@@ -714,7 +741,7 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
-        "park_hr_factor", "hr_weather_boost",
+        "park_hr_factor",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "vs_lhp_hr_rate", "vs_rhp_hr_rate",
         "vs_lhp_iso", "vs_rhp_iso",
@@ -726,7 +753,7 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
             combined[col] = 0.0
 
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
-    combined["weather_score"] = 0.0  # no weather in backtest
+    combined["weather_score"] = 0.0
 
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"] = platoon_results.apply(lambda x: x[0])
@@ -759,7 +786,6 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_actual_hrs(full_df: pd.DataFrame, game_date: date) -> Dict[int, bool]:
-    """Returns {player_id: True} for every batter who hit a HR on game_date."""
     day_df = full_df[
         (full_df["game_date"] == pd.Timestamp(game_date)) &
         (full_df["events"].astype("string").str.lower().eq("home_run"))
@@ -768,7 +794,6 @@ def get_actual_hrs(full_df: pd.DataFrame, game_date: date) -> Dict[int, bool]:
 
 
 def assign_confidence(row: pd.Series) -> str:
-    """High / Medium / Low confidence tier."""
     batter_bbe = safe_float(row.get("season_bbe", 0))
     batter_pa = safe_float(row.get("pa", 0))
     pitcher_bbe = safe_float(row.get("pitcher_bbe_allowed", 0))
@@ -798,7 +823,6 @@ def assign_confidence(row: pd.Series) -> str:
 
 
 def build_park_factors(df: pd.DataFrame) -> pd.DataFrame:
-    """Simplified park factor calculation."""
     pa_df = df[df["events"].notna()].copy()
     ab_dedupe = [c for c in ["game_pk", "at_bat_number", "home_team"] if c in pa_df.columns]
     pa_df = pa_df.drop_duplicates(subset=ab_dedupe)
@@ -823,94 +847,43 @@ def build_park_factors(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_scorecard(picks_log: pd.DataFrame) -> pd.DataFrame:
-    """Build running accuracy scorecard from picks log."""
     if picks_log.empty:
         return pd.DataFrame()
 
     picks_log = picks_log.copy()
     picks_log["hit_hr_bool"] = picks_log["hit_hr"] == "Yes"
+    picks_log["rank"] = pd.to_numeric(picks_log["rank"], errors="coerce")
+    picks_log["date"] = pd.to_datetime(picks_log["date"])
 
     rows = []
 
-    # Overall
-    total = len(picks_log)
-    hits = picks_log["hit_hr_bool"].sum()
-    rows.append({
-        "category":      "Overall",
-        "subcategory":   "All Picks",
-        "total_picks":   total,
-        "hr_count":      int(hits),
-        "hit_rate_pct":  round(hits / total * 100, 1) if total > 0 else 0,
-    })
+    def add_row(category, subcategory, sub_df):
+        if sub_df.empty:
+            return
+        total = len(sub_df)
+        hits = sub_df["hit_hr_bool"].sum()
+        rows.append({
+            "category":     category,
+            "subcategory":  subcategory,
+            "total_picks":  total,
+            "hr_count":     int(hits),
+            "hit_rate_pct": round(hits / total * 100, 1),
+        })
 
-    # By rank
+    add_row("Overall", "All Picks", picks_log)
+
     for rank in range(1, 11):
-        sub = picks_log[picks_log["rank"] == rank]
-        if sub.empty:
-            continue
-        h = sub["hit_hr_bool"].sum()
-        rows.append({
-            "category":     "By Rank",
-            "subcategory":  f"Rank {rank}",
-            "total_picks":  len(sub),
-            "hr_count":     int(h),
-            "hit_rate_pct": round(h / len(sub) * 100, 1),
-        })
+        add_row("By Rank", f"Rank {rank}", picks_log[picks_log["rank"] == rank])
 
-    # By confidence
     for tier in ["High", "Medium", "Low"]:
-        sub = picks_log[picks_log["confidence"] == tier]
-        if sub.empty:
-            continue
-        h = sub["hit_hr_bool"].sum()
-        rows.append({
-            "category":     "By Confidence",
-            "subcategory":  tier,
-            "total_picks":  len(sub),
-            "hr_count":     int(h),
-            "hit_rate_pct": round(h / len(sub) * 100, 1),
-        })
+        add_row("By Confidence", tier, picks_log[picks_log["confidence"] == tier])
 
-    # By section
-    for section in picks_log["section"].unique():
-        sub = picks_log[picks_log["section"] == section]
-        if sub.empty:
-            continue
-        h = sub["hit_hr_bool"].sum()
-        rows.append({
-            "category":     "By Section",
-            "subcategory":  section,
-            "total_picks":  len(sub),
-            "hr_count":     int(h),
-            "hit_rate_pct": round(h / len(sub) * 100, 1),
-        })
+    for section in picks_log["section"].dropna().unique():
+        add_row("By Section", section, picks_log[picks_log["section"] == section])
 
-    # Rolling 7-day
-    picks_log["date"] = pd.to_datetime(picks_log["date"])
-    cutoff_7d = picks_log["date"].max() - timedelta(days=7)
-    sub_7d = picks_log[picks_log["date"] >= cutoff_7d]
-    if not sub_7d.empty:
-        h = sub_7d["hit_hr_bool"].sum()
-        rows.append({
-            "category":     "Rolling",
-            "subcategory":  "Last 7 Days",
-            "total_picks":  len(sub_7d),
-            "hr_count":     int(h),
-            "hit_rate_pct": round(h / len(sub_7d) * 100, 1),
-        })
-
-    # Rolling 30-day
-    cutoff_30d = picks_log["date"].max() - timedelta(days=30)
-    sub_30d = picks_log[picks_log["date"] >= cutoff_30d]
-    if not sub_30d.empty:
-        h = sub_30d["hit_hr_bool"].sum()
-        rows.append({
-            "category":     "Rolling",
-            "subcategory":  "Last 30 Days",
-            "total_picks":  len(sub_30d),
-            "hr_count":     int(h),
-            "hit_rate_pct": round(h / len(sub_30d) * 100, 1),
-        })
+    max_date = picks_log["date"].max()
+    add_row("Rolling", "Last 7 Days",  picks_log[picks_log["date"] >= max_date - timedelta(days=7)])
+    add_row("Rolling", "Last 30 Days", picks_log[picks_log["date"] >= max_date - timedelta(days=30)])
 
     return pd.DataFrame(rows)
 
@@ -918,13 +891,6 @@ def build_scorecard(picks_log: pd.DataFrame) -> pd.DataFrame:
 # ── Main backtest loop ─────────────────────────────────────────────────────
 
 def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    For each game date in the 2026 season:
-    1. Build batter + pitcher features using only prior data
-    2. Generate top 10 picks
-    3. Check actual HR outcomes
-    4. Log results
-    """
     game_dates = get_game_dates()
     print(f"Back-testing {len(game_dates)} dates from {game_dates[0]} to {game_dates[-1]}")
 
@@ -949,16 +915,16 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if batters.empty:
             continue
 
-        # Use pitchers who actually pitched on this date
-        day_pitchers = full_df[
-            full_df["game_date"] == pd.Timestamp(game_date)
-        ]["pitcher"].dropna().astype(int).unique()
-        probable_ids = set(day_pitchers)
-
-        if not probable_ids:
+        # Identify one starter per team using BF on game day
+        starters_by_team = get_probable_starters(full_df, game_date)
+        if not starters_by_team:
             continue
 
-        pitchers = build_pitcher_features(full_df, probable_ids, matchups, game_date)
+        starter_ids = set(starters_by_team.values())
+
+        pitchers = build_pitcher_features(
+            full_df, starter_ids, matchups, game_date, starters_by_team
+        )
         if pitchers.empty:
             continue
 
@@ -1000,7 +966,6 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if combined.empty:
             continue
 
-        # Add park factors
         combined = combined.merge(
             park_factors[["team", "park_hr_factor", "small_sample"]],
             left_on="batter_team",
