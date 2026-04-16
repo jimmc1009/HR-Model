@@ -39,7 +39,6 @@ ISO_GAP_SEVERE   = 0.150
 
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT       = {"red": 0.149, "green": 0.149, "blue": 0.149}
-COLOR_HEADER       = {"red": 0.067, "green": 0.067, "blue": 0.067}
 COLOR_ACCENT       = {"red": 0.114, "green": 0.533, "blue": 0.898}
 COLOR_ACCENT_DIM   = {"red": 0.055, "green": 0.180, "blue": 0.318}
 COLOR_WHITE        = {"red": 1.000, "green": 1.000, "blue": 1.000}
@@ -48,7 +47,6 @@ COLOR_SILVER       = {"red": 0.753, "green": 0.753, "blue": 0.753}
 COLOR_BRONZE       = {"red": 0.804, "green": 0.498, "blue": 0.196}
 COLOR_GREEN        = {"red": 0.180, "green": 0.800, "blue": 0.443}
 COLOR_ORANGE       = {"red": 0.980, "green": 0.502, "blue": 0.059}
-COLOR_RED          = {"red": 0.906, "green": 0.298, "blue": 0.235}
 COLOR_EV_HEADER    = {"red": 0.100, "green": 0.100, "blue": 0.100}
 
 
@@ -340,7 +338,8 @@ def prepare_combined(
 
     score_cols = [
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
-        "avg_ev_7d", "hard_hit_pct_7d", "avg_launch_angle",
+        "avg_ev_7d", "hard_hit_pct_7d",
+        "avg_launch_angle", "avg_la_7d",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
         "pitcher_bf", "park_hr_factor",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
@@ -359,22 +358,27 @@ def prepare_combined(
 
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
 
+    # Full platoon matchup with ISO gap
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"] = platoon_results.apply(lambda x: x[0])
     combined["platoon_desc"] = platoon_results.apply(lambda x: x[1])
     combined["platoon_penalty"] = platoon_results.apply(lambda x: x[2])
 
+    # Pitch matchup score
     pitch_results = combined.apply(compute_pitch_matchup_score, axis=1)
     combined["pitch_matchup_score"] = pitch_results.apply(lambda x: x[0])
     combined["pitch_matchup_desc"] = pitch_results.apply(lambda x: x[1])
 
+    # Pitcher quality penalty
     combined["pitcher_quality_penalty"] = (
         normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
         normalize_inverted(combined["pitcher_hard_hit_pct"]) * 0.4
     )
 
+    # Weather raw additive
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
 
+    # Composite score
     combined["score"] = (
         normalize(combined["barrel_pct_7d"])            * WEIGHTS["barrel_pct_7d"] +
         normalize(combined["hr_per_pa"])                 * WEIGHTS["hr_per_pa"] +
@@ -480,6 +484,8 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "vs_lhp_iso":                 "ISO vs LHP",
         "vs_rhp_iso":                 "ISO vs RHP",
         "avg_ev_7d":                  "Avg EV (7d)",
+        "avg_la_7d":                  "Avg Launch Angle (7d)",
+        "avg_launch_angle":           "Avg Launch Angle (Season)",
         "platoon_desc":               "Platoon Matchup",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":          "Pitcher HR/FB% Allowed",
@@ -508,10 +514,16 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
     if combined.empty:
         return pd.DataFrame()
 
+    # Use 7d rolling launch angle if available, fall back to season avg
+    if "avg_la_7d" in combined.columns:
+        combined["la_for_filter"] = combined["avg_la_7d"].apply(safe_float)
+    else:
+        combined["la_for_filter"] = combined["avg_launch_angle"].apply(safe_float)
+
     ev_df = combined[
         (combined["avg_ev_7d"] > 92) &
-        (combined["avg_launch_angle"] < 20) &
-        (combined["avg_launch_angle"] > -90)
+        (combined["la_for_filter"] < 20) &
+        (combined["la_for_filter"] > -90)
     ].copy()
 
     if ev_df.empty:
@@ -537,8 +549,10 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
     def build_ev_reason(row) -> str:
         reasons = []
         ev = safe_float(row.get("avg_ev_7d"))
-        la = safe_float(row.get("avg_launch_angle"))
-        reasons.append(f"💥 Avg EV {ev:.1f} mph, launch angle {la:.1f}°")
+        la_7d = safe_float(row.get("avg_la_7d"))
+        la_season = safe_float(row.get("avg_launch_angle"))
+        la = la_7d if la_7d != 0.0 else la_season
+        reasons.append(f"💥 Avg EV {ev:.1f} mph, launch angle {la:.1f}° (7d)")
 
         hh = safe_float(row.get("hard_hit_pct_7d"))
         if hh >= 40:
@@ -573,7 +587,8 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "ev_score":                   "EV Score",
         "why":                        "Why They're Here",
         "avg_ev_7d":                  "Avg EV (7d)",
-        "avg_launch_angle":           "Avg Launch Angle",
+        "avg_la_7d":                  "Avg Launch Angle (7d)",
+        "avg_launch_angle":           "Avg Launch Angle (Season)",
         "hard_hit_pct_7d":            "Hard Hit% (7d)",
         "hr_per_fb":                  "HR/FB%",
         "vs_lhp_iso":                 "ISO vs LHP",
@@ -663,7 +678,7 @@ def format_picks_sheet(
     ws = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols = 33
+    main_cols = 35
     ev_cols = 28
     total_rows = ev_col_header_row + ev_data_row_count + 2
 
@@ -973,6 +988,8 @@ def format_picks_sheet(
         80,   # ISO vs LHP
         80,   # ISO vs RHP
         85,   # Avg EV
+        100,  # Avg Launch Angle 7d
+        100,  # Avg Launch Angle Season
         220,  # Platoon Matchup
         120,  # Pitcher Barrel%
         120,  # Pitcher HR/FB%
@@ -1058,7 +1075,7 @@ def main() -> None:
 
     if not ev_section.empty:
         print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Avg EV (7d)", "Avg Launch Angle"]].to_string(index=False))
+        print(ev_section[["Rank", "Batter", "Bats", "Avg EV (7d)", "Avg Launch Angle (7d)"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(
         gc, sheet_id, picks, ev_section
