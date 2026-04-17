@@ -48,6 +48,8 @@ OUT_EVENTS = {
     "strikeout_double_play",
 }
 
+MIN_BBE_PER_PITCH = 10  # minimum BBE against a pitch type before including in scoring
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -191,11 +193,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
 
 
 def get_today_matchups() -> Tuple[Dict[str, str], Set[str]]:
-    """
-    Returns:
-        matchups: {team → opponent} bidirectional
-        home_teams: set of home team abbreviations today
-    """
     def fetch_mlb_matchups(date_str: str) -> Tuple[Dict[str, str], Set[str]]:
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
         resp = requests.get(url, timeout=15)
@@ -506,6 +503,98 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     return result
 
 
+def build_pitch_type_splits_pitcher(
+    bbe: pd.DataFrame,
+    probable_ids: Set[int],
+) -> pd.DataFrame:
+    """
+    Calculate ISO allowed, HR rate allowed, and barrel% allowed
+    per pitch type for each pitcher.
+    Only includes pitch types with >= MIN_BBE_PER_PITCH BBE to avoid noise.
+    Columns: pitcher, pitcher_iso_allowed_{PT}, pitcher_hr_rate_allowed_{PT},
+             pitcher_barrel_pct_allowed_{PT}
+    """
+    if "pitch_type" not in bbe.columns:
+        return pd.DataFrame(columns=["pitcher"])
+
+    pitch_bbe = bbe[
+        bbe["pitcher"].isin(probable_ids) &
+        bbe["pitch_type"].notna()
+    ].copy()
+
+    pitch_bbe["pitch_type"] = pitch_bbe["pitch_type"].astype("string").str.upper().str.strip()
+    pitch_bbe = pitch_bbe[
+        ~pitch_bbe["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])
+    ]
+
+    if pitch_bbe.empty:
+        return pd.DataFrame(columns=["pitcher"])
+
+    # Need total bases and hits for ISO calculation
+    tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+    pitch_bbe["total_bases"] = (
+        pitch_bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+    )
+    pitch_bbe["is_hit"] = pitch_bbe["events"].astype("string").str.lower().isin(
+        {"single", "double", "triple", "home_run"}
+    )
+
+    # AB denominator for ISO — excludes walks, HBP, sac flies
+    ab_events = {
+        "single", "double", "triple", "home_run",
+        "field_out", "grounded_into_double_play", "double_play",
+        "triple_play", "field_error", "fielders_choice",
+        "fielders_choice_out", "force_out", "strikeout",
+        "strikeout_double_play", "other_out",
+    }
+    pitch_bbe["is_ab"] = pitch_bbe["events"].astype("string").str.lower().isin(ab_events)
+
+    grp = (
+        pitch_bbe.groupby(["pitcher", "pitch_type"])
+        .agg(
+            bbe_count=("launch_speed", "size"),
+            hr_count=("is_hr", "sum"),
+            barrel_count=("is_barrel", "sum"),
+            total_bases=("total_bases", "sum"),
+            hits=("is_hit", "sum"),
+            ab_count=("is_ab", "sum"),
+        )
+        .reset_index()
+    )
+
+    # Apply minimum BBE threshold per pitch type
+    grp = grp[grp["bbe_count"] >= MIN_BBE_PER_PITCH].copy()
+
+    if grp.empty:
+        return pd.DataFrame(columns=["pitcher"])
+
+    grp["pitcher_iso_allowed"] = (
+        (grp["total_bases"] - grp["hits"]) /
+        grp["ab_count"].replace(0, np.nan)
+    ).round(3)
+
+    grp["pitcher_hr_rate_allowed"] = (
+        grp["hr_count"] / grp["bbe_count"] * 100
+    ).round(2)
+
+    grp["pitcher_barrel_pct_allowed"] = (
+        grp["barrel_count"] / grp["bbe_count"] * 100
+    ).round(2)
+
+    # Pivot so each pitch type becomes its own columns
+    result_rows = []
+    for pitcher_id, pdata in grp.groupby("pitcher"):
+        record = {"pitcher": pitcher_id}
+        for _, row in pdata.iterrows():
+            pt = row["pitch_type"]
+            record[f"pitcher_iso_allowed_{pt}"]        = row["pitcher_iso_allowed"]
+            record[f"pitcher_hr_rate_allowed_{pt}"]    = row["pitcher_hr_rate_allowed"]
+            record[f"pitcher_barrel_pct_allowed_{pt}"] = row["pitcher_barrel_pct_allowed"]
+        result_rows.append(record)
+
+    return pd.DataFrame(result_rows)
+
+
 def build_season_stats_pitcher(
     bbe: pd.DataFrame,
     full_df: pd.DataFrame,
@@ -761,12 +850,14 @@ def build_pitcher_full(
     platoon_splits = build_platoon_splits_pitcher(bbe, df)
     rolling_stats = build_rolling_stats_pitcher(bbe)
     pitch_mix = build_pitch_mix(df, probable_ids)
+    pitch_type_splits = build_pitch_type_splits_pitcher(bbe, probable_ids)
 
     combined = (
         season_stats
         .merge(platoon_splits, on="pitcher", how="left")
         .merge(rolling_stats, on="pitcher", how="left")
         .merge(pitch_mix, on="pitcher", how="left")
+        .merge(pitch_type_splits, on="pitcher", how="left")
     )
 
     id_to_name = {v["id"]: v["name"] for v in probable_pitchers.values()}
@@ -781,8 +872,6 @@ def build_pitcher_full(
     combined["opposing_team"] = combined["pitcher_team"].map(
         lambda t: matchups.get(str(t), "")
     )
-
-    # home_team = whichever team in this matchup is hosting today
     combined["home_team"] = combined.apply(
         lambda r: r["pitcher_team"] if str(r["pitcher_team"]) in home_teams
         else r["opposing_team"],
