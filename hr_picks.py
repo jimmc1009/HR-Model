@@ -889,6 +889,123 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     ws_sc.update(values)
     print("Scorecard updated.")
 
+def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
+    """
+    Find all Pending picks from previous days and resolve them to Yes/No
+    based on actual Statcast HR outcomes.
+    """
+    from datetime import date, timedelta
+    from pybaseball import statcast
+
+    sh = gc.open_by_key(sheet_id)
+
+    try:
+        ws = sh.worksheet("Picks_Log")
+        existing = pd.DataFrame(ws.get_all_records())
+    except gspread.WorksheetNotFound:
+        print("Picks_Log not found — skipping resolution.")
+        return
+
+    if existing.empty:
+        print("Picks_Log is empty — nothing to resolve.")
+        return
+
+    # Find pending rows from before today
+    today_str = date.today().strftime("%Y-%m-%d")
+    pending = existing[
+        (existing["hit_hr"] == "Pending") &
+        (existing["date"] != today_str) &
+        (existing["date"] != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending picks to resolve.")
+        return
+
+    pending_dates = sorted(pending["date"].unique())
+    print(f"Resolving {len(pending)} pending picks across {len(pending_dates)} dates...")
+
+    # Pull Statcast for the date range covering all pending picks
+    min_date = pending_dates[0]
+    max_date = pending_dates[-1]
+
+    try:
+        hr_df = statcast(start_dt=min_date, end_dt=max_date)
+        if hr_df is None or hr_df.empty:
+            print("Statcast returned empty — cannot resolve pending picks.")
+            return
+        print(f"Pulled {len(hr_df):,} Statcast rows for resolution.")
+    except Exception as e:
+        print(f"Statcast pull failed: {e}")
+        return
+
+    hr_df["game_date"] = pd.to_datetime(hr_df["game_date"])
+    hr_df["is_hr"] = hr_df["events"].astype("string").str.lower().eq("home_run")
+
+    # Build set of (date_str, player_name) who hit HRs
+    # We match on player name since we don't store player_id reliably in log
+    hr_events = hr_df[hr_df["is_hr"]].copy()
+
+    # Look up names for all HR hitters
+    hr_batter_ids = hr_events["batter"].dropna().astype(int).unique().tolist()
+    print(f"Looking up names for {len(hr_batter_ids)} HR hitters...")
+    name_map = {}
+    for i in range(0, len(hr_batter_ids), 50):
+        chunk = hr_batter_ids[i:i + 50]
+        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
+        try:
+            import requests as req
+            resp = req.get(url, timeout=30)
+            resp.raise_for_status()
+            for person in resp.json().get("people", []):
+                pid = person.get("id")
+                name = person.get("fullName", "")
+                if pid and name:
+                    name_map[int(pid)] = name
+        except Exception:
+            pass
+
+    hr_events = hr_events.copy()
+    hr_events["player_name"] = hr_events["batter"].map(
+        lambda x: name_map.get(int(x), "") if pd.notna(x) else ""
+    )
+    hr_events["date_str"] = hr_events["game_date"].dt.strftime("%Y-%m-%d")
+
+    # Build lookup set: {(date_str, player_name_lower)}
+    hr_lookup = set(
+        zip(hr_events["date_str"], hr_events["player_name"].str.lower().str.strip())
+    )
+
+    # Resolve each pending row
+    resolved_count = 0
+    for idx, row in existing.iterrows():
+        if row["hit_hr"] != "Pending" or row["date"] == today_str:
+            continue
+
+        pick_date = str(row["date"]).strip()
+        pick_name = str(row["player_name"]).lower().strip()
+
+        if not pick_date or not pick_name:
+            existing.at[idx, "hit_hr"] = "No"
+            resolved_count += 1
+            continue
+
+        if (pick_date, pick_name) in hr_lookup:
+            existing.at[idx, "hit_hr"] = "Yes"
+        else:
+            existing.at[idx, "hit_hr"] = "No"
+        resolved_count += 1
+
+    print(f"Resolved {resolved_count} picks.")
+    yes_count = (existing["hit_hr"] == "Yes").sum()
+    no_count = (existing["hit_hr"] == "No").sum()
+    print(f"  Yes: {yes_count} | No: {no_count}")
+
+    # Write back
+    ws.clear()
+    values = [existing.columns.tolist()] + existing.astype(str).values.tolist()
+    ws.update(values)
+    print("Picks_Log updated with resolved outcomes.")
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
