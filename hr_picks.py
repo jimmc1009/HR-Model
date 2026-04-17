@@ -40,7 +40,7 @@ ISO_GAP_MEDIUM   = 0.060
 ISO_GAP_LARGE    = 0.100
 ISO_GAP_SEVERE   = 0.150
 
-MIN_BATTING_AVG  = 0.200
+MIN_BATTING_AVG  = 0.225
 MAX_PER_TEAM     = 2
 
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
@@ -85,11 +85,6 @@ def safe_float(val, default=0.0) -> float:
 
 
 def american_odds_to_profit(odds: float) -> float:
-    """
-    Convert American odds (positive only, e.g. 350 = +350)
-    to profit per 1 unit wagered.
-    +350 means bet 1, profit 3.50 if win.
-    """
     if odds <= 0:
         return 0.0
     return odds / 100.0
@@ -148,6 +143,14 @@ def compute_pull_park_score(row: pd.Series) -> tuple:
 
 
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
+    """
+    Two-sided pitch matchup scoring:
+    - Batter ISO/HR rate/barrel% vs each pitch type
+    - Pitcher ISO allowed/HR rate allowed/barrel% allowed vs each pitch type
+    Combined into a single score and description.
+    Penalty applies when batter is weak vs a heavily used pitch
+    AND pitcher is not weak on that pitch (i.e. it's a real weapon).
+    """
     scores = []
     descriptions = []
     pitch_penalty = 0.0
@@ -159,25 +162,86 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
 
-        iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
-        hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
-        barrel = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
-        has_data = (iso > 0 or hr_rate > 0)
+        # Batter side
+        batter_iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
+        batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
+        batter_barrel = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
+        batter_has_data = (batter_iso > 0 or batter_hr_rate > 0)
 
-        if has_data:
-            pitch_score = (iso * 3 + hr_rate / 10 + barrel / 20) * (pitch_pct / 100)
-            scores.append(pitch_score)
+        # Pitcher side
+        pitcher_iso = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
+        pitcher_hr_rate = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
+        pitcher_barrel = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
+        pitcher_has_data = (pitcher_iso > 0 or pitcher_hr_rate > 0)
 
-            if iso >= 0.150 and pitch_pct >= 15:
-                descriptions.append(
-                    f"✅ ISO {iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
+        if not batter_has_data and not pitcher_has_data:
+            continue
+
+        # Score combines both sides weighted by usage
+        batter_component = (
+            batter_iso * 3 + batter_hr_rate / 10 + batter_barrel / 20
+        ) if batter_has_data else 0.0
+
+        pitcher_component = (
+            pitcher_iso * 2 + pitcher_hr_rate / 10 + pitcher_barrel / 20
+        ) if pitcher_has_data else 0.0
+
+        pitch_score = (batter_component + pitcher_component) * (pitch_pct / 100)
+        scores.append(pitch_score)
+
+        # Build description
+        parts = []
+
+        if batter_has_data and pitcher_has_data:
+            if batter_iso >= 0.150 and pitch_pct >= 15:
+                if pitcher_iso >= 0.150:
+                    parts.append(
+                        f"✅ {pitch_type} ({pitch_pct:.0f}%) — "
+                        f"Batter ISO {batter_iso:.3f} + Pitcher allows {pitcher_iso:.3f} ISO"
+                    )
+                else:
+                    parts.append(
+                        f"✅ Batter ISO {batter_iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
+                    )
+            elif pitcher_iso >= 0.180 and pitch_pct >= 15 and not batter_has_data:
+                parts.append(
+                    f"✅ {pitch_type} ({pitch_pct:.0f}%) — "
+                    f"Pitcher allows {pitcher_iso:.3f} ISO on this pitch"
                 )
-            elif iso < 0.100 and pitch_pct >= 15:
-                penalty_amount = round((0.100 - iso) * (pitch_pct / 100) * 10, 3)
-                pitch_penalty = max(pitch_penalty, penalty_amount)
-                descriptions.append(
-                    f"⚠️ Weak vs {pitch_type} — ISO {iso:.3f} ({pitch_pct:.0f}% usage)"
+        elif batter_has_data:
+            if batter_iso >= 0.150 and pitch_pct >= 15:
+                parts.append(
+                    f"✅ ISO {batter_iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)"
                 )
+        elif pitcher_has_data:
+            if pitcher_iso >= 0.180 and pitch_pct >= 15:
+                parts.append(
+                    f"✅ {pitch_type} ({pitch_pct:.0f}%) — "
+                    f"Pitcher allows {pitcher_iso:.3f} ISO"
+                )
+
+        # Penalty — batter weak vs pitch AND pitcher is not leaking ISO on it
+        if batter_has_data and batter_iso < 0.100 and pitch_pct >= 15:
+            # Reduce penalty if pitcher also allows high ISO on this pitch
+            # (meaning the pitch isn't actually effective despite batter weakness)
+            pitcher_iso_factor = max(0.0, 1.0 - (pitcher_iso / 0.150)) if pitcher_has_data else 1.0
+            penalty_amount = round(
+                (0.100 - batter_iso) * (pitch_pct / 100) * 10 * pitcher_iso_factor, 3
+            )
+            pitch_penalty = max(pitch_penalty, penalty_amount)
+            if penalty_amount > 0.02:
+                weakness_note = (
+                    f" (but pitcher allows {pitcher_iso:.3f} ISO on it)"
+                    if pitcher_has_data and pitcher_iso >= 0.100
+                    else ""
+                )
+                parts.append(
+                    f"⚠️ Weak vs {pitch_type} — "
+                    f"ISO {batter_iso:.3f} ({pitch_pct:.0f}% usage){weakness_note}"
+                )
+
+        if parts:
+            descriptions.extend(parts)
 
     total_score = sum(scores)
     desc = " + ".join(descriptions) if descriptions else ""
@@ -290,11 +354,14 @@ def assign_confidence(row: pd.Series) -> str:
     )
 
     points = 0
+    batter_points = 0
 
     if batter_bbe >= 60 and batter_pa >= 100:
         points += 2
+        batter_points = 2
     elif batter_bbe >= 30 and batter_pa >= 50:
         points += 1
+        batter_points = 1
 
     if pitcher_bbe >= 80:
         points += 2
@@ -306,8 +373,6 @@ def assign_confidence(row: pd.Series) -> str:
 
     if weather_available:
         points += 1
-
-    batter_points = 2 if (batter_bbe >= 60 and batter_pa >= 100) else 1 if (batter_bbe >= 25 and batter_pa >= 45) else 0
 
     if points >= 5 and batter_points >= 1:
         return "High"
@@ -365,7 +430,6 @@ def prepare_combined(
 
     if "pitcher_hand" not in pitchers.columns:
         pitchers["pitcher_hand"] = ""
-
     if "home_team" not in pitchers.columns:
         pitchers["home_team"] = pitchers.get("opp_pitcher_team", "")
 
@@ -381,6 +445,16 @@ def prepare_combined(
     batters.columns = [c.strip() for c in batters.columns]
     batters = batters.rename(columns={"team": "batter_team"})
 
+    # Build pitcher join cols — include all pitcher_iso_allowed_* and
+    # pitcher_hr_rate_allowed_* and pitcher_barrel_pct_allowed_* columns
+    # dynamically so new pitch types appear automatically
+    dynamic_pitch_cols = [
+        c for c in pitchers.columns
+        if c.startswith("pitcher_iso_allowed_")
+        or c.startswith("pitcher_hr_rate_allowed_")
+        or c.startswith("pitcher_barrel_pct_allowed_")
+    ]
+
     pitcher_join_cols = [c for c in [
         "batter_team", "home_team", "opp_pitcher_name", "opp_pitcher_team",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
@@ -394,7 +468,7 @@ def prepare_combined(
         "top_pitch_1", "top_pitch_1_pct",
         "top_pitch_2", "top_pitch_2_pct",
         "top_pitch_3", "top_pitch_3_pct",
-    ] if c in pitchers.columns]
+    ] if c in pitchers.columns] + dynamic_pitch_cols
 
     combined = batters.merge(
         pitchers[pitcher_join_cols],
@@ -474,6 +548,16 @@ def prepare_combined(
         "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
     ]
+
+    # Also coerce all dynamic pitcher pitch type columns
+    dynamic_pitch_cols_in_combined = [
+        c for c in combined.columns
+        if c.startswith("pitcher_iso_allowed_")
+        or c.startswith("pitcher_hr_rate_allowed_")
+        or c.startswith("pitcher_barrel_pct_allowed_")
+    ]
+    score_cols += dynamic_pitch_cols_in_combined
+
     for col in score_cols:
         if col in combined.columns:
             combined[col] = combined[col].apply(safe_float)
@@ -773,10 +857,6 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
 
 
 def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
-    """
-    Find all Pending picks from previous days and resolve them
-    to Yes/No based on actual Statcast HR outcomes.
-    """
     sh = gc.open_by_key(sheet_id)
 
     try:
@@ -921,8 +1001,8 @@ def log_todays_picks(
                 "confidence":  str(row.get(conf_col, "")),
                 "hit_hr":      "Pending",
                 "section":     section,
-                "odds":        "",        # you fill this in manually
-                "bet_placed":  "",        # you fill this in manually (Yes/No)
+                "odds":        "",
+                "bet_placed":  "",
             })
 
     build_log_rows(picks, "Main")
@@ -934,7 +1014,6 @@ def log_todays_picks(
 
     new_df = pd.DataFrame(new_rows)
 
-    # Ensure existing log has the new columns if they don't exist yet
     for col in ["odds", "bet_placed"]:
         if not existing.empty and col not in existing.columns:
             existing[col] = ""
@@ -965,7 +1044,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         print("Picks_Log is empty — skipping scorecard update.")
         return
 
-    # All scored picks (Yes/No) for hit rate tracking
     scored = picks_log[picks_log["hit_hr"].isin(["Yes", "No"])].copy()
     if scored.empty:
         print("No scored picks yet — skipping scorecard update.")
@@ -975,7 +1053,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     scored["rank"] = pd.to_numeric(scored["rank"], errors="coerce")
     scored["date"] = pd.to_datetime(scored["date"], errors="coerce")
 
-    # Bet picks — only rows where bet_placed = Yes AND hit_hr resolved AND odds entered
     bet_picks = scored[
         (scored.get("bet_placed", pd.Series("", index=scored.index))
          .astype(str).str.strip().str.lower() == "yes") &
@@ -1001,12 +1078,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         total = len(sub_df)
         hits = sub_df["hit_hr_bool"].sum()
         rows.append({
-            "category":     category,
-            "subcategory":  subcategory,
-            "total_picks":  total,
-            "hr_count":     int(hits),
-            "hit_rate_pct": round(hits / total * 100, 1),
-            "bets_placed":  "",
+            "category":      category,
+            "subcategory":   subcategory,
+            "total_picks":   total,
+            "hr_count":      int(hits),
+            "hit_rate_pct":  round(hits / total * 100, 1),
+            "bets_placed":   "",
             "units_wagered": "",
             "units_profit":  "",
             "roi_pct":       "",
@@ -1032,7 +1109,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             "roi_pct":       roi,
         })
 
-    # ── Hit rate section (all scored picks) ───────────────────────────────
     add_row("Overall", "All Picks", scored)
 
     for rank in range(1, 11):
@@ -1050,7 +1126,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_row("Rolling", "Last 30 Days",
             scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
-    # ── ROI section (bet picks only) ──────────────────────────────────────
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
@@ -1067,6 +1142,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             add_bet_row(
                 "ROI By Rank", f"Rank {rank}",
                 bet_picks[bet_picks["rank"] == rank]
+            )
+
+        for section in bet_picks["section"].dropna().unique():
+            add_bet_row(
+                "ROI By Section", section,
+                bet_picks[bet_picks["section"] == section]
             )
 
         max_bet_date = bet_picks["date"].max()
@@ -1216,7 +1297,7 @@ def format_picks_sheet(
 
     for i in range(main_row_count):
         row_idx = i + 1
-        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
+        bg = COLOR_BG
         reqs.append({
             "repeatCell": {
                 "range": {
@@ -1361,7 +1442,6 @@ def format_picks_sheet(
 
     for i in range(ev_data_row_count):
         row_idx = ev_col_header_row + 1 + i
-        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
         reqs.append({
             "repeatCell": {
                 "range": {
@@ -1371,7 +1451,7 @@ def format_picks_sheet(
                     "startColumnIndex": 0,
                     "endColumnIndex": ev_cols,
                 },
-                "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}},
                 "fields": "userEnteredFormat(backgroundColor)",
             }
         })
