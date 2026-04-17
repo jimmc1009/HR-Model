@@ -384,7 +384,7 @@ def prepare_combined(
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
         "pitcher_vs_lhh_hr_rate", "pitcher_vs_rhh_hr_rate",
         "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
-        "pitcher_hand",
+        "pitcher_hand", "home_team"
         "top_pitch_1", "top_pitch_1_pct",
         "top_pitch_2", "top_pitch_2_pct",
         "top_pitch_3", "top_pitch_3_pct",
@@ -400,16 +400,11 @@ def prepare_combined(
         print("No batter-pitcher matchups found.")
         return pd.DataFrame()
 
-    if not parks.empty:
-        park_cols = [c for c in [
-            "home_team", "park_hr_factor", "park_name", "small_sample",
-            "lf_dist", "lf_height", "rf_dist", "rf_height",
-            "pull_boost_rhh", "pull_boost_lhh",
-        ] if c in parks.columns]
+  if not weather.empty:
         combined = combined.merge(
-            parks[park_cols],
-            left_on="opp_pitcher_team",
-            right_on="home_team",
+            weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]],
+            left_on="home_team",
+            right_on="weather_home_team",
             how="left",
         )
     else:
