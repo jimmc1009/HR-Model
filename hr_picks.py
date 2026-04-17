@@ -332,6 +332,7 @@ def prepare_combined(
         "pitcher_name":              "opp_pitcher_name",
         "pitcher_team":              "opp_pitcher_team",
         "opposing_team":             "batter_team",
+        "home_team":                 "home_team",
         "season_barrel_pct_allowed": "pitcher_barrel_pct",
         "hr_per_fb_allowed":         "pitcher_hr_per_fb",
         "hard_hit_pct_allowed":      "pitcher_hard_hit_pct",
@@ -363,9 +364,12 @@ def prepare_combined(
     if "pitcher_hand" not in pitchers.columns:
         pitchers["pitcher_hand"] = ""
 
+    if "home_team" not in pitchers.columns:
+        pitchers["home_team"] = pitchers.get("opp_pitcher_team", "")
+
     parks = parks.copy()
     parks.columns = [c.strip() for c in parks.columns]
-    parks = parks.rename(columns={"team": "home_team"})
+    parks = parks.rename(columns={"team": "park_home_team"})
 
     weather = weather.copy()
     weather.columns = [c.strip() for c in weather.columns]
@@ -376,7 +380,7 @@ def prepare_combined(
     batters = batters.rename(columns={"team": "batter_team"})
 
     pitcher_join_cols = [c for c in [
-        "batter_team", "opp_pitcher_name", "opp_pitcher_team",
+        "batter_team", "home_team", "opp_pitcher_name", "opp_pitcher_team",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
         "pitcher_avg_ev", "pitcher_bf", "pitcher_bbe_allowed",
         "pitcher_pct_fastball", "pitcher_pct_breaking",
@@ -384,7 +388,7 @@ def prepare_combined(
         "pitcher_vs_lhh_barrel_pct", "pitcher_vs_rhh_barrel_pct",
         "pitcher_vs_lhh_hr_rate", "pitcher_vs_rhh_hr_rate",
         "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
-        "pitcher_hand", "home_team"
+        "pitcher_hand",
         "top_pitch_1", "top_pitch_1_pct",
         "top_pitch_2", "top_pitch_2_pct",
         "top_pitch_3", "top_pitch_3_pct",
@@ -400,11 +404,16 @@ def prepare_combined(
         print("No batter-pitcher matchups found.")
         return pd.DataFrame()
 
-  if not weather.empty:
+    if not parks.empty:
+        park_cols = [c for c in [
+            "park_home_team", "park_hr_factor", "park_name", "small_sample",
+            "lf_dist", "lf_height", "rf_dist", "rf_height",
+            "pull_boost_rhh", "pull_boost_lhh",
+        ] if c in parks.columns]
         combined = combined.merge(
-            weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]],
+            parks[park_cols],
             left_on="home_team",
-            right_on="weather_home_team",
+            right_on="park_home_team",
             how="left",
         )
     else:
@@ -421,7 +430,7 @@ def prepare_combined(
     if not weather.empty:
         combined = combined.merge(
             weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]],
-            left_on="opp_pitcher_team",
+            left_on="home_team",
             right_on="weather_home_team",
             how="left",
         )
