@@ -40,7 +40,7 @@ ISO_GAP_MEDIUM   = 0.060
 ISO_GAP_LARGE    = 0.100
 ISO_GAP_SEVERE   = 0.150
 
-MIN_BATTING_AVG  = 0.225
+MIN_BATTING_AVG  = 0.200
 MAX_PER_TEAM     = 2
 
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
