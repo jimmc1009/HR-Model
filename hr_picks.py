@@ -31,7 +31,7 @@ WEIGHTS = {
 PLATOON_BONUS_WEIGHT  = 0.8
 PITCH_MATCHUP_WEIGHT  = 1.2
 WEATHER_WEIGHT        = 0.4
-PULL_PARK_WEIGHT      = 0.6   # weight for pull hitter park boost in score formula
+PULL_PARK_WEIGHT      = 0.6
 
 ISO_GAP_SMALL    = 0.030
 ISO_GAP_MEDIUM   = 0.060
@@ -39,6 +39,7 @@ ISO_GAP_LARGE    = 0.100
 ISO_GAP_SEVERE   = 0.150
 
 MIN_BATTING_AVG  = 0.225
+MAX_PER_TEAM     = 2
 
 COLOR_BG           = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT       = {"red": 0.149, "green": 0.149, "blue": 0.149}
@@ -98,16 +99,13 @@ def normalize_inverted(series: pd.Series) -> pd.Series:
 
 
 def compute_pull_park_score(row: pd.Series) -> tuple:
-    """
-    Calculate a pull hitter park boost based on:
-    - Batter handedness (RHH pulls to LF, LHH pulls to RF)
-    - Batter pull rate (how often they actually pull the ball)
-    - Park dimension boost for the relevant wall
-
-    Returns (score, description)
-    """
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
     pull_rate = safe_float(row.get("pull_rate", 0))
+    season_bbe = safe_float(row.get("season_bbe", 0))
+
+    # Minimum sample guard — revert to league avg pull rate if too few BBE
+    if season_bbe < 20:
+        pull_rate = 40.0
 
     if batter_hand == "R":
         park_boost = safe_float(row.get("pull_boost_rhh", 0))
@@ -125,11 +123,9 @@ def compute_pull_park_score(row: pd.Series) -> tuple:
     if pull_rate <= 0 or wall_dist <= 0:
         return 0.0, ""
 
-    # Scale by pull rate — a 45% pull hitter gets full boost, 25% pull hitter gets half
     pull_rate_scalar = min(pull_rate / 45.0, 1.2)
     score = round(park_boost * pull_rate_scalar, 3)
 
-    # Only generate a description if the effect is meaningful
     desc = ""
     if score >= 0.15:
         desc = f"🏟️ Pull hitter ({pull_rate:.0f}% pull) → short {side} ({wall_dist:.0f}ft, {wall_ht:.0f}ft wall)"
@@ -392,7 +388,6 @@ def prepare_combined(
         print("No batter-pitcher matchups found.")
         return pd.DataFrame()
 
-    # Park merge — now includes dimension columns
     if not parks.empty:
         park_cols = [c for c in [
             "home_team", "park_hr_factor", "park_name", "small_sample",
@@ -449,7 +444,7 @@ def prepare_combined(
         "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d",
         "avg_launch_angle", "avg_la_7d",
-        "pull_rate",
+        "pull_rate", "season_bbe",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
         "pitcher_bf", "pitcher_bbe_allowed", "park_hr_factor",
         "lf_dist", "lf_height", "rf_dist", "rf_height",
@@ -480,10 +475,8 @@ def prepare_combined(
     combined["pitch_matchup_desc"] = pitch_results.apply(lambda x: x[1])
     combined["pitch_penalty"] = pitch_results.apply(lambda x: x[2])
 
-    # Take the larger of platoon or pitch penalty — don't double penalize
     combined["total_penalty"] = combined[["platoon_penalty", "pitch_penalty"]].max(axis=1)
 
-    # Pull hitter park score
     pull_results = combined.apply(compute_pull_park_score, axis=1)
     combined["pull_park_score"] = pull_results.apply(lambda x: x[0])
     combined["pull_park_desc"] = pull_results.apply(lambda x: x[1])
@@ -586,7 +579,12 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
     combined = combined.copy()
     combined["reason"] = combined.apply(build_reason, axis=1)
 
-    top10 = combined.nlargest(10, "score").copy()
+    # Sort by score then cap at MAX_PER_TEAM per team
+    combined_sorted = combined.sort_values("score", ascending=False)
+    combined_sorted["team_count"] = combined_sorted.groupby("batter_team").cumcount()
+    capped = combined_sorted[combined_sorted["team_count"] < MAX_PER_TEAM].head(10).copy()
+    capped = capped.drop(columns=["team_count"])
+    top10 = capped
     top10["rank"] = range(1, len(top10) + 1)
 
     output_cols = {
@@ -674,7 +672,12 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         ev_df["total_penalty"]
     ).round(3)
 
-    top5 = ev_df.nlargest(5, "ev_score").copy()
+    # Cap at MAX_PER_TEAM per team
+    ev_sorted = ev_df.sort_values("ev_score", ascending=False)
+    ev_sorted["team_count"] = ev_sorted.groupby("batter_team").cumcount()
+    ev_capped = ev_sorted[ev_sorted["team_count"] < MAX_PER_TEAM].head(5).copy()
+    ev_capped = ev_capped.drop(columns=["team_count"])
+    top5 = ev_capped
     top5["ev_rank"] = range(1, len(top5) + 1)
 
     def build_ev_reason(row) -> str:
@@ -1242,7 +1245,7 @@ def format_picks_sheet(
         175,  # Park
         75,   # HR Score
         80,   # Confidence
-        380,  # Key Reasons
+        400,  # Key Reasons
         75,   # Batting Avg
         90,   # Barrel% 7d
         75,   # HR/PA%
@@ -1338,11 +1341,11 @@ def main() -> None:
         return
 
     print("\nTop 10 HR Picks:")
-    print(picks[["Rank", "Batter", "Bats", "Opposing Pitcher", "Throws", "Pull Rate%", "Batting Avg", "Confidence", "HR Score"]].to_string(index=False))
+    print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score"]].to_string(index=False))
 
     if not ev_section.empty:
         print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Bats", "Avg EV (7d)", "Avg Launch Angle (7d)", "Pull Rate%", "Batting Avg", "Confidence"]].to_string(index=False))
+        print(ev_section[["Rank", "Batter", "Bats", "Team", "Avg EV (7d)", "Avg Launch Angle (7d)", "Batting Avg", "Confidence"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(
         gc, sheet_id, picks, ev_section
