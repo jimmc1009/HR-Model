@@ -675,7 +675,8 @@ def build_batter_full(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
     )
 
     combined = combined[
-        (combined["season_bbe"] >= 10) &
+        (combined["season_bbe"] >= 25) &
+        (combined["pa"] >=30) &
         (combined["player_name"] != "")
     ].copy()
 
