@@ -425,7 +425,9 @@ def prepare_combined(
         )
         combined["hr_weather_boost"] = combined["hr_weather_boost"].fillna(0.0).apply(safe_float)
         combined["wind_context"] = combined["wind_context"].fillna("Unknown")
-        combined["temp_f"] = combined["temp_f"].fillna(72.0).apply(safe_float)
+        combined["temp_f"] = combined["temp_f"].apply(
+            lambda x: 72.0 if str(x).strip() in ("", "0", "0.0") else safe_float(x, 72.0)
+        )
     else:
         combined["hr_weather_boost"] = 0.0
         combined["wind_context"] = ""
