@@ -307,9 +307,11 @@ def assign_confidence(row: pd.Series) -> str:
     if weather_available:
         points += 1
 
-    if points >= 5:
+    batter_points = 2 if (batter_bbe >= 60 and batter_pa >= 100) else 1 if (batter_bbe >= 25 and batter_pa >= 45) else 0
+
+    if points >= 5 and batter_points >= 1:
         return "High"
-    elif points >= 3:
+    elif points >= 3 and batter_points >= 1:
         return "Medium"
     else:
         return "Low"
