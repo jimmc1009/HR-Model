@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict
 
 import pandas as pd
@@ -8,6 +8,8 @@ import numpy as np
 import gspread
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
+from pybaseball import statcast
+import requests
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -82,6 +84,17 @@ def safe_float(val, default=0.0) -> float:
         return default
 
 
+def american_odds_to_profit(odds: float) -> float:
+    """
+    Convert American odds (positive only, e.g. 350 = +350)
+    to profit per 1 unit wagered.
+    +350 means bet 1, profit 3.50 if win.
+    """
+    if odds <= 0:
+        return 0.0
+    return odds / 100.0
+
+
 def normalize(series: pd.Series) -> pd.Series:
     mn = series.min()
     mx = series.max()
@@ -103,7 +116,6 @@ def compute_pull_park_score(row: pd.Series) -> tuple:
     pull_rate = safe_float(row.get("pull_rate", 0))
     season_bbe = safe_float(row.get("season_bbe", 0))
 
-    # Minimum sample guard — revert to league avg pull rate if too few BBE
     if season_bbe < 20:
         pull_rate = 40.0
 
@@ -428,7 +440,6 @@ def prepare_combined(
         combined["wind_context"] = ""
         combined["temp_f"] = 72.0
 
-    # ── Batting average filter ─────────────────────────────────────────────
     if "batting_avg" in combined.columns:
         combined["batting_avg"] = combined["batting_avg"].apply(safe_float)
         before = len(combined)
@@ -579,7 +590,6 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
     combined = combined.copy()
     combined["reason"] = combined.apply(build_reason, axis=1)
 
-    # Sort by score then cap at MAX_PER_TEAM per team
     combined_sorted = combined.sort_values("score", ascending=False)
     combined_sorted["team_count"] = combined_sorted.groupby("batter_team").cumcount()
     capped = combined_sorted[combined_sorted["team_count"] < MAX_PER_TEAM].head(10).copy()
@@ -672,7 +682,6 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         ev_df["total_penalty"]
     ).round(3)
 
-    # Cap at MAX_PER_TEAM per team
     ev_sorted = ev_df.sort_values("ev_score", ascending=False)
     ev_sorted["team_count"] = ev_sorted.groupby("batter_team").cumcount()
     ev_capped = ev_sorted[ev_sorted["team_count"] < MAX_PER_TEAM].head(5).copy()
@@ -757,6 +766,112 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
     return top5[list(available.keys())].rename(columns=available)
 
 
+def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
+    """
+    Find all Pending picks from previous days and resolve them
+    to Yes/No based on actual Statcast HR outcomes.
+    """
+    sh = gc.open_by_key(sheet_id)
+
+    try:
+        ws = sh.worksheet("Picks_Log")
+        existing = pd.DataFrame(ws.get_all_records())
+    except gspread.WorksheetNotFound:
+        print("Picks_Log not found — skipping resolution.")
+        return
+
+    if existing.empty:
+        print("Picks_Log is empty — nothing to resolve.")
+        return
+
+    today_str = date.today().strftime("%Y-%m-%d")
+    pending = existing[
+        (existing["hit_hr"] == "Pending") &
+        (existing["date"] != today_str) &
+        (existing["date"] != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending picks to resolve.")
+        return
+
+    pending_dates = sorted(pending["date"].unique())
+    print(f"Resolving {len(pending)} pending picks across {len(pending_dates)} dates...")
+
+    min_date = pending_dates[0]
+    max_date = pending_dates[-1]
+
+    try:
+        hr_df = statcast(start_dt=min_date, end_dt=max_date)
+        if hr_df is None or hr_df.empty:
+            print("Statcast returned empty — cannot resolve pending picks.")
+            return
+        print(f"Pulled {len(hr_df):,} Statcast rows for resolution.")
+    except Exception as e:
+        print(f"Statcast pull failed: {e}")
+        return
+
+    hr_df["game_date"] = pd.to_datetime(hr_df["game_date"])
+    hr_df["is_hr"] = hr_df["events"].astype("string").str.lower().eq("home_run")
+    hr_events = hr_df[hr_df["is_hr"]].copy()
+
+    hr_batter_ids = hr_events["batter"].dropna().astype(int).unique().tolist()
+    print(f"Looking up names for {len(hr_batter_ids)} HR hitters...")
+    name_map = {}
+    for i in range(0, len(hr_batter_ids), 50):
+        chunk = hr_batter_ids[i:i + 50]
+        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            for person in resp.json().get("people", []):
+                pid = person.get("id")
+                name = person.get("fullName", "")
+                if pid and name:
+                    name_map[int(pid)] = name
+        except Exception:
+            pass
+
+    hr_events = hr_events.copy()
+    hr_events["player_name"] = hr_events["batter"].map(
+        lambda x: name_map.get(int(x), "") if pd.notna(x) else ""
+    )
+    hr_events["date_str"] = hr_events["game_date"].dt.strftime("%Y-%m-%d")
+
+    hr_lookup = set(
+        zip(
+            hr_events["date_str"],
+            hr_events["player_name"].str.lower().str.strip()
+        )
+    )
+
+    resolved_count = 0
+    for idx, row in existing.iterrows():
+        if row["hit_hr"] != "Pending" or row["date"] == today_str:
+            continue
+
+        pick_date = str(row["date"]).strip()
+        pick_name = str(row["player_name"]).lower().strip()
+
+        if not pick_date or not pick_name:
+            existing.at[idx, "hit_hr"] = "No"
+            resolved_count += 1
+            continue
+
+        existing.at[idx, "hit_hr"] = "Yes" if (pick_date, pick_name) in hr_lookup else "No"
+        resolved_count += 1
+
+    print(f"Resolved {resolved_count} picks.")
+    yes_count = (existing["hit_hr"] == "Yes").sum()
+    no_count = (existing["hit_hr"] == "No").sum()
+    print(f"  Yes: {yes_count} | No: {no_count}")
+
+    ws.clear()
+    values = [existing.columns.tolist()] + existing.astype(str).values.tolist()
+    ws.update(values)
+    print("Picks_Log updated with resolved outcomes.")
+
+
 def log_todays_picks(
     gc: gspread.Client,
     sheet_id: str,
@@ -770,7 +885,7 @@ def log_todays_picks(
         ws = sh.worksheet("Picks_Log")
         existing = pd.DataFrame(ws.get_all_records())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Picks_Log", rows=5000, cols=20)
+        ws = sh.add_worksheet(title="Picks_Log", rows=5000, cols=25)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -800,6 +915,8 @@ def log_todays_picks(
                 "confidence":  str(row.get(conf_col, "")),
                 "hit_hr":      "Pending",
                 "section":     section,
+                "odds":        "",        # you fill this in manually
+                "bet_placed":  "",        # you fill this in manually (Yes/No)
             })
 
     build_log_rows(picks, "Main")
@@ -810,6 +927,12 @@ def log_todays_picks(
         return
 
     new_df = pd.DataFrame(new_rows)
+
+    # Ensure existing log has the new columns if they don't exist yet
+    for col in ["odds", "bet_placed"]:
+        if not existing.empty and col not in existing.columns:
+            existing[col] = ""
+
     combined_log = (
         pd.concat([existing, new_df], ignore_index=True)
         if not existing.empty
@@ -836,6 +959,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         print("Picks_Log is empty — skipping scorecard update.")
         return
 
+    # All scored picks (Yes/No) for hit rate tracking
     scored = picks_log[picks_log["hit_hr"].isin(["Yes", "No"])].copy()
     if scored.empty:
         print("No scored picks yet — skipping scorecard update.")
@@ -844,6 +968,24 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     scored["hit_hr_bool"] = scored["hit_hr"] == "Yes"
     scored["rank"] = pd.to_numeric(scored["rank"], errors="coerce")
     scored["date"] = pd.to_datetime(scored["date"], errors="coerce")
+
+    # Bet picks — only rows where bet_placed = Yes AND hit_hr resolved AND odds entered
+    bet_picks = scored[
+        (scored.get("bet_placed", pd.Series("", index=scored.index))
+         .astype(str).str.strip().str.lower() == "yes") &
+        (scored.get("odds", pd.Series("", index=scored.index))
+         .astype(str).str.strip() != "")
+    ].copy()
+
+    if not bet_picks.empty:
+        bet_picks["odds_num"] = bet_picks["odds"].apply(
+            lambda x: safe_float(str(x).replace("+", "").strip(), 0)
+        )
+        bet_picks["profit_if_win"] = bet_picks["odds_num"].apply(american_odds_to_profit)
+        bet_picks["unit_result"] = bet_picks.apply(
+            lambda r: r["profit_if_win"] if r["hit_hr_bool"] else -1.0,
+            axis=1
+        )
 
     rows = []
 
@@ -858,8 +1000,33 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             "total_picks":  total,
             "hr_count":     int(hits),
             "hit_rate_pct": round(hits / total * 100, 1),
+            "bets_placed":  "",
+            "units_wagered": "",
+            "units_profit":  "",
+            "roi_pct":       "",
         })
 
+    def add_bet_row(category, subcategory, sub_df):
+        if sub_df.empty:
+            return
+        total = len(sub_df)
+        hits = sub_df["hit_hr_bool"].sum()
+        units_wagered = float(total)
+        units_profit = round(sub_df["unit_result"].sum(), 2)
+        roi = round(units_profit / units_wagered * 100, 1) if units_wagered > 0 else 0
+        rows.append({
+            "category":      category,
+            "subcategory":   subcategory,
+            "total_picks":   "",
+            "hr_count":      "",
+            "hit_rate_pct":  "",
+            "bets_placed":   total,
+            "units_wagered": units_wagered,
+            "units_profit":  units_profit,
+            "roi_pct":       roi,
+        })
+
+    # ── Hit rate section (all scored picks) ───────────────────────────────
     add_row("Overall", "All Picks", scored)
 
     for rank in range(1, 11):
@@ -877,135 +1044,47 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_row("Rolling", "Last 30 Days",
             scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
+    # ── ROI section (bet picks only) ──────────────────────────────────────
+    if not bet_picks.empty:
+        bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
+        bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
+
+        add_bet_row("ROI", "All Bets", bet_picks)
+
+        for tier in ["High", "Medium", "Low"]:
+            add_bet_row(
+                "ROI By Confidence", tier,
+                bet_picks[bet_picks["confidence"] == tier]
+            )
+
+        for rank in range(1, 11):
+            add_bet_row(
+                "ROI By Rank", f"Rank {rank}",
+                bet_picks[bet_picks["rank"] == rank]
+            )
+
+        max_bet_date = bet_picks["date"].max()
+        add_bet_row(
+            "ROI Rolling", "Last 7 Days",
+            bet_picks[bet_picks["date"] >= max_bet_date - pd.Timedelta(days=7)]
+        )
+        add_bet_row(
+            "ROI Rolling", "Last 30 Days",
+            bet_picks[bet_picks["date"] >= max_bet_date - pd.Timedelta(days=30)]
+        )
+
     scorecard = pd.DataFrame(rows)
 
     try:
         ws_sc = sh.worksheet("Scorecard")
         ws_sc.clear()
     except gspread.WorksheetNotFound:
-        ws_sc = sh.add_worksheet(title="Scorecard", rows=100, cols=10)
+        ws_sc = sh.add_worksheet(title="Scorecard", rows=100, cols=12)
 
     values = [scorecard.columns.tolist()] + scorecard.astype(str).values.tolist()
     ws_sc.update(values)
     print("Scorecard updated.")
 
-def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
-    """
-    Find all Pending picks from previous days and resolve them to Yes/No
-    based on actual Statcast HR outcomes.
-    """
-    from datetime import date, timedelta
-    from pybaseball import statcast
-
-    sh = gc.open_by_key(sheet_id)
-
-    try:
-        ws = sh.worksheet("Picks_Log")
-        existing = pd.DataFrame(ws.get_all_records())
-    except gspread.WorksheetNotFound:
-        print("Picks_Log not found — skipping resolution.")
-        return
-
-    if existing.empty:
-        print("Picks_Log is empty — nothing to resolve.")
-        return
-
-    # Find pending rows from before today
-    today_str = date.today().strftime("%Y-%m-%d")
-    pending = existing[
-        (existing["hit_hr"] == "Pending") &
-        (existing["date"] != today_str) &
-        (existing["date"] != "")
-    ].copy()
-
-    if pending.empty:
-        print("No pending picks to resolve.")
-        return
-
-    pending_dates = sorted(pending["date"].unique())
-    print(f"Resolving {len(pending)} pending picks across {len(pending_dates)} dates...")
-
-    # Pull Statcast for the date range covering all pending picks
-    min_date = pending_dates[0]
-    max_date = pending_dates[-1]
-
-    try:
-        hr_df = statcast(start_dt=min_date, end_dt=max_date)
-        if hr_df is None or hr_df.empty:
-            print("Statcast returned empty — cannot resolve pending picks.")
-            return
-        print(f"Pulled {len(hr_df):,} Statcast rows for resolution.")
-    except Exception as e:
-        print(f"Statcast pull failed: {e}")
-        return
-
-    hr_df["game_date"] = pd.to_datetime(hr_df["game_date"])
-    hr_df["is_hr"] = hr_df["events"].astype("string").str.lower().eq("home_run")
-
-    # Build set of (date_str, player_name) who hit HRs
-    # We match on player name since we don't store player_id reliably in log
-    hr_events = hr_df[hr_df["is_hr"]].copy()
-
-    # Look up names for all HR hitters
-    hr_batter_ids = hr_events["batter"].dropna().astype(int).unique().tolist()
-    print(f"Looking up names for {len(hr_batter_ids)} HR hitters...")
-    name_map = {}
-    for i in range(0, len(hr_batter_ids), 50):
-        chunk = hr_batter_ids[i:i + 50]
-        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
-        try:
-            import requests as req
-            resp = req.get(url, timeout=30)
-            resp.raise_for_status()
-            for person in resp.json().get("people", []):
-                pid = person.get("id")
-                name = person.get("fullName", "")
-                if pid and name:
-                    name_map[int(pid)] = name
-        except Exception:
-            pass
-
-    hr_events = hr_events.copy()
-    hr_events["player_name"] = hr_events["batter"].map(
-        lambda x: name_map.get(int(x), "") if pd.notna(x) else ""
-    )
-    hr_events["date_str"] = hr_events["game_date"].dt.strftime("%Y-%m-%d")
-
-    # Build lookup set: {(date_str, player_name_lower)}
-    hr_lookup = set(
-        zip(hr_events["date_str"], hr_events["player_name"].str.lower().str.strip())
-    )
-
-    # Resolve each pending row
-    resolved_count = 0
-    for idx, row in existing.iterrows():
-        if row["hit_hr"] != "Pending" or row["date"] == today_str:
-            continue
-
-        pick_date = str(row["date"]).strip()
-        pick_name = str(row["player_name"]).lower().strip()
-
-        if not pick_date or not pick_name:
-            existing.at[idx, "hit_hr"] = "No"
-            resolved_count += 1
-            continue
-
-        if (pick_date, pick_name) in hr_lookup:
-            existing.at[idx, "hit_hr"] = "Yes"
-        else:
-            existing.at[idx, "hit_hr"] = "No"
-        resolved_count += 1
-
-    print(f"Resolved {resolved_count} picks.")
-    yes_count = (existing["hit_hr"] == "Yes").sum()
-    no_count = (existing["hit_hr"] == "No").sum()
-    print(f"  Yes: {yes_count} | No: {no_count}")
-
-    # Write back
-    ws.clear()
-    values = [existing.columns.tolist()] + existing.astype(str).values.tolist()
-    ws.update(values)
-    print("Picks_Log updated with resolved outcomes.")
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -1362,7 +1441,7 @@ def format_picks_sheet(
         175,  # Park
         75,   # HR Score
         80,   # Confidence
-        400,  # Key Reasons
+        380,  # Key Reasons
         75,   # Batting Avg
         90,   # Barrel% 7d
         75,   # HR/PA%
