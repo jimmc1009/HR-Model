@@ -1477,6 +1477,7 @@ def main() -> None:
         ev_col_header_row=ev_col_header_row,
     )
 
+    resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks, ev_section)
     update_scorecard(gc, sheet_id)
 
