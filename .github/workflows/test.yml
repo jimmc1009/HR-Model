@@ -22,3 +22,9 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - run: python ${{ github.event.inputs.script }}
+      - run: |
+          python main.py
+          python pitcher_statcast.py
+          python park_factors.py
+          python weather.py
+          python hr_picks.py
