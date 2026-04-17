@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import date, timedelta
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 import numpy as np
@@ -190,65 +190,83 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
     return {"_fallback": True, "_teams": "ALL"}
 
 
-def get_today_matchups() -> Dict[str, str]:
-    def fetch_mlb_matchups(date_str: str) -> Dict[str, str]:
+def get_today_matchups() -> Tuple[Dict[str, str], Set[str]]:
+    """
+    Returns:
+        matchups: {team → opponent} bidirectional
+        home_teams: set of home team abbreviations today
+    """
+    def fetch_mlb_matchups(date_str: str) -> Tuple[Dict[str, str], Set[str]]:
         url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         matchups: Dict[str, str] = {}
+        home_teams: Set[str] = set()
         for d in data.get("dates", []):
             for g in d.get("games", []):
                 away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "")
                 home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
                 if away and home:
-                    matchups[away.strip()] = home.strip()
-                    matchups[home.strip()] = away.strip()
-        return matchups
+                    away = away.strip()
+                    home = home.strip()
+                    matchups[away] = home
+                    matchups[home] = away
+                    home_teams.add(home)
+        return matchups, home_teams
 
-    def fetch_espn_matchups() -> Dict[str, str]:
+    def fetch_espn_matchups() -> Tuple[Dict[str, str], Set[str]]:
         today_str = date.today().strftime("%Y%m%d")
         url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_str}"
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         matchups: Dict[str, str] = {}
+        home_teams: Set[str] = set()
         for event in data.get("events", []):
             for comp in event.get("competitions", []):
                 competitors = comp.get("competitors", [])
                 if len(competitors) == 2:
-                    abbr0 = ESPN_TO_MLB.get(
-                        competitors[0].get("team", {}).get("abbreviation", ""),
-                        competitors[0].get("team", {}).get("abbreviation", "")
+                    home = next(
+                        (c for c in competitors if c.get("homeAway") == "home"), None
                     )
-                    abbr1 = ESPN_TO_MLB.get(
-                        competitors[1].get("team", {}).get("abbreviation", ""),
-                        competitors[1].get("team", {}).get("abbreviation", "")
+                    away = next(
+                        (c for c in competitors if c.get("homeAway") == "away"), None
                     )
-                    if abbr0 and abbr1:
-                        matchups[abbr0] = abbr1
-                        matchups[abbr1] = abbr0
-        return matchups
+                    if home and away:
+                        home_abbr = ESPN_TO_MLB.get(
+                            home.get("team", {}).get("abbreviation", ""),
+                            home.get("team", {}).get("abbreviation", "")
+                        )
+                        away_abbr = ESPN_TO_MLB.get(
+                            away.get("team", {}).get("abbreviation", ""),
+                            away.get("team", {}).get("abbreviation", "")
+                        )
+                        if home_abbr and away_abbr:
+                            matchups[home_abbr] = away_abbr
+                            matchups[away_abbr] = home_abbr
+                            home_teams.add(home_abbr)
+        return matchups, home_teams
 
     for days_ahead in (0, 1):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         try:
-            matchups = fetch_mlb_matchups(date_str)
+            matchups, home_teams = fetch_mlb_matchups(date_str)
             if matchups:
                 print(f"MLB API matchups: {len(matchups) // 2} games")
-                return matchups
+                return matchups, home_teams
         except Exception as e:
             print(f"MLB API matchups failed: {e}")
 
     try:
-        matchups = fetch_espn_matchups()
+        matchups, home_teams = fetch_espn_matchups()
         if matchups:
             print(f"ESPN API matchups: {len(matchups) // 2} games")
-            return matchups
+            return matchups, home_teams
     except Exception as e:
         print(f"ESPN API matchups failed: {e}")
 
-    return {}
+    return {}, set()
 
 
 def get_season_statcast() -> pd.DataFrame:
@@ -493,7 +511,6 @@ def build_season_stats_pitcher(
     full_df: pd.DataFrame,
     probable_ids: Set[int],
 ) -> pd.DataFrame:
-    # Batters faced
     bf_df = full_df[
         full_df["pitcher"].isin(probable_ids) &
         full_df["events"].notna()
@@ -502,7 +519,6 @@ def build_season_stats_pitcher(
     bf_df = bf_df.drop_duplicates(subset=bf_dedupe)
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
-    # Innings pitched from ALL outs in full dataset
     ip_df = full_df[
         full_df["pitcher"].isin(probable_ids) &
         full_df["events"].astype("string").str.lower().isin(OUT_EVENTS)
@@ -510,7 +526,6 @@ def build_season_stats_pitcher(
     ip_counts = ip_df.groupby("pitcher").size().reset_index(name="outs")
     ip_counts["ip"] = (ip_counts["outs"] / 3).round(2)
 
-    # Pitcher handedness
     agg_dict = {
         "season_bbe_allowed":      ("launch_speed", "size"),
         "season_hr_allowed":       ("is_hr", "sum"),
@@ -564,10 +579,6 @@ def build_platoon_splits_pitcher(
     bbe: pd.DataFrame,
     full_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Platoon splits per pitcher including HR/9 vs LHH and RHH.
-    IP calculated from full dataset to include all outs including strikeouts.
-    """
     if "stand" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
@@ -577,7 +588,6 @@ def build_platoon_splits_pitcher(
     for hand, label in [("L", "vs_lhh"), ("R", "vs_rhh")]:
         sub_bbe = bbe[bbe["stand"] == hand].copy()
 
-        # IP from full dataset for this handedness — includes strikeouts
         sub_full = full_df[
             full_df["pitcher"].isin(pitcher_ids) &
             (full_df["stand"] == hand) &
@@ -659,6 +669,7 @@ def build_pitcher_full(
     df: pd.DataFrame,
     probable_pitchers: Dict[str, dict],
     matchups: Dict[str, str],
+    home_teams: Set[str],
 ) -> pd.DataFrame:
     if df.empty or not probable_pitchers:
         return pd.DataFrame()
@@ -771,10 +782,20 @@ def build_pitcher_full(
         lambda t: matchups.get(str(t), "")
     )
 
+    # home_team = whichever team in this matchup is hosting today
+    combined["home_team"] = combined.apply(
+        lambda r: r["pitcher_team"] if str(r["pitcher_team"]) in home_teams
+        else r["opposing_team"],
+        axis=1,
+    )
+
     combined = combined[combined["pitcher_name"] != ""].copy()
     combined = combined.rename(columns={"pitcher": "pitcher_id"})
 
-    id_cols = ["pitcher_name", "pitcher_id", "pitcher_team", "opposing_team", "pitcher_hand"]
+    id_cols = [
+        "pitcher_name", "pitcher_id", "pitcher_team",
+        "opposing_team", "home_team", "pitcher_hand",
+    ]
     other_cols = [c for c in combined.columns if c not in id_cols]
     combined = combined[id_cols + other_cols]
 
@@ -824,13 +845,14 @@ def main() -> None:
     probable_pitchers = get_today_probable_pitchers()
     print(f"Probable pitchers result: {list(probable_pitchers.keys())[:5]}")
 
-    matchups = get_today_matchups()
+    matchups, home_teams = get_today_matchups()
     print(f"Matchups found: {len(matchups)}")
+    print(f"Home teams today: {home_teams}")
 
     raw_df = get_season_statcast()
     print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
 
-    pitcher_df = build_pitcher_full(raw_df, probable_pitchers, matchups)
+    pitcher_df = build_pitcher_full(raw_df, probable_pitchers, matchups, home_teams)
     print(f"Built {len(pitcher_df)} pitcher rows")
 
     if pitcher_df.empty:
