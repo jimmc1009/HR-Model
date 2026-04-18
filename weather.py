@@ -115,8 +115,8 @@ PARK_BY_TEAM = {p["team"]: p for p in PARKS}
 GAME_HOUR = 19
 
 # Wind multipliers — blowing in penalizes more than blowing out rewards
-WIND_OUT_MULTIPLIER = 1.75
-WIND_IN_MULTIPLIER  = 3.25
+WIND_OUT_MULTIPLIER = 1.5
+WIND_IN_MULTIPLIER  = 3.0
 
 
 def get_gspread_client() -> gspread.Client:
