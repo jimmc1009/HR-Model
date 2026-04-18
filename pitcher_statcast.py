@@ -809,15 +809,24 @@ def build_pitcher_full(
         print(f"Looking up names for {len(all_pitcher_ids)} pitchers in Statcast...")
         name_map = lookup_player_names(list(all_pitcher_ids))
 
+        import unicodedata
+
+        def normalize_name(name: str) -> str:
+            """Strip accents and lowercase for fuzzy name matching."""
+            return "".join(
+                c for c in unicodedata.normalize("NFD", name.lower().strip())
+                if unicodedata.category(c) != "Mn"
+            )
+
         name_to_statcast_id = {
-            v.lower().strip(): k for k, v in name_map.items()
+            normalize_name(v): k for k, v in name_map.items()
         }
 
         resolved = {}
         for team_abbr, info in probable_pitchers.items():
             if str(team_abbr).startswith("_"):
                 continue
-            espn_name = info.get("name", "").lower().strip()
+            espn_name = normalize_name(info.get("name", ""))
             statcast_id = name_to_statcast_id.get(espn_name)
             if statcast_id:
                 resolved[team_abbr] = {

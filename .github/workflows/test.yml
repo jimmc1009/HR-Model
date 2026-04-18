@@ -2,10 +2,18 @@ name: Test HR Model
 on:
   workflow_dispatch:
     inputs:
-      script:
-        description: 'Which script to run'
+      mode:
+        description: 'Run mode: full pipeline or single script'
         required: false
-        default: 'hr_picks.py'
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - main.py
+          - pitcher_statcast.py
+          - park_factors.py
+          - weather.py
+          - hr_picks.py
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,10 +29,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: python ${{ github.event.inputs.script }}
-      - run: |
+      - name: Run full pipeline
+        if: github.event.inputs.mode == 'full'
+        run: |
           python main.py
           python pitcher_statcast.py
           python park_factors.py
           python weather.py
           python hr_picks.py
+      - name: Run single script
+        if: github.event.inputs.mode != 'full'
+        run: python ${{ github.event.inputs.mode }}
