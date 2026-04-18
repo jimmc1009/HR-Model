@@ -281,7 +281,7 @@ def hr_weather_boost(
 
     # Temperature effect — each 10°F above/below 72°F adds/subtracts 0.5
     temp_delta = (temp_f - 72) / 10
-    score += temp_delta * 0.5
+    score += temp_delta * 0.75
 
     if not pd.isna(wind_mph) and not pd.isna(wind_dir) and wind_mph > 0:
         # Convert wind origin to wind destination direction
