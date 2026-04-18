@@ -60,7 +60,11 @@ PARKS = [
 ]
 
 PARK_BY_TEAM = {p["team"]: p for p in PARKS}
-GAME_HOUR = 19  # assume 7pm local time for weather forecast
+GAME_HOUR = 19
+
+# Wind multipliers — blowing in penalizes more than blowing out rewards
+WIND_OUT_MULTIPLIER = 1.5
+WIND_IN_MULTIPLIER  = 3.0
 
 
 def get_gspread_client() -> gspread.Client:
@@ -144,16 +148,9 @@ def get_today_games() -> Dict[str, dict]:
 
 
 def fetch_weather_batch(parks_to_fetch: List[dict]) -> Dict[str, dict]:
-    """
-    Fetch weather for multiple parks in a single Open-Meteo API call
-    using the bulk/multi-location endpoint. Falls back to individual
-    requests if bulk fails.
-    Returns {team: {temp_f, wind_mph, wind_dir_deg}} or empty dict on failure.
-    """
     if not parks_to_fetch:
         return {}
 
-    # Build bulk request — Open-Meteo supports comma-separated lat/lon
     lats = ",".join(str(p["lat"]) for p in parks_to_fetch)
     lons = ",".join(str(p["lon"]) for p in parks_to_fetch)
 
@@ -170,14 +167,12 @@ def fetch_weather_batch(parks_to_fetch: List[dict]) -> Dict[str, dict]:
 
     results: Dict[str, dict] = {}
 
-    # Try bulk first with retry logic
     for attempt in range(3):
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
             data = resp.json()
 
-            # Bulk response is a list when multiple locations requested
             if isinstance(data, list):
                 for i, park_data in enumerate(data):
                     team = parks_to_fetch[i]["team"]
@@ -195,7 +190,6 @@ def fetch_weather_batch(parks_to_fetch: List[dict]) -> Dict[str, dict]:
                 print(f"Bulk weather fetch succeeded for {len(results)} parks.")
                 return results
             elif isinstance(data, dict):
-                # Single location returned as dict (only 1 park requested)
                 team = parks_to_fetch[0]["team"]
                 hourly = data.get("hourly", {})
                 temps = hourly.get("temperature_2m", [])
@@ -219,7 +213,6 @@ def fetch_weather_batch(parks_to_fetch: List[dict]) -> Dict[str, dict]:
             if attempt < 2:
                 time.sleep(2 ** attempt)
 
-    # Bulk failed — fall back to individual requests
     print("Bulk fetch failed — falling back to individual park requests...")
     for park in parks_to_fetch:
         team = park["team"]
@@ -285,24 +278,31 @@ def hr_weather_boost(
         return 0.0
 
     score = 0.0
+
+    # Temperature effect — each 10°F above/below 72°F adds/subtracts 0.5
     temp_delta = (temp_f - 72) / 10
     score += temp_delta * 0.5
 
     if not pd.isna(wind_mph) and not pd.isna(wind_dir) and wind_mph > 0:
+        # Convert wind origin to wind destination direction
         wind_to = (wind_dir + 180) % 360
         diff = abs(angle_difference(wind_to, cf_direction))
+
+        # alignment: +1.0 = straight out, -1.0 = straight in, 0 = crosswind
         alignment = (90 - diff) / 90
-        score += alignment * (wind_mph / 10) * 1.5
+
+        # Use asymmetric multipliers — wind in penalizes more than wind out rewards
+        if alignment >= 0:
+            multiplier = WIND_OUT_MULTIPLIER   # blowing out
+        else:
+            multiplier = WIND_IN_MULTIPLIER    # blowing in
+
+        score += alignment * (wind_mph / 10) * multiplier
 
     return round(score, 2)
 
 
 def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
-    """
-    Fetch weather for all parks hosting games today using bulk API call.
-    Roof stadiums always neutral. Falls back to all 30 parks if no games.
-    """
-    # Determine which teams need weather
     if games:
         playing_home_teams = set(games.keys())
         unmatched = playing_home_teams - set(PARK_BY_TEAM.keys())
@@ -313,7 +313,6 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
         print("No games found — fetching weather for all 30 parks.")
         playing_home_teams = set(PARK_BY_TEAM.keys())
 
-    # Separate roof parks (no weather needed) from outdoor parks
     outdoor_parks = [
         PARK_BY_TEAM[team] for team in playing_home_teams
         if team in PARK_BY_TEAM and not PARK_BY_TEAM[team]["roof"]
@@ -326,7 +325,6 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
     print(f"Fetching weather for {len(outdoor_parks)} outdoor parks (batch)...")
     print(f"Skipping weather fetch for {len(roof_parks)} roof stadiums (always neutral).")
 
-    # Batch fetch all outdoor parks in one API call
     weather_data = fetch_weather_batch(outdoor_parks)
 
     rows = []
@@ -341,7 +339,6 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
         game_info = games.get(team, {})
 
         if roof:
-            # Roof stadiums — always neutral regardless of weather
             rows.append({
                 "home_team":        team,
                 "away_team":        game_info.get("away_team", ""),
@@ -362,7 +359,6 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
             wind_dir  = w.get("wind_dir_deg")
 
             if not w:
-                # Weather fetch failed for this park
                 wind_label   = "Unknown"
                 wind_context = "Weather unavailable"
                 boost        = 0.0
