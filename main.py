@@ -34,9 +34,9 @@ ESPN_TO_MLB = {
 }
 
 PITCH_GROUP_MAP = {
-    **{p: "fastball"   for p in FASTBALLS},
-    **{p: "breaking"   for p in BREAKING},
-    **{p: "offspeed"   for p in OFFSPEED},
+    **{p: "fastball"    for p in FASTBALLS},
+    **{p: "breaking"    for p in BREAKING},
+    **{p: "offspeed"    for p in OFFSPEED},
     **{p: "knuckleball" for p in KNUCKLEBALL},
 }
 
@@ -56,7 +56,7 @@ OUT_EVENTS = {
     "strikeout_double_play",
 }
 
-MIN_BBE_VS_PITCHER = 5  # minimum PA vs a specific pitcher before using history
+MIN_BBE_VS_PITCHER = 5
 
 
 def get_gspread_client() -> gspread.Client:
@@ -67,7 +67,7 @@ def get_gspread_client() -> gspread.Client:
 
 
 def get_season_statcast() -> pd.DataFrame:
-    end_dt = date.today() - timedelta(days=1)
+    end_dt       = date.today() - timedelta(days=1)
     season_start = date.fromisoformat(SEASON_START)
 
     try:
@@ -83,7 +83,7 @@ def get_season_statcast() -> pd.DataFrame:
     except Exception as e:
         print(f"Bulk pull failed ({e}) — falling back to monthly chunks.")
 
-    chunks = []
+    chunks      = []
     chunk_start = season_start
     while chunk_start <= end_dt:
         if chunk_start.month == 12:
@@ -123,16 +123,16 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     """
     Fetch confirmed batting lineups from MLB Stats API.
     Returns {team_abbr: set of confirmed batter MLB IDs}.
-    Falls back to ESPN scoreboard. If neither has lineups,
-    returns empty dict (no filtering applied).
+    Falls back to ESPN. If neither works returns empty dict.
     """
     today_str = date.today().strftime("%Y-%m-%d")
     lineups: Dict[str, Set[int]] = {}
 
+    # Try MLB Stats API with correct hydration
     try:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
-            f"?sportId=1&date={today_str}&hydrate=lineups"
+            f"?sportId=1&date={today_str}&hydrate=lineup,players"
         )
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
@@ -144,13 +144,15 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
                 if not lineups_data:
                     continue
 
-                for side in ("homePlayers", "awayPlayers"):
+                for side, side_key in [("homePlayers", "home"), ("awayPlayers", "away")]:
                     players = lineups_data.get(side, [])
+                    if not players:
+                        # Try alternate batting order structure
+                        players = g.get("teams", {}).get(side_key, {}).get("battingOrder", [])
+
                     if not players:
                         continue
 
-                    # Get team abbreviation
-                    side_key = "home" if side == "homePlayers" else "away"
                     abbr = g.get("teams", {}).get(side_key, {}).get(
                         "team", {}
                     ).get("abbreviation", "")
@@ -159,7 +161,11 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
                     if abbr:
                         player_ids = set()
                         for p in players:
-                            pid = p.get("id")
+                            # Handle both dict and int formats
+                            if isinstance(p, dict):
+                                pid = p.get("id") or p.get("person", {}).get("id")
+                            else:
+                                pid = p
                             if pid:
                                 player_ids.add(int(pid))
                         if player_ids:
@@ -167,7 +173,7 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
 
         if lineups:
             confirmed_teams = [t for t, ids in lineups.items() if ids]
-            print(f"Confirmed lineups for {len(confirmed_teams)} teams: {confirmed_teams}")
+            print(f"MLB API confirmed lineups for {len(confirmed_teams)} teams: {confirmed_teams}")
             return lineups
 
         print("MLB API returned no confirmed lineups yet.")
@@ -175,7 +181,7 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     except Exception as e:
         print(f"MLB lineup fetch failed: {e}")
 
-    # Fallback — try ESPN scoreboard competitors list
+    # ESPN fallback
     try:
         today_espn = date.today().strftime("%Y%m%d")
         url = (
@@ -189,7 +195,7 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
         for event in data.get("events", []):
             for comp in event.get("competitions", []):
                 for competitor in comp.get("competitors", []):
-                    abbr = ESPN_TO_MLB.get(
+                    abbr   = ESPN_TO_MLB.get(
                         competitor.get("team", {}).get("abbreviation", ""),
                         competitor.get("team", {}).get("abbreviation", "")
                     )
@@ -215,18 +221,18 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
 
 
 def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
-    out: Dict[int, str] = {}
+    out       = {}
     clean_ids = sorted({int(pid) for pid in player_ids if pd.notna(pid)})
     if not clean_ids:
         return out
     for i in range(0, len(clean_ids), 50):
         chunk = clean_ids[i:i + 50]
-        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
+        url   = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
             for person in resp.json().get("people", []):
-                pid = person.get("id")
+                pid  = person.get("id")
                 name = person.get("fullName", "")
                 if pid and name:
                     out[int(pid)] = name
@@ -293,9 +299,6 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
 def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
     """
     Build batter vs specific pitcher historical stats.
-    Returns DataFrame with columns:
-        batter, pitcher_id, bvp_pa, bvp_ab, bvp_hr,
-        bvp_iso, bvp_barrel_pct, bvp_hr_rate
     Only includes matchups with >= MIN_BBE_VS_PITCHER PA.
     """
     if df.empty:
@@ -319,25 +322,22 @@ def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
 
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
     bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
-    bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
+    bbe["is_hit"]      = bbe["events"].astype("string").str.lower().isin(
         {"single", "double", "triple", "home_run"}
     )
 
-    # PA counts per batter-pitcher pair
     pa_counts = (
         pa_df.groupby(["batter", "pitcher"])
         .size()
         .reset_index(name="bvp_pa")
     )
 
-    # AB counts per batter-pitcher pair
     ab_counts = (
         ab_df.groupby(["batter", "pitcher"])
         .size()
         .reset_index(name="bvp_ab")
     )
 
-    # BBE stats per batter-pitcher pair
     bvp = (
         bbe.groupby(["batter", "pitcher"], dropna=False)
         .agg(
@@ -355,7 +355,6 @@ def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
     bvp["bvp_pa"] = bvp["bvp_pa"].fillna(0)
     bvp["bvp_ab"] = bvp["bvp_ab"].fillna(0)
 
-    # Filter to minimum sample
     bvp = bvp[bvp["bvp_pa"] >= MIN_BBE_VS_PITCHER].copy()
 
     if bvp.empty:
@@ -403,16 +402,16 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     if df.empty:
         return pd.DataFrame()
 
-    df = add_flags(df)
+    df  = add_flags(df)
     bbe = filter_bbe(df)
 
     if bbe.empty:
         return pd.DataFrame()
 
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
-    bbe = bbe.copy()
+    bbe    = bbe.copy()
     bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
-    bbe["is_hit"] = bbe["events"].astype("string").str.lower().isin(
+    bbe["is_hit"]      = bbe["events"].astype("string").str.lower().isin(
         {"single", "double", "triple", "home_run"}
     )
 
@@ -448,23 +447,23 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     season["ab"] = season["ab"].fillna(0)
     season["pa"] = season["pa"].fillna(0)
 
-    season["hr_per_pa"]        = (season["season_hr"] / season["pa"].replace(0, np.nan) * 100).round(2)
-    season["hr_per_fb"]        = (season["season_hr"] / season["season_fb"].replace(0, np.nan) * 100).round(2)
-    season["fb_rate"]          = (season["season_fb"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
-    season["season_barrel_pct"]= (season["season_barrel"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
-    season["iso"]              = ((season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)).round(3)
-    season["batting_avg"]      = (season["hits"] / season["ab"].replace(0, np.nan)).round(3)
-    season["pull_rate"]        = (season["pull_count"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
-    season["avg_launch_angle"] = season["avg_launch_angle"].round(2)
+    season["hr_per_pa"]         = (season["season_hr"] / season["pa"].replace(0, np.nan) * 100).round(2)
+    season["hr_per_fb"]         = (season["season_hr"] / season["season_fb"].replace(0, np.nan) * 100).round(2)
+    season["fb_rate"]           = (season["season_fb"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
+    season["season_barrel_pct"] = (season["season_barrel"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
+    season["iso"]               = ((season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)).round(3)
+    season["batting_avg"]       = (season["hits"] / season["ab"].replace(0, np.nan)).round(3)
+    season["pull_rate"]         = (season["pull_count"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
+    season["avg_launch_angle"]  = season["avg_launch_angle"].round(2)
 
     today = date.today()
 
-    # Rolling windows: 7d, 10d, 5d (adding 5d and 10d for momentum scoring)
+    # Rolling windows — 5d and 10d added for momentum scoring
     rolling_parts = []
     for days in [5, 7, 10, 14, 30]:
         cutoff = pd.Timestamp(today - timedelta(days=days))
-        w = bbe[bbe["game_date"] >= cutoff].copy()
-        grp = (
+        w      = bbe[bbe["game_date"] >= cutoff].copy()
+        grp    = (
             w.groupby("batter", dropna=False)
             .agg(
                 **{
@@ -529,10 +528,10 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
                 .reset_index()
             )
             grp = grp.merge(ab_hand, on="batter", how="left")
-            grp[f"ab_{label}"]          = grp[f"ab_{label}"].fillna(0)
-            grp[f"{label}_barrel_pct"]  = (grp[f"{label}_barrel_pct"] * 100).round(2)
-            grp[f"{label}_hr_rate"]     = (grp[f"{label}_hr"] / grp[f"{label}_bbe"].replace(0, np.nan) * 100).round(2)
-            grp[f"{label}_iso"]         = ((grp[f"{label}_tb"] - grp[f"{label}_hits"]) / grp[f"ab_{label}"].replace(0, np.nan)).round(3)
+            grp[f"ab_{label}"]         = grp[f"ab_{label}"].fillna(0)
+            grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
+            grp[f"{label}_hr_rate"]    = (grp[f"{label}_hr"] / grp[f"{label}_bbe"].replace(0, np.nan) * 100).round(2)
+            grp[f"{label}_iso"]        = ((grp[f"{label}_tb"] - grp[f"{label}_hits"]) / grp[f"ab_{label}"].replace(0, np.nan)).round(3)
             grp = grp.drop(columns=[f"{label}_tb", f"{label}_hits", f"ab_{label}"])
             combined = combined.merge(grp, on="batter", how="left")
 
@@ -559,7 +558,8 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
             ab_by_pitch = pd.DataFrame(columns=["batter", "pitch_type", "ab_count"])
 
         if not pitch_bbe.empty:
-            pitch_bbe["total_bases"] = pitch_bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+            tb_map2 = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+            pitch_bbe["total_bases"] = pitch_bbe["events"].astype("string").str.lower().map(tb_map2).fillna(0)
             pitch_bbe["is_hit"]      = pitch_bbe["events"].astype("string").str.lower().isin(
                 {"single", "double", "triple", "home_run"}
             )
@@ -577,13 +577,12 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
             )
             pitch_grp = pitch_grp.merge(ab_by_pitch, on=["batter", "pitch_type"], how="left")
             pitch_grp["ab_count"] = pitch_grp["ab_count"].fillna(0)
-
             pitch_grp = pitch_grp[pitch_grp["bbe_count"] >= 5].copy()
 
             if not pitch_grp.empty:
-                pitch_grp["iso_val"]       = ((pitch_grp["total_bases"] - pitch_grp["hits"]) / pitch_grp["ab_count"].replace(0, np.nan)).round(3)
-                pitch_grp["hr_rate_val"]   = (pitch_grp["hr_count"] / pitch_grp["bbe_count"] * 100).round(2)
-                pitch_grp["barrel_pct_val"]= (pitch_grp["barrel_count"] / pitch_grp["bbe_count"] * 100).round(2)
+                pitch_grp["iso_val"]        = ((pitch_grp["total_bases"] - pitch_grp["hits"]) / pitch_grp["ab_count"].replace(0, np.nan)).round(3)
+                pitch_grp["hr_rate_val"]    = (pitch_grp["hr_count"] / pitch_grp["bbe_count"] * 100).round(2)
+                pitch_grp["barrel_pct_val"] = (pitch_grp["barrel_count"] / pitch_grp["bbe_count"] * 100).round(2)
 
                 iso_pivot = pitch_grp.pivot_table(
                     index="batter", columns="pitch_type", values="iso_val", fill_value=np.nan
@@ -628,20 +627,21 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
                 sub.groupby("batter", dropna=False)
                 .agg(
                     **{
-                        f"bbe_{group}":        ("launch_speed", "size"),
-                        f"hr_{group}":         ("is_hr", "sum"),
-                        f"iso_{group}_tb":     ("total_bases", "sum"),
-                        f"iso_{group}_hits":   ("is_hit", "sum"),
-                        f"hr_rate_{group}":    ("is_hr", "mean"),
+                        f"bbe_{group}":      ("launch_speed", "size"),
+                        f"hr_{group}":       ("is_hr", "sum"),
+                        f"iso_{group}_tb":   ("total_bases", "sum"),
+                        f"iso_{group}_hits": ("is_hit", "sum"),
+                        f"hr_rate_{group}":  ("is_hr", "mean"),
                     }
                 )
                 .reset_index()
             )
             g = g.merge(ab_grp, on="batter", how="left")
-            g[f"ab_{group}"] = g.get(f"ab_{group}", pd.Series(0, index=g.index)).fillna(0)
+            g[f"ab_{group}"]         = g.get(f"ab_{group}", pd.Series(0, index=g.index)).fillna(0)
             g[f"iso_vs_{group}"]     = ((g[f"iso_{group}_tb"] - g[f"iso_{group}_hits"]) / g[f"ab_{group}"].replace(0, np.nan)).round(3)
             g[f"hr_rate_vs_{group}"] = (g[f"hr_rate_{group}"] * 100).round(2)
-            g = g.drop(columns=[c for c in g.columns if c.startswith("iso_") and "_tb" in c or "_hits" in c or c == f"hr_rate_{group}"])
+            drop_cols = [c for c in g.columns if (f"iso_{group}_" in c and ("_tb" in c or "_hits" in c)) or c == f"hr_rate_{group}"]
+            g = g.drop(columns=drop_cols, errors="ignore")
             combined = combined.merge(g[["batter", f"iso_vs_{group}", f"hr_rate_vs_{group}"]], on="batter", how="left")
 
     # Team mapping
@@ -655,9 +655,7 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     # Minimum sample filter
     combined = combined[
         (combined["season_bbe"] >= 25) &
-        (combined["pa"] >= 30) &
-        (combined["player_name"] != "") if "player_name" in combined.columns
-        else (combined["season_bbe"] >= 25) & (combined["pa"] >= 30)
+        (combined["pa"] >= 30)
     ].copy()
 
     return combined
@@ -690,10 +688,10 @@ def write_dataframe_to_sheet(
 def get_today_teams() -> Set[str]:
     today_str = date.today().strftime("%Y-%m-%d")
     try:
-        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today_str}"
+        url  = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today_str}"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        data  = resp.json()
         teams: Set[str] = set()
         for d in data.get("dates", []):
             for g in d.get("games", []):
@@ -710,10 +708,10 @@ def get_today_teams() -> Set[str]:
 
     try:
         espn_str = date.today().strftime("%Y%m%d")
-        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={espn_str}"
+        url  = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={espn_str}"
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        data  = resp.json()
         teams = set()
         for event in data.get("events", []):
             for comp in event.get("competitions", []):
@@ -731,9 +729,9 @@ def get_today_teams() -> Set[str]:
 
 def main() -> None:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    gc = get_gspread_client()
+    gc       = get_gspread_client()
 
-    print("Fetching today's teams from MLB API...")
+    print("Fetching today's teams...")
     today_teams = get_today_teams()
 
     print("Pulling Statcast data...")
@@ -749,25 +747,23 @@ def main() -> None:
     batter_df = build_batter_features(raw_df, today_teams)
     print(f"Built {len(batter_df)} batter rows")
 
-    # Look up player names
     if not batter_df.empty:
         batter_ids = batter_df["batter"].dropna().astype(int).tolist()
-        name_map = lookup_player_names(batter_ids)
+        name_map   = lookup_player_names(batter_ids)
         batter_df["player_name"] = batter_df["batter"].map(
             lambda x: name_map.get(int(x), "") if pd.notna(x) else ""
         )
         batter_df = batter_df[batter_df["player_name"] != ""].copy()
-        batter_df = batter_df.rename(columns={"batter": "batter_id", "team": "team"})
+        batter_df = batter_df.rename(columns={"batter": "batter_id"})
         write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_2026", batter_df)
         print("Written to Batter_Statcast_2026")
 
-    # Build batter vs pitcher history
+    # Build BvP history
     print("Building batter vs pitcher history...")
     bvp_df = build_vs_pitcher_stats(raw_df)
     if not bvp_df.empty:
-        # Look up batter names for the BvP table
         bvp_batter_ids = bvp_df["batter"].dropna().astype(int).tolist()
-        bvp_name_map = lookup_player_names(bvp_batter_ids)
+        bvp_name_map   = lookup_player_names(bvp_batter_ids)
         bvp_df["player_name"] = bvp_df["batter"].map(
             lambda x: bvp_name_map.get(int(x), "") if pd.notna(x) else ""
         )
@@ -777,7 +773,7 @@ def main() -> None:
     else:
         print("No BvP data to write.")
 
-    # Fetch and store confirmed lineups
+    # Fetch confirmed lineups
     print("Fetching confirmed lineups...")
     lineups = get_today_confirmed_lineups()
     if lineups:
