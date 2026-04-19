@@ -36,6 +36,7 @@ jobs:
           python pitcher_statcast.py
           python park_factors.py
           python weather.py
+          python backtest.py
           python hr_picks.py
       - name: Run single script
         if: github.event.inputs.mode != 'full'
