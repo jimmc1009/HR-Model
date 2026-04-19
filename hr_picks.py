@@ -1179,7 +1179,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     sh = gc.open_by_key(sheet_id)
 
     try:
-        ws_log   = sh.worksheet("Picks_Log")
+        ws_log    = sh.worksheet("Picks_Log")
         picks_log = pd.DataFrame(ws_log.get_all_records())
     except gspread.WorksheetNotFound:
         print("Picks_Log not found — skipping scorecard update.")
@@ -1206,94 +1206,493 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     ].copy()
 
     if not bet_picks.empty:
-        bet_picks["odds_num"]       = bet_picks["odds"].apply(
+        bet_picks["odds_num"]      = bet_picks["odds"].apply(
             lambda x: safe_float(str(x).replace("+", "").strip(), 0)
         )
-        bet_picks["profit_if_win"]  = bet_picks["odds_num"].apply(american_odds_to_profit)
-        bet_picks["unit_result"]    = bet_picks.apply(
+        bet_picks["profit_if_win"] = bet_picks["odds_num"].apply(american_odds_to_profit)
+        bet_picks["unit_result"]   = bet_picks.apply(
             lambda r: r["profit_if_win"] if r["hit_hr_bool"] else -1.0, axis=1
         )
 
-    rows = []
+    # ── Build performance rows ─────────────────────────────────────────────
+    perf_rows  = []
+    roi_rows   = []
 
-    def add_row(category, subcategory, sub_df):
+    def add_perf(label, sub_df, bold=False):
         if sub_df.empty:
             return
         total = len(sub_df)
-        hits  = sub_df["hit_hr_bool"].sum()
-        rows.append({
-            "category":      category,
-            "subcategory":   subcategory,
+        hits  = int(sub_df["hit_hr_bool"].sum())
+        rate  = round(hits / total * 100, 1)
+        perf_rows.append({
+            "label":         label,
             "total_picks":   total,
-            "hr_count":      int(hits),
-            "hit_rate_pct":  round(hits / total * 100, 1),
-            "bets_placed":   "",
-            "units_wagered": "",
-            "units_profit":  "",
-            "roi_pct":       "",
+            "hr_count":      hits,
+            "hit_rate_pct":  rate,
+            "_bold":         bold,
         })
 
-    def add_bet_row(category, subcategory, sub_df):
+    def add_roi(label, sub_df, bold=False):
         if sub_df.empty:
             return
         total         = len(sub_df)
-        hits          = sub_df["hit_hr_bool"].sum()
+        hits          = int(sub_df["hit_hr_bool"].sum())
         units_wagered = float(total)
         units_profit  = round(sub_df["unit_result"].sum(), 2)
-        roi           = round(units_profit / units_wagered * 100, 1) if units_wagered > 0 else 0
-        rows.append({
-            "category":      category,
-            "subcategory":   subcategory,
-            "total_picks":   "",
-            "hr_count":      "",
-            "hit_rate_pct":  "",
-            "bets_placed":   total,
-            "units_wagered": units_wagered,
-            "units_profit":  units_profit,
-            "roi_pct":       roi,
+        roi           = round(units_profit / units_wagered * 100, 1) if units_wagered > 0 else 0.0
+        profit_str    = f"+{units_profit}" if units_profit >= 0 else str(units_profit)
+        roi_str       = f"+{roi}%" if roi >= 0 else f"{roi}%"
+        roi_rows.append({
+            "label":          label,
+            "bets_placed":    total,
+            "hr_count":       hits,
+            "hit_rate_pct":   round(hits / total * 100, 1) if total > 0 else 0.0,
+            "units_wagered":  units_wagered,
+            "units_profit":   profit_str,
+            "roi_pct":        roi_str,
+            "_bold":          bold,
+            "_roi_val":       roi,
+            "_profit_val":    units_profit,
         })
 
-    add_row("Overall", "All Picks", scored)
+    # Overall
+    add_perf("🏆  Overall", scored, bold=True)
+
+    # By Rank
+    perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for rank in range(1, 11):
-        add_row("By Rank", f"Rank {rank}", scored[scored["rank"] == rank])
+        sub = scored[scored["rank"] == rank]
+        if not sub.empty:
+            add_perf(f"   Rank {rank}", sub)
+
+    # By Confidence
+    perf_rows.append({"label": "── By Confidence ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for tier in ["High", "Medium", "Low"]:
-        add_row("By Confidence", tier, scored[scored["confidence"] == tier])
+        sub = scored[scored["confidence"] == tier]
+        if not sub.empty:
+            add_perf(f"   {tier}", sub)
+
+    # By Section
+    perf_rows.append({"label": "── By Section ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for section in scored["section"].dropna().unique():
-        add_row("By Section", section, scored[scored["section"] == section])
+        sub = scored[scored["section"] == section]
+        if not sub.empty:
+            add_perf(f"   {section}", sub)
 
+    # Rolling
+    perf_rows.append({"label": "── Rolling ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     max_date = scored["date"].max()
-    add_row("Rolling", "Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
-    add_row("Rolling", "Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
+    add_perf("   Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
+    add_perf("   Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
+    # ROI section
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
 
-        add_bet_row("ROI", "All Bets", bet_picks)
+        add_roi("💵  All Bets", bet_picks, bold=True)
+
+        roi_rows.append({"label": "── By Confidence ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for tier in ["High", "Medium", "Low"]:
-            add_bet_row("ROI By Confidence", tier, bet_picks[bet_picks["confidence"] == tier])
+            sub = bet_picks[bet_picks["confidence"] == tier]
+            if not sub.empty:
+                add_roi(f"   {tier}", sub)
+
+        roi_rows.append({"label": "── By Rank ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for rank in range(1, 11):
-            add_bet_row("ROI By Rank", f"Rank {rank}", bet_picks[bet_picks["rank"] == rank])
+            sub = bet_picks[bet_picks["rank"] == rank]
+            if not sub.empty:
+                add_roi(f"   Rank {rank}", sub)
+
+        roi_rows.append({"label": "── By Section ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for section in bet_picks["section"].dropna().unique():
-            add_bet_row("ROI By Section", section, bet_picks[bet_picks["section"] == section])
+            sub = bet_picks[bet_picks["section"] == section]
+            if not sub.empty:
+                add_roi(f"   {section}", sub)
 
-        max_bet_date = bet_picks["date"].max()
-        add_bet_row("ROI Rolling", "Last 7 Days",
-                    bet_picks[bet_picks["date"] >= max_bet_date - pd.Timedelta(days=7)])
-        add_bet_row("ROI Rolling", "Last 30 Days",
-                    bet_picks[bet_picks["date"] >= max_bet_date - pd.Timedelta(days=30)])
+        roi_rows.append({"label": "── Rolling ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
+        max_bet = bet_picks["date"].max()
+        add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
+        add_roi("   Last 30 Days", bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=30)])
 
-    scorecard = pd.DataFrame(rows)
+    # ── Write to sheet ─────────────────────────────────────────────────────
+    try:
+        ws = sh.worksheet("Scorecard")
+        ws.clear()
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Scorecard", rows=200, cols=10)
+
+    ws_id = ws.id
+
+    # Build values to write
+    perf_headers = ["Category", "Total Picks", "HR Count", "Hit Rate %"]
+    roi_headers  = ["Category", "Bets Placed", "HR Count", "Hit Rate %", "Units Wagered", "Units Profit", "ROI %"]
+
+    all_values = []
+
+    # Section 1 header
+    all_values.append(["📊  MODEL PERFORMANCE", "", "", ""])
+    all_values.append(perf_headers)
+    perf_start = 2  # 0-indexed row where perf data starts
+
+    for r in perf_rows:
+        all_values.append([
+            r.get("label", ""),
+            str(r.get("total_picks", "")),
+            str(r.get("hr_count", "")),
+            f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
+        ])
+
+    perf_end = len(all_values)
+
+    # Spacer rows between sections
+    all_values.append(["", "", "", ""])
+    all_values.append(["", "", "", ""])
+
+    roi_section_start = len(all_values)
+
+    # Section 2 header + data
+    if roi_rows:
+        all_values.append(["💰  BETTING ROI", "", "", "", "", "", ""])
+        all_values.append(roi_headers)
+        roi_data_start = len(all_values)
+
+        for r in roi_rows:
+            all_values.append([
+                r.get("label", ""),
+                str(r.get("bets_placed", "")),
+                str(r.get("hr_count", "")),
+                f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
+                str(r.get("units_wagered", "")),
+                str(r.get("units_profit", "")),
+                str(r.get("roi_pct", "")),
+            ])
+    else:
+        all_values.append(["💰  BETTING ROI — No bets placed yet", "", "", "", "", "", ""])
+        roi_data_start = len(all_values)
+
+    ws.update(all_values)
+
+    # ── Formatting ─────────────────────────────────────────────────────────
+    reqs = []
+
+    # Colors
+    C_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
+    C_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
+    C_BLUE      = {"red": 0.114, "green": 0.533, "blue": 0.898}
+    C_BLUE_DIM  = {"red": 0.055, "green": 0.180, "blue": 0.318}
+    C_GOLD      = {"red": 0.800, "green": 0.650, "blue": 0.000}
+    C_GOLD_DIM  = {"red": 0.200, "green": 0.160, "blue": 0.000}
+    C_GREEN     = {"red": 0.180, "green": 0.800, "blue": 0.443}
+    C_GREEN_DIM = {"red": 0.039, "green": 0.180, "blue": 0.098}
+    C_RED       = {"red": 0.910, "green": 0.259, "blue": 0.259}
+    C_RED_DIM   = {"red": 0.200, "green": 0.039, "blue": 0.039}
+    C_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
+    C_GREY      = {"red": 0.600, "green": 0.600, "blue": 0.600}
+    C_HEADER_BG = {"red": 0.078, "green": 0.078, "blue": 0.078}
+
+    total_rows = len(all_values)
+    total_cols = 7
+
+    # Base style — entire sheet
+    reqs.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": 0, "endRowIndex": total_rows,
+                "startColumnIndex": 0, "endColumnIndex": total_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": C_BG,
+                    "textFormat": {
+                        "foregroundColor": C_WHITE,
+                        "fontFamily": "Roboto Mono",
+                        "fontSize": 10,
+                    },
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "CLIP",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+        }
+    })
+
+    # ── PERFORMANCE SECTION HEADER (row 0) ────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 4},
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": C_BLUE_DIM,
+                    "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontFamily": "Roboto", "fontSize": 13},
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+        }
+    })
+
+    # Column headers row (row 1)
+    reqs.append({
+        "repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 4},
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": C_HEADER_BG,
+                    "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontFamily": "Roboto", "fontSize": 10},
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+        }
+    })
+
+    # Performance data rows
+    for i, r in enumerate(perf_rows):
+        row_idx  = perf_start + i
+        is_header = r.get("_header", False)
+        is_bold   = r.get("_bold", False)
+        rate      = r.get("hit_rate_pct", "")
+
+        if is_header:
+            # Sub-group header rows
+            reqs.append({
+                "repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4},
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": C_HEADER_BG,
+                            "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True},
+                            "verticalAlignment": "MIDDLE",
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+                }
+            })
+        else:
+            # Alternating background
+            bg = C_BG if i % 2 == 0 else C_BG_ALT
+            reqs.append({
+                "repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4},
+                    "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                    "fields": "userEnteredFormat(backgroundColor)",
+                }
+            })
+
+            # Color code hit rate cell (col 3)
+            if rate != "":
+                try:
+                    rate_val = float(str(rate).replace("%", ""))
+                    if rate_val >= 15:
+                        rate_bg = C_GREEN_DIM
+                        rate_fg = C_GREEN
+                    elif rate_val <= 8:
+                        rate_bg = C_RED_DIM
+                        rate_fg = C_RED
+                    else:
+                        rate_bg = bg
+                        rate_fg = C_WHITE
+
+                    reqs.append({
+                        "repeatCell": {
+                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 3, "endColumnIndex": 4},
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": rate_bg,
+                                    "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 15 or rate_val <= 8},
+                                    "horizontalAlignment": "CENTER",
+                                }
+                            },
+                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                        }
+                    })
+                except Exception:
+                    pass
+
+            # Bold overall row label
+            if is_bold and not is_header:
+                reqs.append({
+                    "repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1},
+                        "cell": {
+                            "userEnteredFormat": {
+                                "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontSize": 11},
+                            }
+                        },
+                        "fields": "userEnteredFormat(textFormat)",
+                    }
+                })
+
+    # ── ROI SECTION HEADER ─────────────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": roi_section_start, "endRowIndex": roi_section_start + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": C_GOLD_DIM,
+                    "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontFamily": "Roboto", "fontSize": 13},
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+        }
+    })
+
+    # ROI column headers
+    if roi_rows:
+        reqs.append({
+            "repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": roi_section_start + 1, "endRowIndex": roi_section_start + 2, "startColumnIndex": 0, "endColumnIndex": total_cols},
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": C_HEADER_BG,
+                        "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontFamily": "Roboto", "fontSize": 10},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+            }
+        })
+
+        # ROI data rows
+        for i, r in enumerate(roi_rows):
+            row_idx   = roi_data_start + i
+            is_header = r.get("_header", False)
+            is_bold   = r.get("_bold", False)
+            roi_val   = r.get("_roi_val", 0)
+            profit_val= r.get("_profit_val", 0)
+
+            if is_header:
+                reqs.append({
+                    "repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": C_HEADER_BG,
+                                "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True},
+                                "verticalAlignment": "MIDDLE",
+                            }
+                        },
+                        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+                    }
+                })
+            else:
+                bg = C_BG if i % 2 == 0 else C_BG_ALT
+                reqs.append({
+                    "repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
+                        "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                        "fields": "userEnteredFormat(backgroundColor)",
+                    }
+                })
+
+                # Color code ROI % cell (col 6)
+                if roi_val != 0 or r.get("bets_placed", "") != "":
+                    roi_fg = C_GREEN if roi_val > 0 else C_RED if roi_val < 0 else C_WHITE
+                    roi_bg = C_GREEN_DIM if roi_val > 0 else C_RED_DIM if roi_val < 0 else bg
+                    reqs.append({
+                        "repeatCell": {
+                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 6, "endColumnIndex": 7},
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": roi_bg,
+                                    "textFormat": {"foregroundColor": roi_fg, "bold": True},
+                                    "horizontalAlignment": "CENTER",
+                                }
+                            },
+                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                        }
+                    })
+
+                    # Color code units profit cell (col 5)
+                    profit_fg = C_GREEN if profit_val > 0 else C_RED if profit_val < 0 else C_WHITE
+                    reqs.append({
+                        "repeatCell": {
+                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 5, "endColumnIndex": 6},
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "textFormat": {"foregroundColor": profit_fg, "bold": True},
+                                    "horizontalAlignment": "CENTER",
+                                }
+                            },
+                            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+                        }
+                    })
+
+                # Bold overall row
+                if is_bold:
+                    reqs.append({
+                        "repeatCell": {
+                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1},
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontSize": 11},
+                                }
+                            },
+                            "fields": "userEnteredFormat(textFormat)",
+                        }
+                    })
+
+    # ── Column widths ──────────────────────────────────────────────────────
+    col_widths = [220, 100, 80, 100, 120, 120, 100]
+    for i, width in enumerate(col_widths):
+        reqs.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+                "properties": {"pixelSize": width},
+                "fields": "pixelSize",
+            }
+        })
+
+    # Row heights
+    reqs.append({
+        "updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": total_rows},
+            "properties": {"pixelSize": 32},
+            "fields": "pixelSize",
+        }
+    })
+
+    # Taller section headers
+    for row_idx in [0, roi_section_start]:
+        reqs.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": row_idx, "endIndex": row_idx + 1},
+                "properties": {"pixelSize": 44},
+                "fields": "pixelSize",
+            }
+        })
+
+    # Freeze first two rows of each section — just freeze row 1 (col headers)
+    reqs.append({
+        "updateSheetProperties": {
+            "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}},
+            "fields": "gridProperties.frozenRowCount",
+        }
+    })
+
+    # Tab color — gold to differentiate from Top_HR_Picks
+    reqs.append({
+        "updateSheetProperties": {
+            "properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": C_GOLD}},
+            "fields": "tabColorStyle",
+        }
+    })
 
     try:
-        ws_sc = sh.worksheet("Scorecard")
-        ws_sc.clear()
-    except gspread.WorksheetNotFound:
-        ws_sc = sh.add_worksheet(title="Scorecard", rows=100, cols=12)
+        sh.batch_update({"requests": reqs})
+        print("Scorecard dashboard formatted successfully!")
+    except Exception as e:
+        print(f"Scorecard formatting failed: {e}")
 
-    values = [scorecard.columns.tolist()] + scorecard.astype(str).values.tolist()
-    ws_sc.update(values)
     print("Scorecard updated.")
+
+  
+
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
