@@ -120,15 +120,10 @@ def get_season_statcast() -> pd.DataFrame:
 
 
 def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
-    """
-    Fetch confirmed batting lineups from MLB Stats API.
-    Returns {team_abbr: set of confirmed batter MLB IDs}.
-    Falls back to ESPN. If neither works returns empty dict.
-    """
     today_str = date.today().strftime("%Y-%m-%d")
     lineups: Dict[str, Set[int]] = {}
 
-    # Try MLB Stats API with correct hydration
+    # Try MLB Stats API
     try:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -143,25 +138,19 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
                 lineups_data = g.get("lineups", {})
                 if not lineups_data:
                     continue
-
                 for side, side_key in [("homePlayers", "home"), ("awayPlayers", "away")]:
                     players = lineups_data.get(side, [])
                     if not players:
-                        # Try alternate batting order structure
                         players = g.get("teams", {}).get(side_key, {}).get("battingOrder", [])
-
                     if not players:
                         continue
-
                     abbr = g.get("teams", {}).get(side_key, {}).get(
                         "team", {}
                     ).get("abbreviation", "")
                     abbr = ESPN_TO_MLB.get(str(abbr).strip(), str(abbr).strip())
-
                     if abbr:
                         player_ids = set()
                         for p in players:
-                            # Handle both dict and int formats
                             if isinstance(p, dict):
                                 pid = p.get("id") or p.get("person", {}).get("id")
                             else:
@@ -176,10 +165,78 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
             print(f"MLB API confirmed lineups for {len(confirmed_teams)} teams: {confirmed_teams}")
             return lineups
 
-        print("MLB API returned no confirmed lineups yet.")
+        print("MLB API returned no confirmed lineups yet — trying MLB.com lineup page...")
 
     except Exception as e:
-        print(f"MLB lineup fetch failed: {e}")
+        print(f"MLB Stats API lineup fetch failed: {e}")
+
+    # Try MLB.com lineup page directly via the game feed
+    try:
+        schedule_url = (
+            f"https://statsapi.mlb.com/api/v1/schedule"
+            f"?sportId=1&date={today_str}&hydrate=game(content(summary)),linescore"
+        )
+        resp = requests.get(schedule_url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        game_pks = []
+        for d in data.get("dates", []):
+            for g in d.get("games", []):
+                pk = g.get("gamePk")
+                if pk:
+                    game_pks.append((
+                        pk,
+                        ESPN_TO_MLB.get(
+                            g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", ""),
+                            g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
+                        ),
+                        ESPN_TO_MLB.get(
+                            g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", ""),
+                            g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "")
+                        ),
+                    ))
+
+        for game_pk, home_abbr, away_abbr in game_pks:
+            try:
+                feed_url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
+                feed_resp = requests.get(feed_url, timeout=15)
+                feed_resp.raise_for_status()
+                feed = feed_resp.json()
+
+                game_data = feed.get("gameData", {})
+                players   = game_data.get("players", {})
+
+                live_data    = feed.get("liveData", {})
+                boxscore     = live_data.get("boxscore", {})
+                teams_box    = boxscore.get("teams", {})
+
+                for side, abbr in [("home", home_abbr), ("away", away_abbr)]:
+                    if not abbr:
+                        continue
+                    batting_order = teams_box.get(side, {}).get("battingOrder", [])
+                    if batting_order:
+                        player_ids = set()
+                        for pid in batting_order:
+                            if pid:
+                                player_ids.add(int(pid))
+                        if player_ids:
+                            lineups[abbr] = player_ids
+                            print(f"  ✓ Got lineup for {abbr} from game feed ({len(player_ids)} batters)")
+
+            except Exception as e:
+                print(f"  Game feed failed for gamePk {game_pk}: {e}")
+                continue
+
+        if lineups:
+            confirmed_teams = [t for t, ids in lineups.items() if ids]
+            print(f"Game feed lineups for {len(confirmed_teams)} teams: {confirmed_teams}")
+            return lineups
+
+        print("Game feed returned no lineups yet — trying ESPN...")
+
+    except Exception as e:
+        print(f"Game feed lineup fetch failed: {e}")
 
     # ESPN fallback
     try:
@@ -218,6 +275,7 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
 
     print("No confirmed lineups available — lineup filter will not be applied.")
     return {}
+
 
 
 def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
