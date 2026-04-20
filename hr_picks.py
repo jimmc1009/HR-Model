@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import date, timedelta
-from typing import Dict
+from typing import Dict, Set
 
 import pandas as pd
 import numpy as np
@@ -34,8 +34,8 @@ PLATOON_BONUS_WEIGHT  = 0.8
 PITCH_MATCHUP_WEIGHT  = 1.2
 WEATHER_WEIGHT        = 0.4
 PULL_PARK_WEIGHT      = 0.6
-MOMENTUM_WEIGHT       = 0.8   # weight for EV/barrel momentum score
-BVP_WEIGHT            = 0.9   # weight for batter vs pitcher history
+MOMENTUM_WEIGHT       = 0.8
+BVP_WEIGHT            = 0.9
 
 ISO_GAP_SMALL    = 0.030
 ISO_GAP_MEDIUM   = 0.060
@@ -109,12 +109,6 @@ def normalize_inverted(series: pd.Series) -> pd.Series:
 
 
 def compute_momentum_score(row: pd.Series) -> tuple:
-    """
-    Compare 5-day vs 10-day EV and barrel% to detect
-    whether a batter is trending up or down.
-    Returns (score, description).
-    Positive = trending up, negative = trending down.
-    """
     ev_5d   = safe_float(row.get("avg_ev_5d",       0))
     ev_10d  = safe_float(row.get("avg_ev_10d",      0))
     bar_5d  = safe_float(row.get("barrel_pct_5d",   0))
@@ -122,27 +116,24 @@ def compute_momentum_score(row: pd.Series) -> tuple:
     bbe_5d  = safe_float(row.get("bbe_5d",          0))
     bbe_10d = safe_float(row.get("bbe_10d",         0))
 
-    # Need minimum sample in both windows
     if bbe_5d < 3 or bbe_10d < 5:
         return 0.0, ""
 
     score = 0.0
     parts = []
 
-    # EV momentum — how much has EV changed
     if ev_5d > 0 and ev_10d > 0:
         ev_delta = ev_5d - ev_10d
-        ev_component = ev_delta / 3.0  # normalize — 3mph swing = 1.0 score unit
+        ev_component = ev_delta / 3.0
         score += ev_component
         if ev_delta >= 2.0:
             parts.append(f"📈 EV trending up ({ev_10d:.1f}→{ev_5d:.1f} mph)")
         elif ev_delta <= -2.0:
             parts.append(f"📉 EV trending down ({ev_10d:.1f}→{ev_5d:.1f} mph)")
 
-    # Barrel% momentum
     if bar_5d >= 0 and bar_10d >= 0:
         barrel_delta = bar_5d - bar_10d
-        barrel_component = barrel_delta / 8.0  # normalize — 8% swing = 1.0 score unit
+        barrel_component = barrel_delta / 8.0
         score += barrel_component
         if barrel_delta >= 8.0:
             parts.append(f"📈 Barrel% trending up ({bar_10d:.1f}→{bar_5d:.1f}%)")
@@ -155,11 +146,6 @@ def compute_momentum_score(row: pd.Series) -> tuple:
 
 
 def compute_bvp_score(row: pd.Series) -> tuple:
-    """
-    Score based on batter's historical performance vs today's specific pitcher.
-    Returns (score, description).
-    Only applied when sufficient sample exists (bvp_pa >= 5).
-    """
     bvp_pa      = safe_float(row.get("bvp_pa", 0))
     bvp_iso     = safe_float(row.get("bvp_iso", 0))
     bvp_hr_rate = safe_float(row.get("bvp_hr_rate", 0))
@@ -169,7 +155,6 @@ def compute_bvp_score(row: pd.Series) -> tuple:
     if bvp_pa < 5:
         return 0.0, ""
 
-    # Score combines ISO dominance, HR rate, barrel rate
     score = (bvp_iso * 3.0) + (bvp_hr_rate / 10.0) + (bvp_barrel / 20.0)
     score = round(score, 3)
 
@@ -182,7 +167,7 @@ def compute_bvp_score(row: pd.Series) -> tuple:
             desc = f"✅ Strong vs this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA{hr_note}"
         elif bvp_iso <= 0.050 and bvp_pa >= 8:
             desc = f"⚠️ Struggles vs this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA"
-            score = -abs(score) * 0.5  # turn weak history into mild penalty
+            score = -abs(score) * 0.5
 
     return score, desc
 
@@ -235,14 +220,14 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
 
-        batter_iso    = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
-        batter_hr_rate= safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
-        batter_barrel = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
+        batter_iso     = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
+        batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
+        batter_barrel  = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
         batter_has_data = (batter_iso > 0 or batter_hr_rate > 0)
 
-        pitcher_iso    = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
-        pitcher_hr_rate= safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
-        pitcher_barrel = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
+        pitcher_iso     = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
+        pitcher_hr_rate = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
+        pitcher_barrel  = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
         pitcher_has_data = (pitcher_iso > 0 or pitcher_hr_rate > 0)
 
         if not batter_has_data and not pitcher_has_data:
@@ -325,29 +310,29 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     iso_vs_rhp = safe_float(row.get("vs_rhp_iso", 0))
 
     if p_throws == "L":
-        iso_vs_this  = iso_vs_lhp
-        iso_vs_opp   = iso_vs_rhp
+        iso_vs_this      = iso_vs_lhp
+        iso_vs_opp       = iso_vs_rhp
         batter_barrel_vs = safe_float(row.get("vs_lhp_barrel_pct", 0))
         batter_hr_vs     = safe_float(row.get("vs_lhp_hr_rate", 0))
-        matchup_label = f"{batter_hand}HH vs LHP"
+        matchup_label    = f"{batter_hand}HH vs LHP"
     elif p_throws == "R":
-        iso_vs_this  = iso_vs_rhp
-        iso_vs_opp   = iso_vs_lhp
+        iso_vs_this      = iso_vs_rhp
+        iso_vs_opp       = iso_vs_lhp
         batter_barrel_vs = safe_float(row.get("vs_rhp_barrel_pct", 0))
         batter_hr_vs     = safe_float(row.get("vs_rhp_hr_rate", 0))
-        matchup_label = f"{batter_hand}HH vs RHP"
+        matchup_label    = f"{batter_hand}HH vs RHP"
     else:
         return 0.0, "", 0.0
 
     if batter_hand == "R":
-        pitcher_barrel_vs = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
-        pitcher_hr_vs     = safe_float(row.get("pitcher_vs_rhh_hr_rate", 0))
-        pitcher_hr9_vs    = safe_float(row.get("pitcher_vs_rhh_hr9", 0))
+        pitcher_barrel_vs   = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
+        pitcher_hr_vs       = safe_float(row.get("pitcher_vs_rhh_hr_rate", 0))
+        pitcher_hr9_vs      = safe_float(row.get("pitcher_vs_rhh_hr9", 0))
         pitcher_split_label = "vs RHH"
     elif batter_hand == "L":
-        pitcher_barrel_vs = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
-        pitcher_hr_vs     = safe_float(row.get("pitcher_vs_lhh_hr_rate", 0))
-        pitcher_hr9_vs    = safe_float(row.get("pitcher_vs_lhh_hr9", 0))
+        pitcher_barrel_vs   = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
+        pitcher_hr_vs       = safe_float(row.get("pitcher_vs_lhh_hr_rate", 0))
+        pitcher_hr9_vs      = safe_float(row.get("pitcher_vs_lhh_hr9", 0))
         pitcher_split_label = "vs LHH"
     else:
         pitcher_barrel_vs = pitcher_hr_vs = pitcher_hr9_vs = 0.0
@@ -385,8 +370,8 @@ def compute_platoon_score(row: pd.Series) -> tuple:
             parts.append(f"↔️ Neutral platoon ({matchup_label})")
 
     score += pitcher_barrel_vs * 0.06
-    score += pitcher_hr_vs * 0.04
-    score += pitcher_hr9_vs * 0.08
+    score += pitcher_hr_vs     * 0.04
+    score += pitcher_hr9_vs    * 0.08
 
     if pitcher_split_label and pitcher_barrel_vs >= 8:
         parts.append(f"Pitcher {pitcher_barrel_vs:.1f}% barrel allowed {pitcher_split_label}")
@@ -394,7 +379,7 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         parts.append(f"Pitcher {pitcher_hr9_vs:.2f} HR/9 {pitcher_split_label}")
 
     score += batter_barrel_vs * 0.04
-    score += batter_hr_vs * 0.03
+    score += batter_hr_vs     * 0.03
 
     score   = round(score, 3)
     penalty = round(penalty, 3)
@@ -404,15 +389,15 @@ def compute_platoon_score(row: pd.Series) -> tuple:
 
 
 def assign_confidence(row: pd.Series) -> str:
-    batter_bbe  = safe_float(row.get("season_bbe", 0))
-    batter_pa   = safe_float(row.get("pa", 0))
-    pitcher_bbe = safe_float(row.get("pitcher_bbe_allowed", 0))
+    batter_bbe        = safe_float(row.get("season_bbe", 0))
+    batter_pa         = safe_float(row.get("pa", 0))
+    pitcher_bbe       = safe_float(row.get("pitcher_bbe_allowed", 0))
     small_sample_park = str(row.get("small_sample", "False")).lower() == "true"
     weather_available = str(row.get("wind_context", "")).strip() not in (
         "", "Unknown", "Weather unavailable"
     )
 
-    points       = 0
+    points        = 0
     batter_points = 0
 
     if batter_bbe >= 60 and batter_pa >= 100:
@@ -510,25 +495,23 @@ def prepare_combined(
     # ── Lineup filter ──────────────────────────────────────────────────────
     if not lineups.empty and "player_id" in lineups.columns and "team" in lineups.columns:
         confirmed_teams = set(lineups["team"].unique())
-        lineup_ids = set(lineups["player_id"].astype(str).str.strip())
+        lineup_ids      = set(lineups["player_id"].astype(str).str.strip())
+        batter_id_col   = "batter_id" if "batter_id" in batters.columns else "batter"
 
-        batter_id_col = "batter_id" if "batter_id" in batters.columns else "batter"
         if batter_id_col in batters.columns:
             before = len(batters)
             batters["_batter_id_str"] = batters[batter_id_col].astype(str).str.strip()
 
-            # Only apply filter for teams that have confirmed lineups
-            # Batters from teams without confirmed lineups pass through
             def lineup_filter(row):
                 team = str(row.get("batter_team", "")).strip()
                 if team not in confirmed_teams:
-                    return True  # team has no lineup posted yet — keep
+                    return True
                 return row["_batter_id_str"] in lineup_ids
 
             batters = batters[batters.apply(lineup_filter, axis=1)].copy()
             batters = batters.drop(columns=["_batter_id_str"])
             removed = before - len(batters)
-            print(f"Lineup filter: {removed} batters removed (not in confirmed lineup), {len(batters)} remaining")
+            print(f"Lineup filter: {removed} batters removed, {len(batters)} remaining")
     else:
         print("No confirmed lineups available — lineup filter skipped.")
 
@@ -573,25 +556,17 @@ def prepare_combined(
 
         batter_id_col = "batter_id" if "batter_id" in combined.columns else "batter"
         if batter_id_col in combined.columns and "pitcher_id" in bvp.columns:
-            combined["_batter_id_merge"] = combined[batter_id_col].apply(
-                lambda x: safe_float(x, 0)
-            )
-            combined["_pitcher_id_merge"] = combined["pitcher_id_num"].apply(
-                lambda x: safe_float(x, 0)
-            )
-            bvp["_batter_id_merge"]  = bvp["batter_id"].apply(lambda x: safe_float(x, 0))
-            bvp["_pitcher_id_merge"] = bvp["pitcher_id"].apply(lambda x: safe_float(x, 0))
+            combined["_batter_id_merge"]  = combined[batter_id_col].apply(lambda x: safe_float(x, 0))
+            combined["_pitcher_id_merge"] = combined["pitcher_id_num"].apply(lambda x: safe_float(x, 0))
+            bvp["_batter_id_merge"]       = bvp["batter_id"].apply(lambda x: safe_float(x, 0))
+            bvp["_pitcher_id_merge"]      = bvp["pitcher_id"].apply(lambda x: safe_float(x, 0))
 
             bvp_cols = [c for c in [
                 "_batter_id_merge", "_pitcher_id_merge",
                 "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate"
             ] if c in bvp.columns]
 
-            combined = combined.merge(
-                bvp[bvp_cols],
-                on=["_batter_id_merge", "_pitcher_id_merge"],
-                how="left",
-            )
+            combined = combined.merge(bvp[bvp_cols], on=["_batter_id_merge", "_pitcher_id_merge"], how="left")
             combined = combined.drop(columns=["_batter_id_merge", "_pitcher_id_merge"])
             bvp_matches = combined["bvp_pa"].notna().sum()
             print(f"BvP data matched for {bvp_matches} batter-pitcher pairs.")
@@ -605,12 +580,7 @@ def prepare_combined(
             "lf_dist", "lf_height", "rf_dist", "rf_height",
             "pull_boost_rhh", "pull_boost_lhh",
         ] if c in parks.columns]
-        combined = combined.merge(
-            parks[park_cols],
-            left_on="home_team",
-            right_on="park_home_team",
-            how="left",
-        )
+        combined = combined.merge(parks[park_cols], left_on="home_team", right_on="park_home_team", how="left")
     else:
         combined["park_hr_factor"] = 100.0
         combined["park_name"]      = ""
@@ -626,9 +596,7 @@ def prepare_combined(
     if not weather.empty:
         combined = combined.merge(
             weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]],
-            left_on="home_team",
-            right_on="weather_home_team",
-            how="left",
+            left_on="home_team", right_on="weather_home_team", how="left",
         )
         combined["hr_weather_boost"] = combined["hr_weather_boost"].fillna(0.0).apply(safe_float)
         combined["wind_context"]     = combined["wind_context"].fillna("Unknown")
@@ -643,7 +611,7 @@ def prepare_combined(
     # ── Batting average filter ─────────────────────────────────────────────
     if "batting_avg" in combined.columns:
         combined["batting_avg"] = combined["batting_avg"].apply(safe_float)
-        before = len(combined)
+        before   = len(combined)
         combined = combined[combined["batting_avg"] >= MIN_BATTING_AVG].copy()
         removed  = before - len(combined)
         print(f"BA filter: {removed} batters removed (below .225 avg), {len(combined)} remaining")
@@ -659,7 +627,8 @@ def prepare_combined(
         "avg_launch_angle", "avg_la_7d",
         "avg_ev_5d", "avg_ev_10d",
         "barrel_pct_5d", "barrel_pct_10d",
-        "bbe_5d", "bbe_10d",
+        "hard_hit_pct_5d", "hard_hit_pct_10d",
+        "bbe_5d", "bbe_7d", "bbe_10d",
         "pull_rate", "season_bbe",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
         "pitcher_bf", "pitcher_bbe_allowed", "park_hr_factor",
@@ -673,6 +642,7 @@ def prepare_combined(
         "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
+        "hr_7d", "season_hr", "season_fb",
     ]
 
     dynamic_cols_in_combined = [
@@ -827,7 +797,7 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
     combined_sorted["team_count"] = combined_sorted.groupby("batter_team").cumcount()
     capped = combined_sorted[combined_sorted["team_count"] < MAX_PER_TEAM].head(10).copy()
     capped = capped.drop(columns=["team_count"])
-    top10 = capped
+    top10  = capped
     top10["rank"] = range(1, len(top10) + 1)
 
     output_cols = {
@@ -891,15 +861,35 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
     return top10[list(available.keys())].rename(columns=available)
 
 
-def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
+def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.DataFrame:
+    """
+    Build the High EV / Launch Angle Upside section.
+    Excludes any player already in the top 10 main picks.
+    New signals added:
+      - momentum (5d vs 10d EV and barrel trending up)
+      - BvP history vs today's pitcher
+      - hard hit rate vs season average (hot contact phase)
+      - season vs 7d hard hit rate gap (contact heating up)
+      - launch angle trend (7d LA moving toward HR zone)
+    """
     if combined.empty:
         return pd.DataFrame()
+
+    # Exclude players already in main top 10
+    combined = combined.copy()
+    if "player_name" in combined.columns and exclude_names:
+        before   = len(combined)
+        combined = combined[~combined["player_name"].isin(exclude_names)].copy()
+        excluded = before - len(combined)
+        if excluded > 0:
+            print(f"EV section: excluded {excluded} players already in top 10 main picks")
 
     if "avg_la_7d" in combined.columns:
         combined["la_for_filter"] = combined["avg_la_7d"].apply(safe_float)
     else:
         combined["la_for_filter"] = combined["avg_launch_angle"].apply(safe_float)
 
+    # Filter: high EV (>92 mph) and launch angle below HR zone (<20 degrees)
     ev_df = combined[
         (combined["avg_ev_7d"] > 92) &
         (combined["la_for_filter"] < 20) &
@@ -910,18 +900,44 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         print("No high EV / low launch angle candidates found.")
         return pd.DataFrame()
 
+    # ── New EV-specific signals ────────────────────────────────────────────
+
+    # Hard hit rate trending up vs season average
+    ev_df["hard_hit_season_avg"] = ev_df.apply(
+        lambda r: safe_float(r.get("season_hard_hit", 0)) / max(safe_float(r.get("season_bbe", 1)), 1) * 100,
+        axis=1,
+    )
+    ev_df["hard_hit_trend"] = ev_df["hard_hit_pct_7d"] - ev_df["hard_hit_season_avg"]
+
+    # Launch angle trend — is 7d LA moving toward the HR zone (20-35 degrees)?
+    ev_df["la_season"]    = ev_df["avg_launch_angle"].apply(safe_float)
+    ev_df["la_7d"]        = ev_df["avg_la_7d"].apply(safe_float)
+    ev_df["la_trend"]     = ev_df["la_7d"] - ev_df["la_season"]
+
+    # Distance from ideal HR launch angle (25 degrees) — lower = closer to HR zone
+    ev_df["la_hr_gap"]    = (25 - ev_df["la_7d"]).abs()
+
+    # EV momentum already computed in combined — reuse
+    ev_df["ev_momentum"]  = ev_df["momentum_score"].apply(safe_float)
+
+    # ── EV score formula ──────────────────────────────────────────────────
     ev_df["ev_score"] = (
-        normalize(ev_df["avg_ev_7d"])           * 2.0 +
-        normalize(ev_df["hard_hit_pct_7d"])     * 1.5 +
-        normalize(ev_df["pitcher_barrel_pct"])  * 1.5 +
-        normalize(ev_df["pitcher_hr_per_fb"])   * 1.2 +
-        normalize(ev_df["pitch_matchup_score"]) * 1.0 +
-        normalize(ev_df["platoon_score"])       * 0.8 +
-        normalize(ev_df["park_hr_factor_norm"]) * 0.5 +
-        ev_df["pull_park_score"]                * 0.4 +
-        ev_df["weather_score"]                  * 0.3 -
-        ev_df["pitcher_quality_penalty"]        * 1.0 -
-        ev_df["total_penalty"]
+        normalize(ev_df["avg_ev_7d"])                * 2.5 +  # raw exit velocity — highest weight
+        normalize(ev_df["hard_hit_pct_7d"])          * 1.5 +  # recent hard contact rate
+        normalize(ev_df["hard_hit_trend"])           * 0.8 +  # hard hit rate trending up vs season
+        normalize(ev_df["la_trend"])                 * 0.7 +  # launch angle trending toward HR zone
+        normalize(-ev_df["la_hr_gap"])               * 0.6 +  # how close to ideal HR launch angle
+        ev_df["ev_momentum"]                         * 0.8 +  # EV + barrel trending up (5d vs 10d)
+        ev_df["bvp_score"]                           * 0.7 +  # owns this pitcher historically
+        normalize(ev_df["pitcher_barrel_pct"])       * 1.5 +  # pitcher allows barrels
+        normalize(ev_df["pitcher_hr_per_fb"])        * 1.2 +  # pitcher gives up HRs on fly balls
+        normalize(ev_df["pitch_matchup_score"])      * 1.0 +  # pitch type matchup
+        normalize(ev_df["platoon_score"])            * 0.8 +  # platoon advantage
+        normalize(ev_df["park_hr_factor_norm"])      * 0.5 +  # park factor
+        ev_df["pull_park_score"]                     * 0.4 +  # pull hitter park dimensions
+        ev_df["weather_score"]                       * 0.3 -  # weather
+        ev_df["pitcher_quality_penalty"]             * 1.0 -  # elite pitcher penalty
+        ev_df["total_penalty"]                               # platoon/pitch weakness penalty
     ).round(3)
 
     ev_sorted = ev_df.sort_values("ev_score", ascending=False)
@@ -933,28 +949,57 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
 
     def build_ev_reason(row) -> str:
         reasons = []
-        ev      = safe_float(row.get("avg_ev_7d"))
-        la_7d   = safe_float(row.get("avg_la_7d"))
-        la_season = safe_float(row.get("avg_launch_angle"))
-        la = la_7d if la_7d != 0.0 else la_season
+
+        ev    = safe_float(row.get("avg_ev_7d"))
+        la_7d = safe_float(row.get("avg_la_7d"))
+        la_s  = safe_float(row.get("avg_launch_angle"))
+        la    = la_7d if la_7d != 0.0 else la_s
         reasons.append(f"💥 Avg EV {ev:.1f} mph, launch angle {la:.1f}° (7d)")
 
-        hh = safe_float(row.get("hard_hit_pct_7d"))
-        if hh >= 40:
-            reasons.append(f"🔨 {hh:.1f}% hard hit rate")
+        # Launch angle trending toward HR zone
+        la_trend = safe_float(row.get("la_trend"))
+        if la_trend >= 3.0:
+            reasons.append(f"📐 Launch angle trending up {la_s:.1f}°→{la_7d:.1f}° (approaching HR zone)")
+        elif la_7d >= 15 and la_7d < 20:
+            reasons.append(f"📐 Launch angle {la_7d:.1f}° — one adjustment from HR zone")
 
+        # Hard hit rate
+        hh        = safe_float(row.get("hard_hit_pct_7d"))
+        hh_trend  = safe_float(row.get("hard_hit_trend"))
+        if hh >= 50:
+            reasons.append(f"🔨 Elite hard hit rate {hh:.1f}% (7d)")
+        elif hh >= 40:
+            reasons.append(f"🔨 {hh:.1f}% hard hit rate (7d)")
+        if hh_trend >= 10:
+            hh_season = safe_float(row.get("hard_hit_season_avg"))
+            reasons.append(f"📈 Hard hit rate heating up ({hh_season:.1f}% season → {hh:.1f}% last 7d)")
+
+        # Momentum
+        momentum_desc = str(row.get("momentum_desc", ""))
+        if momentum_desc:
+            reasons.append(momentum_desc)
+
+        # BvP
+        bvp_desc = str(row.get("bvp_desc", ""))
+        if bvp_desc:
+            reasons.append(bvp_desc)
+
+        # Pitcher
         p_barrel = safe_float(row.get("pitcher_barrel_pct"))
         if p_barrel >= 8:
             reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
 
+        # Platoon
         platoon_desc = str(row.get("platoon_desc", ""))
         if platoon_desc:
             reasons.append(f"🔄 {platoon_desc}")
 
+        # Pull park
         pull_desc = str(row.get("pull_park_desc", ""))
         if pull_desc:
             reasons.append(pull_desc)
 
+        # Pitch matchup
         pitch_desc = str(row.get("pitch_matchup_desc", ""))
         if pitch_desc:
             reasons.append(f"🎳 {pitch_desc}")
@@ -978,9 +1023,19 @@ def build_ev_subsection(combined: pd.DataFrame) -> pd.DataFrame:
         "why":                        "Why They're Here",
         "batting_avg":                "Batting Avg",
         "avg_ev_7d":                  "Avg EV (7d)",
+        "avg_ev_5d":                  "Avg EV (5d)",
+        "avg_ev_10d":                 "Avg EV (10d)",
         "avg_la_7d":                  "Avg Launch Angle (7d)",
         "avg_launch_angle":           "Avg Launch Angle (Season)",
+        "la_trend":                   "LA Trend (7d vs Season)",
         "hard_hit_pct_7d":            "Hard Hit% (7d)",
+        "hard_hit_season_avg":        "Hard Hit% (Season)",
+        "hard_hit_trend":             "Hard Hit% Trend",
+        "momentum_desc":              "Momentum",
+        "bvp_pa":                     "BvP PA",
+        "bvp_hr":                     "BvP HR",
+        "bvp_iso":                    "BvP ISO",
+        "bvp_desc":                   "BvP Notes",
         "hr_per_fb":                  "HR/FB%",
         "pull_rate":                  "Pull Rate%",
         "pull_park_desc":             "Pull Park Matchup",
@@ -1012,7 +1067,7 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
     sh = gc.open_by_key(sheet_id)
 
     try:
-        ws = sh.worksheet("Picks_Log")
+        ws       = sh.worksheet("Picks_Log")
         existing = pd.DataFrame(ws.get_all_records())
     except gspread.WorksheetNotFound:
         print("Picks_Log not found — skipping resolution.")
@@ -1023,7 +1078,7 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
         return
 
     today_str = date.today().strftime("%Y-%m-%d")
-    pending = existing[
+    pending   = existing[
         (existing["hit_hr"] == "Pending") &
         (existing["date"] != today_str) &
         (existing["date"] != "")
@@ -1051,14 +1106,14 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
 
     hr_df["game_date"] = pd.to_datetime(hr_df["game_date"])
     hr_df["is_hr"]     = hr_df["events"].astype("string").str.lower().eq("home_run")
-    hr_events = hr_df[hr_df["is_hr"]].copy()
+    hr_events          = hr_df[hr_df["is_hr"]].copy()
 
     hr_batter_ids = hr_events["batter"].dropna().astype(int).unique().tolist()
     print(f"Looking up names for {len(hr_batter_ids)} HR hitters...")
     name_map = {}
     for i in range(0, len(hr_batter_ids), 50):
         chunk = hr_batter_ids[i:i + 50]
-        url = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
+        url   = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
@@ -1111,13 +1166,13 @@ def log_todays_picks(
     ev_section: pd.DataFrame,
 ) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
-    sh = gc.open_by_key(sheet_id)
+    sh        = gc.open_by_key(sheet_id)
 
     try:
-        ws = sh.worksheet("Picks_Log")
+        ws       = sh.worksheet("Picks_Log")
         existing = pd.DataFrame(ws.get_all_records())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Picks_Log", rows=5000, cols=25)
+        ws       = sh.add_worksheet(title="Picks_Log", rows=5000, cols=25)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -1169,6 +1224,8 @@ def log_todays_picks(
         else new_df
     )
 
+    combined_log = combined_log.replace([np.inf, -np.inf], np.nan).fillna("")
+
     ws.clear()
     values = [combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()
     ws.update(values)
@@ -1214,9 +1271,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             lambda r: r["profit_if_win"] if r["hit_hr_bool"] else -1.0, axis=1
         )
 
-    # ── Build performance rows ─────────────────────────────────────────────
-    perf_rows  = []
-    roi_rows   = []
+    perf_rows = []
+    roi_rows  = []
 
     def add_perf(label, sub_df, bold=False):
         if sub_df.empty:
@@ -1225,11 +1281,11 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         hits  = int(sub_df["hit_hr_bool"].sum())
         rate  = round(hits / total * 100, 1)
         perf_rows.append({
-            "label":         label,
-            "total_picks":   total,
-            "hr_count":      hits,
-            "hit_rate_pct":  rate,
-            "_bold":         bold,
+            "label":        label,
+            "total_picks":  total,
+            "hr_count":     hits,
+            "hit_rate_pct": rate,
+            "_bold":        bold,
         })
 
     def add_roi(label, sub_df, bold=False):
@@ -1243,49 +1299,43 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         profit_str    = f"+{units_profit}" if units_profit >= 0 else str(units_profit)
         roi_str       = f"+{roi}%" if roi >= 0 else f"{roi}%"
         roi_rows.append({
-            "label":          label,
-            "bets_placed":    total,
-            "hr_count":       hits,
-            "hit_rate_pct":   round(hits / total * 100, 1) if total > 0 else 0.0,
-            "units_wagered":  units_wagered,
-            "units_profit":   profit_str,
-            "roi_pct":        roi_str,
-            "_bold":          bold,
-            "_roi_val":       roi,
-            "_profit_val":    units_profit,
+            "label":         label,
+            "bets_placed":   total,
+            "hr_count":      hits,
+            "hit_rate_pct":  round(hits / total * 100, 1) if total > 0 else 0.0,
+            "units_wagered": units_wagered,
+            "units_profit":  profit_str,
+            "roi_pct":       roi_str,
+            "_bold":         bold,
+            "_roi_val":      roi,
+            "_profit_val":   units_profit,
         })
 
-    # Overall
     add_perf("🏆  Overall", scored, bold=True)
 
-    # By Rank
     perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for rank in range(1, 11):
         sub = scored[scored["rank"] == rank]
         if not sub.empty:
             add_perf(f"   Rank {rank}", sub)
 
-    # By Confidence
     perf_rows.append({"label": "── By Confidence ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for tier in ["High", "Medium", "Low"]:
         sub = scored[scored["confidence"] == tier]
         if not sub.empty:
             add_perf(f"   {tier}", sub)
 
-    # By Section
     perf_rows.append({"label": "── By Section ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for section in scored["section"].dropna().unique():
         sub = scored[scored["section"] == section]
         if not sub.empty:
             add_perf(f"   {section}", sub)
 
-    # Rolling
     perf_rows.append({"label": "── Rolling ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     max_date = scored["date"].max()
     add_perf("   Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
     add_perf("   Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
-    # ROI section
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
@@ -1315,7 +1365,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
         add_roi("   Last 30 Days", bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=30)])
 
-    # ── Write to sheet ─────────────────────────────────────────────────────
     try:
         ws = sh.worksheet("Scorecard")
         ws.clear()
@@ -1324,16 +1373,13 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     ws_id = ws.id
 
-    # Build values to write
     perf_headers = ["Category", "Total Picks", "HR Count", "Hit Rate %"]
     roi_headers  = ["Category", "Bets Placed", "HR Count", "Hit Rate %", "Units Wagered", "Units Profit", "ROI %"]
 
     all_values = []
-
-    # Section 1 header
     all_values.append(["📊  MODEL PERFORMANCE", "", "", ""])
     all_values.append(perf_headers)
-    perf_start = 2  # 0-indexed row where perf data starts
+    perf_start = 2
 
     for r in perf_rows:
         all_values.append([
@@ -1343,15 +1389,11 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
         ])
 
-    perf_end = len(all_values)
-
-    # Spacer rows between sections
     all_values.append(["", "", "", ""])
     all_values.append(["", "", "", ""])
 
     roi_section_start = len(all_values)
 
-    # Section 2 header + data
     if roi_rows:
         all_values.append(["💰  BETTING ROI", "", "", "", "", "", ""])
         all_values.append(roi_headers)
@@ -1373,10 +1415,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     ws.update(all_values)
 
-    # ── Formatting ─────────────────────────────────────────────────────────
     reqs = []
 
-    # Colors
     C_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
     C_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
     C_BLUE      = {"red": 0.114, "green": 0.533, "blue": 0.898}
@@ -1394,7 +1434,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     total_rows = len(all_values)
     total_cols = 7
 
-    # Base style — entire sheet
     reqs.append({
         "repeatCell": {
             "range": {
@@ -1418,7 +1457,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    # ── PERFORMANCE SECTION HEADER (row 0) ────────────────────────────────
     reqs.append({
         "repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 4},
@@ -1433,7 +1471,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    # Column headers row (row 1)
     reqs.append({
         "repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 4},
@@ -1449,15 +1486,13 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    # Performance data rows
     for i, r in enumerate(perf_rows):
-        row_idx  = perf_start + i
+        row_idx   = perf_start + i
         is_header = r.get("_header", False)
         is_bold   = r.get("_bold", False)
         rate      = r.get("hit_rate_pct", "")
 
         if is_header:
-            # Sub-group header rows
             reqs.append({
                 "repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4},
@@ -1472,7 +1507,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                 }
             })
         else:
-            # Alternating background
             bg = C_BG if i % 2 == 0 else C_BG_ALT
             reqs.append({
                 "repeatCell": {
@@ -1482,7 +1516,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                 }
             })
 
-            # Color code hit rate cell (col 3)
             if rate != "":
                 try:
                     rate_val = float(str(rate).replace("%", ""))
@@ -1512,7 +1545,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                 except Exception:
                     pass
 
-            # Bold overall row label
             if is_bold and not is_header:
                 reqs.append({
                     "repeatCell": {
@@ -1526,7 +1558,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                     }
                 })
 
-    # ── ROI SECTION HEADER ─────────────────────────────────────────────────
     reqs.append({
         "repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": roi_section_start, "endRowIndex": roi_section_start + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -1541,7 +1572,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    # ROI column headers
     if roi_rows:
         reqs.append({
             "repeatCell": {
@@ -1558,13 +1588,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             }
         })
 
-        # ROI data rows
         for i, r in enumerate(roi_rows):
-            row_idx   = roi_data_start + i
-            is_header = r.get("_header", False)
-            is_bold   = r.get("_bold", False)
-            roi_val   = r.get("_roi_val", 0)
-            profit_val= r.get("_profit_val", 0)
+            row_idx    = roi_data_start + i
+            is_header  = r.get("_header", False)
+            is_bold    = r.get("_bold", False)
+            roi_val    = r.get("_roi_val", 0)
+            profit_val = r.get("_profit_val", 0)
 
             if is_header:
                 reqs.append({
@@ -1590,7 +1619,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                     }
                 })
 
-                # Color code ROI % cell (col 6)
                 if roi_val != 0 or r.get("bets_placed", "") != "":
                     roi_fg = C_GREEN if roi_val > 0 else C_RED if roi_val < 0 else C_WHITE
                     roi_bg = C_GREEN_DIM if roi_val > 0 else C_RED_DIM if roi_val < 0 else bg
@@ -1608,7 +1636,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                         }
                     })
 
-                    # Color code units profit cell (col 5)
                     profit_fg = C_GREEN if profit_val > 0 else C_RED if profit_val < 0 else C_WHITE
                     reqs.append({
                         "repeatCell": {
@@ -1623,7 +1650,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                         }
                     })
 
-                # Bold overall row
                 if is_bold:
                     reqs.append({
                         "repeatCell": {
@@ -1637,7 +1663,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                         }
                     })
 
-    # ── Column widths ──────────────────────────────────────────────────────
     col_widths = [220, 100, 80, 100, 120, 120, 100]
     for i, width in enumerate(col_widths):
         reqs.append({
@@ -1648,7 +1673,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             }
         })
 
-    # Row heights
     reqs.append({
         "updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": total_rows},
@@ -1657,7 +1681,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    # Taller section headers
     for row_idx in [0, roi_section_start]:
         reqs.append({
             "updateDimensionProperties": {
@@ -1667,7 +1690,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             }
         })
 
-    # Freeze first two rows of each section — just freeze row 1 (col headers)
     reqs.append({
         "updateSheetProperties": {
             "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}},
@@ -1675,7 +1697,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    # Tab color — gold to differentiate from Top_HR_Picks
     reqs.append({
         "updateSheetProperties": {
             "properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": C_GOLD}},
@@ -1690,9 +1711,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         print(f"Scorecard formatting failed: {e}")
 
     print("Scorecard updated.")
-
-  
-
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
@@ -1979,57 +1997,13 @@ def format_picks_sheet(
     })
 
     col_widths = [
-        50,   # Rank
-        160,  # Batter
-        50,   # Bats
-        55,   # Team
-        175,  # Opposing Pitcher
-        55,   # Throws
-        75,   # Pitcher Team
-        175,  # Park
-        75,   # HR Score
-        80,   # Confidence
-        380,  # Key Reasons
-        75,   # Batting Avg
-        90,   # Barrel% 7d
-        75,   # Barrel% 5d
-        75,   # Barrel% 10d
-        200,  # Momentum
-        75,   # HR/PA%
-        75,   # HR/FB%
-        65,   # ISO
-        80,   # ISO vs LHP
-        80,   # ISO vs RHP
-        85,   # Avg EV 7d
-        85,   # Avg EV 5d
-        85,   # Avg EV 10d
-        100,  # Avg Launch Angle 7d
-        100,  # Avg Launch Angle Season
-        75,   # Pull Rate%
-        220,  # Pull Park Matchup
-        60,   # BvP PA
-        60,   # BvP HR
-        70,   # BvP ISO
-        200,  # BvP Notes
-        220,  # Platoon Matchup
-        120,  # Pitcher Barrel%
-        120,  # Pitcher HR/FB%
-        130,  # Pitcher Barrel% vs LHH
-        130,  # Pitcher Barrel% vs RHH
-        90,   # Pitcher HR/9 vs LHH
-        90,   # Pitcher HR/9 vs RHH
-        90,   # Top Pitch 1
-        75,   # Top Pitch 1 %
-        90,   # Top Pitch 2
-        75,   # Top Pitch 2 %
-        90,   # Top Pitch 3
-        75,   # Top Pitch 3 %
-        240,  # Pitch Matchup
-        75,   # Park HR Factor
-        65,   # LF Distance
-        65,   # LF Wall Height
-        65,   # RF Distance
-        65,   # RF Wall Height
+        50, 160, 50, 55, 175, 55, 75, 175, 75, 80, 380,
+        75, 90, 75, 75, 200, 75, 75, 65, 80, 80,
+        85, 85, 85, 100, 100, 75, 220,
+        60, 60, 70, 200, 220,
+        120, 120, 130, 130, 90, 90,
+        90, 75, 90, 75, 90, 75, 240,
+        75, 65, 65, 65, 65,
     ]
     for i, width in enumerate(col_widths):
         reqs.append({
@@ -2079,8 +2053,14 @@ def main() -> None:
         print("WARNING: No combined data — check all sheets have data.")
         return
 
-    picks      = build_main_picks(combined)
-    ev_section = build_ev_subsection(combined)
+    picks = build_main_picks(combined)
+
+    # Build set of names already in main picks to exclude from EV section
+    exclude_from_ev: Set[str] = set()
+    if not picks.empty and "Batter" in picks.columns:
+        exclude_from_ev = set(picks["Batter"].dropna().tolist())
+
+    ev_section = build_ev_subsection(combined, exclude_from_ev)
 
     print(f"Built {len(picks)} main picks")
     print(f"Built {len(ev_section)} EV subsection picks")
