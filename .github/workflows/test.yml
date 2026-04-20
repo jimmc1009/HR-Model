@@ -32,7 +32,11 @@ jobs:
       - name: Run full pipeline
         if: github.event.inputs.mode == 'full'
         run: |
-          python check_dnp.py
+          python main.py
+          python pitcher_statcast.py
+          python park_factors.py
+          python weather.py
+          python hr_picks.py
       - name: Run single script
         if: github.event.inputs.mode != 'full'
         run: python ${{ github.event.inputs.mode }}
