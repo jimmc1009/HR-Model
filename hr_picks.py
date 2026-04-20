@@ -1169,6 +1169,8 @@ def log_todays_picks(
         else new_df
     )
 
+    combined_log = combined_log.replace([np.inf, -np.inf], np.nan).fillna("")
+
     ws.clear()
     values = [combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()
     ws.update(values)
