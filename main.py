@@ -311,7 +311,7 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     df["is_barrel"]   = df.apply(is_barrel, axis=1)
     df["is_hard_hit"] = df["launch_speed"] >= 95
     df["is_hr"]       = df["events"].astype("string").str.lower().eq("home_run")
-    df["is_fly_ball"] = df["launch_angle"].between(25, 50, inclusive="both")
+    df["is_fly_ball"] = df["launch_angle"].between(20, 50, inclusive="both")
 
     if "stand" in df.columns and "hc_x" in df.columns:
         df["is_pull"] = df.apply(
