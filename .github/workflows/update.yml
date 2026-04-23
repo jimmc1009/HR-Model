@@ -2,8 +2,7 @@ name: Update MLB HR Model
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 14 * * *"
+  
 
 jobs:
   update-sheet:
