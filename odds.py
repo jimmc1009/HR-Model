@@ -54,9 +54,10 @@ def debug_first_event(event_id: str, home_team: str, away_team: str) -> None:
     params = {
         "apiKey":     ODDS_API_KEY,
         "regions":    "us,us2",
-        "markets":    MARKETS,
+        "markets":    "h2h,batter_home_runs,player_home_runs",
         "oddsFormat": ODDS_FORMAT,
     }
+
 
     print(f"\n=== DEBUG: {away_team} @ {home_team} ===")
     print(f"URL: {url}")
