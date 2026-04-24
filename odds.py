@@ -2,8 +2,7 @@ import os
 import json
 import time
 import unicodedata
-from datetime import date
-from typing import Dict, List
+from typing import List
 
 import pandas as pd
 import numpy as np
@@ -20,24 +19,6 @@ ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
 SPORT        = "baseball_mlb"
 ODDS_FORMAT  = "american"
 MARKETS      = "batter_home_runs"
-
-# All major US bookmakers
-BOOKMAKERS = ",".join([
-    "draftkings",
-    "fanduel",
-    "betmgm",
-    "caesars",
-    "pointsbetus",
-    "betonlineag",
-    "mybookieag",
-    "bovada",
-    "betrivers",
-    "unibet_us",
-    "williamhill_us",
-    "superbook",
-    "wynnbet",
-    "hardrock_us",
-])
 
 
 def get_gspread_client() -> gspread.Client:
@@ -70,10 +51,10 @@ def get_today_events() -> List[dict]:
 def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List[dict]:
     url    = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events/{event_id}/odds"
     params = {
-        "apiKey":      ODDS_API_KEY,
-        "bookmakers":  BOOKMAKERS,
-        "markets":     MARKETS,
-        "oddsFormat":  ODDS_FORMAT,
+        "apiKey":     ODDS_API_KEY,
+        "regions":    "us,us2",
+        "markets":    MARKETS,
+        "oddsFormat": ODDS_FORMAT,
     }
 
     try:
@@ -91,7 +72,6 @@ def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List
             if market.get("key") != "batter_home_runs":
                 continue
             for outcome in market.get("outcomes", []):
-                # player name is in description for props
                 player_name = outcome.get("description") or outcome.get("name", "")
                 price       = outcome.get("price")
                 if player_name and price is not None:
@@ -130,14 +110,14 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
 
     df = pd.DataFrame(all_rows)
 
-    # Filter out outlier odds — anything above +3000 is likely a novelty line
+    # Filter out outlier odds above +3000 — novelty lines
     df = df[df["odds"] <= 3000].copy()
 
-    # For each player get consensus odds across books
-    def consensus_odds(odds_list):
-        # Use median to avoid outlier high/low lines
-        return int(pd.Series(odds_list).median())
+    if df.empty:
+        print("All odds were filtered out as outliers.")
+        return pd.DataFrame()
 
+    # Build consensus odds per player
     best_odds = (
         df.groupby("player_name")
         .agg(
@@ -152,7 +132,6 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
         .reset_index()
     )
 
-    # Use consensus (median) as the primary odds figure
     best_odds["player_name_norm"] = best_odds["player_name"].apply(normalize_name)
 
     def implied_prob(odds: int) -> float:
@@ -166,9 +145,11 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
     # Sort by implied probability descending (chalk first)
     best_odds = best_odds.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
 
-    print(f"\nBuilt odds table: {len(best_odds)} players across {df['bookmaker'].nunique()} bookmakers")
-    print("\nTop 15 by implied probability:")
-    print(best_odds[["player_name", "consensus_odds", "implied_prob_pct", "num_books", "bookmakers"]].head(15).to_string(index=False))
+    num_books = df["bookmaker"].nunique()
+    print(f"\nBuilt odds table: {len(best_odds)} players across {num_books} bookmakers")
+    print(f"Books found: {sorted(df['bookmaker'].unique())}")
+    print("\nTop 20 by implied probability:")
+    print(best_odds[["player_name", "consensus_odds", "implied_prob_pct", "num_books", "bookmakers"]].head(20).to_string(index=False))
 
     return best_odds
 
@@ -215,7 +196,7 @@ def main() -> None:
         return
 
     write_dataframe_to_sheet(gc, sheet_id, "HR_Odds", odds_df)
-    print(f"Written {len(odds_df)} player odds to HR_Odds sheet")
+    print(f"\nWritten {len(odds_df)} player odds to HR_Odds sheet")
 
 
 if __name__ == "__main__":
