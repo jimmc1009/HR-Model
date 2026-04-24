@@ -142,7 +142,7 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
     best_odds = (
         df.groupby("player_name")
         .agg(
-            best_odds=("odds", "max"),
+            best_odds=("odds", "median"),
             bookmakers=("bookmaker", lambda x: ",".join(sorted(set(x)))),
             home_team=("home_team", "first"),
             away_team=("away_team", "first"),
