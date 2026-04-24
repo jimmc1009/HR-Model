@@ -1254,6 +1254,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     scored["hit_hr_bool"] = scored["hit_hr"] == "Yes"
     scored["rank"]        = pd.to_numeric(scored["rank"], errors="coerce")
     scored["date"]        = pd.to_datetime(scored["date"], errors="coerce")
+    scored["hr_score"]    = pd.to_numeric(scored["hr_score"], errors="coerce")
 
     bet_picks = scored[
         (scored.get("bet_placed", pd.Series("", index=scored.index))
@@ -1271,8 +1272,9 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             lambda r: r["profit_if_win"] if r["hit_hr_bool"] else -1.0, axis=1
         )
 
-    perf_rows = []
-    roi_rows  = []
+    perf_rows  = []
+    roi_rows   = []
+    score_rows = []
 
     def add_perf(label, sub_df, bold=False):
         if sub_df.empty:
@@ -1311,6 +1313,23 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             "_profit_val":   units_profit,
         })
 
+    def add_score(label, sub_df, bold=False):
+        if sub_df.empty:
+            return
+        total    = len(sub_df)
+        hits     = int(sub_df["hit_hr_bool"].sum())
+        rate     = round(hits / total * 100, 1)
+        avg_score = round(sub_df["hr_score"].mean(), 2) if not sub_df["hr_score"].isna().all() else 0.0
+        score_rows.append({
+            "label":        label,
+            "total_picks":  total,
+            "hr_count":     hits,
+            "hit_rate_pct": rate,
+            "avg_score":    avg_score,
+            "_bold":        bold,
+        })
+
+    # ── Performance section ────────────────────────────────────────────────
     add_perf("🏆  Overall", scored, bold=True)
 
     perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
@@ -1336,6 +1355,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_perf("   Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
     add_perf("   Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
+    # ── ROI section ────────────────────────────────────────────────────────
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
@@ -1365,6 +1385,25 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
         add_roi("   Last 30 Days", bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=30)])
 
+    # ── Score tier section ─────────────────────────────────────────────────
+    add_score("📈  All Scored Picks", scored, bold=True)
+
+    score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
+
+    tiers = [
+        ("   11+",   scored[scored["hr_score"] >= 11]),
+        ("   10+",   scored[scored["hr_score"] >= 10]),
+        ("   9+",    scored[scored["hr_score"] >= 9]),
+        ("   8+",    scored[scored["hr_score"] >= 8]),
+        ("   7+",    scored[scored["hr_score"] >= 7]),
+        ("   6+",    scored[scored["hr_score"] >= 6]),
+        ("   Under 6", scored[scored["hr_score"] < 6]),
+    ]
+    for label, sub in tiers:
+        if not sub.empty:
+            add_score(label, sub)
+
+    # ── Write to sheet ─────────────────────────────────────────────────────
     try:
         ws = sh.worksheet("Scorecard")
         ws.clear()
@@ -1373,10 +1412,13 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     ws_id = ws.id
 
-    perf_headers = ["Category", "Total Picks", "HR Count", "Hit Rate %"]
-    roi_headers  = ["Category", "Bets Placed", "HR Count", "Hit Rate %", "Units Wagered", "Units Profit", "ROI %"]
+    perf_headers  = ["Category", "Total Picks", "HR Count", "Hit Rate %"]
+    roi_headers   = ["Category", "Bets Placed", "HR Count", "Hit Rate %", "Units Wagered", "Units Profit", "ROI %"]
+    score_headers = ["Category", "Total Picks", "HR Count", "Hit Rate %", "Avg HR Score"]
 
     all_values = []
+
+    # Section 1 — Model Performance
     all_values.append(["📊  MODEL PERFORMANCE", "", "", ""])
     all_values.append(perf_headers)
     perf_start = 2
@@ -1389,11 +1431,13 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
         ])
 
+    perf_end = len(all_values)
     all_values.append(["", "", "", ""])
     all_values.append(["", "", "", ""])
 
     roi_section_start = len(all_values)
 
+    # Section 2 — Betting ROI
     if roi_rows:
         all_values.append(["💰  BETTING ROI", "", "", "", "", "", ""])
         all_values.append(roi_headers)
@@ -1413,8 +1457,28 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         all_values.append(["💰  BETTING ROI — No bets placed yet", "", "", "", "", "", ""])
         roi_data_start = len(all_values)
 
+    all_values.append(["", "", "", "", "", "", ""])
+    all_values.append(["", "", "", "", "", "", ""])
+
+    score_section_start = len(all_values)
+
+    # Section 3 — Score Tier Analysis
+    all_values.append(["📈  SCORE TIER ANALYSIS", "", "", "", ""])
+    all_values.append(score_headers)
+    score_data_start = len(all_values)
+
+    for r in score_rows:
+        all_values.append([
+            r.get("label", ""),
+            str(r.get("total_picks", "")),
+            str(r.get("hr_count", "")),
+            f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
+            str(r.get("avg_score", "")),
+        ])
+
     ws.update(all_values)
 
+    # ── Formatting ─────────────────────────────────────────────────────────
     reqs = []
 
     C_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
@@ -1430,10 +1494,13 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     C_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
     C_GREY      = {"red": 0.600, "green": 0.600, "blue": 0.600}
     C_HEADER_BG = {"red": 0.078, "green": 0.078, "blue": 0.078}
+    C_PURPLE    = {"red": 0.576, "green": 0.439, "blue": 0.859}
+    C_PURPLE_DIM= {"red": 0.118, "green": 0.078, "blue": 0.196}
 
     total_rows = len(all_values)
     total_cols = 7
 
+    # Base style
     reqs.append({
         "repeatCell": {
             "range": {
@@ -1457,9 +1524,10 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
+    # ── Performance section header ─────────────────────────────────────────
     reqs.append({
         "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 4},
+            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 5},
             "cell": {
                 "userEnteredFormat": {
                     "backgroundColor": C_BLUE_DIM,
@@ -1486,6 +1554,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
+    # Performance data rows
     for i, r in enumerate(perf_rows):
         row_idx   = perf_start + i
         is_header = r.get("_header", False)
@@ -1558,6 +1627,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                     }
                 })
 
+    # ── ROI section header ─────────────────────────────────────────────────
     reqs.append({
         "repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": roi_section_start, "endRowIndex": roi_section_start + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -1663,6 +1733,110 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
                         }
                     })
 
+    # ── Score tier section header ──────────────────────────────────────────
+    reqs.append({
+        "repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": score_section_start, "endRowIndex": score_section_start + 1, "startColumnIndex": 0, "endColumnIndex": 5},
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": C_PURPLE_DIM,
+                    "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontFamily": "Roboto", "fontSize": 13},
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+        }
+    })
+
+    reqs.append({
+        "repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": score_section_start + 1, "endRowIndex": score_section_start + 2, "startColumnIndex": 0, "endColumnIndex": 5},
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": C_HEADER_BG,
+                    "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontFamily": "Roboto", "fontSize": 10},
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+        }
+    })
+
+    # Score tier data rows
+    for i, r in enumerate(score_rows):
+        row_idx   = score_data_start + i
+        is_header = r.get("_header", False)
+        is_bold   = r.get("_bold", False)
+        rate      = r.get("hit_rate_pct", "")
+
+        if is_header:
+            reqs.append({
+                "repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 5},
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": C_HEADER_BG,
+                            "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True},
+                            "verticalAlignment": "MIDDLE",
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+                }
+            })
+        else:
+            bg = C_BG if i % 2 == 0 else C_BG_ALT
+            reqs.append({
+                "repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 5},
+                    "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+                    "fields": "userEnteredFormat(backgroundColor)",
+                }
+            })
+
+            if rate != "":
+                try:
+                    rate_val = float(str(rate).replace("%", ""))
+                    if rate_val >= 15:
+                        rate_bg = C_GREEN_DIM
+                        rate_fg = C_GREEN
+                    elif rate_val <= 8:
+                        rate_bg = C_RED_DIM
+                        rate_fg = C_RED
+                    else:
+                        rate_bg = bg
+                        rate_fg = C_WHITE
+
+                    reqs.append({
+                        "repeatCell": {
+                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 3, "endColumnIndex": 4},
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": rate_bg,
+                                    "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 15 or rate_val <= 8},
+                                    "horizontalAlignment": "CENTER",
+                                }
+                            },
+                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                        }
+                    })
+                except Exception:
+                    pass
+
+            if is_bold and not is_header:
+                reqs.append({
+                    "repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1},
+                        "cell": {
+                            "userEnteredFormat": {
+                                "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontSize": 11},
+                            }
+                        },
+                        "fields": "userEnteredFormat(textFormat)",
+                    }
+                })
+
+    # ── Column widths ──────────────────────────────────────────────────────
     col_widths = [220, 100, 80, 100, 120, 120, 100]
     for i, width in enumerate(col_widths):
         reqs.append({
@@ -1673,6 +1847,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             }
         })
 
+    # Row heights
     reqs.append({
         "updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": total_rows},
@@ -1681,7 +1856,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         }
     })
 
-    for row_idx in [0, roi_section_start]:
+    for row_idx in [0, roi_section_start, score_section_start]:
         reqs.append({
             "updateDimensionProperties": {
                 "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": row_idx, "endIndex": row_idx + 1},
