@@ -65,6 +65,17 @@ def get_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
+def read_sheet(gc: gspread.Client, sheet_id: str, worksheet_name: str) -> pd.DataFrame:
+    sh = gc.open_by_key(sheet_id)
+    try:
+        ws   = sh.worksheet(worksheet_name)
+        data = ws.get_all_records()
+        return pd.DataFrame(data)
+    except gspread.WorksheetNotFound:
+        print(f"WARNING: Sheet '{worksheet_name}' not found.")
+        return pd.DataFrame()
+
+
 # ── Absolute scoring functions ─────────────────────────────────────────────
 
 def safe_float(val, default=0.0) -> float:
