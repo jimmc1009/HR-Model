@@ -781,6 +781,18 @@ def prepare_combined(
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
     combined["confidence"]    = combined.apply(assign_confidence, axis=1)
 
+    # ── Cap context scores to prevent unbounded inflation ──────────────────
+    # Platoon score: cap at 2.0 (advantage + pitcher splits)
+    combined["platoon_score_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
+    # Pitch matchup: cap at 1.5 (raw score can be 3-4 on great matchups)
+    combined["pitch_matchup_score_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.5)
+    # Pull park: already small, cap at 1.0
+    combined["pull_park_score_capped"]     = combined["pull_park_score"].clip(-1.0, 1.0)
+    # Momentum: cap at 1.0
+    combined["momentum_score_capped"]      = combined["momentum_score"].clip(-1.0, 1.0)
+    # BvP: cap at 1.5
+    combined["bvp_score_capped"]           = combined["bvp_score"].clip(-0.5, 1.5)
+
     # ── Absolute scoring ───────────────────────────────────────────────────
     combined["score"] = (
         combined["barrel_pct_7d"].apply(score_barrel_pct_7d) +
@@ -794,12 +806,12 @@ def prepare_combined(
         combined["pitcher_hr_per_fb"].apply(score_pitcher_hr_per_fb) +
         combined["pitcher_hard_hit_pct"].apply(score_pitcher_hard_hit_pct) +
         combined["park_hr_factor_norm"].apply(score_park_factor) +
-        combined["weather_score"]       * WEATHER_WEIGHT +
-        combined["platoon_score"]       * PLATOON_BONUS_WEIGHT +
-        combined["pitch_matchup_score"] * PITCH_MATCHUP_WEIGHT +
-        combined["pull_park_score"]     * PULL_PARK_WEIGHT +
-        combined["momentum_score"]      * MOMENTUM_WEIGHT +
-        combined["bvp_score"]           * BVP_WEIGHT -
+        combined["weather_score"]                * WEATHER_WEIGHT +
+        combined["platoon_score_capped"]         * PLATOON_BONUS_WEIGHT +
+        combined["pitch_matchup_score_capped"]   * PITCH_MATCHUP_WEIGHT +
+        combined["pull_park_score_capped"]       * PULL_PARK_WEIGHT +
+        combined["momentum_score_capped"]        * MOMENTUM_WEIGHT +
+        combined["bvp_score_capped"]             * BVP_WEIGHT -
         combined.apply(
             lambda r: score_pitcher_quality_penalty(
                 safe_float(r.get("pitcher_barrel_pct")),
@@ -811,7 +823,6 @@ def prepare_combined(
 
     combined["score"] = combined["score"].round(3)
     return combined
-
 
 def build_reason(row) -> str:
     reasons = []
