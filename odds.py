@@ -55,28 +55,38 @@ def get_today_events() -> List[dict]:
 
 
 def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List[dict]:
-    """
-    Fetch batter_home_runs props for a specific game.
-    Returns list of {player_name, odds, bookmaker} dicts.
-    """
     url = (
         f"https://api.the-odds-api.com/v4/sports/{SPORT}"
         f"/events/{event_id}/odds"
     )
     params = {
-        "apiKey":      ODDS_API_KEY,
-        "regions":     REGIONS,
-        "markets":     MARKETS,
-        "oddsFormat":  ODDS_FORMAT,
-        "bookmakers":  BOOKMAKERS,
+        "apiKey":     ODDS_API_KEY,
+        "regions":    REGIONS,
+        "markets":    MARKETS,
+        "oddsFormat": ODDS_FORMAT,
     }
 
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
+
+        # Debug — print raw response for first game only
+        if away_team == "Detroit Tigers":
+            print(f"DEBUG raw response keys: {list(data.keys())}")
+            bookmakers = data.get("bookmakers", [])
+            print(f"DEBUG bookmakers count: {len(bookmakers)}")
+            if bookmakers:
+                print(f"DEBUG first bookmaker: {bookmakers[0].get('key')}")
+                markets = bookmakers[0].get("markets", [])
+                print(f"DEBUG markets: {[m.get('key') for m in markets]}")
+                if markets:
+                    print(f"DEBUG first 3 outcomes: {markets[0].get('outcomes', [])[:3]}")
+            else:
+                print(f"DEBUG full response: {json.dumps(data)[:500]}")
+
     except Exception as e:
-        print(f"  Failed to fetch odds for {away_team} @ {home_team}: {e}")
+        print(f"  Failed: {e}")
         return []
 
     rows = []
@@ -99,6 +109,7 @@ def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List
                     })
 
     return rows
+
 
 
 def build_odds_table(events: List[dict]) -> pd.DataFrame:
