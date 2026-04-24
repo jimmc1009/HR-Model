@@ -1253,7 +1253,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
                 "confidence":    str(row.get("Confidence", "")),
                 "hit_hr":        "Pending",
                 "section":       section,
-                "odds":          str(row.get("Consensus Odds", "")) if section == "Main" else "",
+                "odds":          "",
                 "bet_placed":    "",
             })
 
