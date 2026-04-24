@@ -16,19 +16,97 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-WEIGHTS = {
-    "barrel_pct_7d":            2.0,
-    "hr_per_pa":                1.8,
-    "hr_per_fb":                1.5,
-    "iso":                      1.2,
-    "avg_ev_7d":                1.0,
-    "hard_hit_pct_7d":          0.8,
-    "pitcher_barrel_pct":       1.5,
-    "pitcher_hr_per_fb":        1.5,
-    "pitcher_hard_hit_pct":     0.8,
-    "park_hr_factor":           0.5,
-    "pitcher_quality_penalty":  1.2,
-}
+# ── Absolute scoring thresholds ────────────────────────────────────────────
+# Calibrated from real Fangraphs/Statcast 2026 season distributions
+
+def score_barrel_pct_7d(v: float) -> float:
+    if v >= 20: return 2.0
+    if v >= 15: return 1.5
+    if v >= 10: return 1.0
+    if v >= 6:  return 0.4
+    return 0.0
+
+def score_season_barrel_pct(v: float) -> float:
+    if v >= 14: return 1.2
+    if v >= 11: return 0.9
+    if v >=  9: return 0.6
+    if v >=  7: return 0.3
+    return 0.0
+
+def score_iso(v: float) -> float:
+    if v >= 0.300: return 1.2
+    if v >= 0.250: return 0.9
+    if v >= 0.200: return 0.6
+    if v >= 0.175: return 0.4
+    if v >= 0.150: return 0.2
+    return 0.0
+
+def score_hr_per_pa(v: float) -> float:
+    if v >= 6.0: return 1.8
+    if v >= 4.0: return 1.2
+    if v >= 2.5: return 0.6
+    return 0.0
+
+def score_hr_per_fb(v: float) -> float:
+    if v >= 20: return 1.5
+    if v >= 15: return 1.0
+    if v >= 10: return 0.5
+    return 0.0
+
+def score_avg_ev_7d(v: float) -> float:
+    if v >= 97: return 1.0
+    if v >= 94: return 0.6
+    if v >= 91: return 0.3
+    return 0.0
+
+def score_hard_hit_pct_7d(v: float) -> float:
+    if v >= 55: return 0.8
+    if v >= 45: return 0.5
+    if v >= 35: return 0.2
+    return 0.0
+
+def score_pitcher_barrel_pct(v: float) -> float:
+    if v >= 14: return 1.5
+    if v >= 11: return 1.0
+    if v >=  9: return 0.6
+    if v >=  7: return 0.3
+    return 0.0
+
+def score_pitcher_hr_per_fb(v: float) -> float:
+    if v >= 20: return 1.5
+    if v >= 15: return 1.0
+    if v >= 13: return 0.6
+    if v >= 10: return 0.3
+    return 0.0
+
+def score_pitcher_hard_hit_pct(v: float) -> float:
+    if v >= 45: return 0.8
+    if v >= 38: return 0.5
+    if v >= 32: return 0.2
+    return 0.0
+
+def score_park_factor(v: float) -> float:
+    # v is already park_hr_factor_norm (factor - 100)
+    if v >= 20: return 0.5
+    if v >= 10: return 0.3
+    if v >= 0:  return 0.1
+    if v >= -10: return -0.1
+    return -0.3
+
+def score_pitcher_quality_penalty(barrel_pct: float, hard_hit_pct: float) -> float:
+    """
+    Penalty for facing an elite pitcher.
+    Elite = low barrel% AND low hard hit% allowed.
+    """
+    penalty = 0.0
+    if barrel_pct <= 4 and hard_hit_pct <= 30:
+        penalty = 1.5   # truly elite pitcher
+    elif barrel_pct <= 5 and hard_hit_pct <= 33:
+        penalty = 1.0
+    elif barrel_pct <= 6 and hard_hit_pct <= 36:
+        penalty = 0.5
+    return penalty
+
 
 PLATOON_BONUS_WEIGHT  = 0.8
 PITCH_MATCHUP_WEIGHT  = 1.2
@@ -159,15 +237,14 @@ def compute_bvp_score(row: pd.Series) -> tuple:
     score = round(score, 3)
 
     desc = ""
-    if bvp_pa >= 5:
-        hr_note = f", {int(bvp_hr)} HR" if bvp_hr > 0 else ""
-        if bvp_iso >= 0.200:
-            desc = f"🔥 Owns this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA{hr_note}"
-        elif bvp_iso >= 0.150:
-            desc = f"✅ Strong vs this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA{hr_note}"
-        elif bvp_iso <= 0.050 and bvp_pa >= 8:
-            desc = f"⚠️ Struggles vs this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA"
-            score = -abs(score) * 0.5
+    hr_note = f", {int(bvp_hr)} HR" if bvp_hr > 0 else ""
+    if bvp_iso >= 0.200:
+        desc = f"🔥 Owns this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA{hr_note}"
+    elif bvp_iso >= 0.150:
+        desc = f"✅ Strong vs this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA{hr_note}"
+    elif bvp_iso <= 0.050 and bvp_pa >= 8:
+        desc = f"⚠️ Struggles vs this pitcher — ISO {bvp_iso:.3f} in {int(bvp_pa)} PA"
+        score = -abs(score) * 0.5
 
     return score, desc
 
@@ -209,8 +286,8 @@ def compute_pull_park_score(row: pd.Series) -> tuple:
 
 
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
-    scores = []
-    descriptions = []
+    scores        = []
+    descriptions  = []
     pitch_penalty = 0.0
 
     for rank in range(1, 4):
@@ -220,14 +297,14 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
 
-        batter_iso     = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
-        batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
-        batter_barrel  = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
+        batter_iso      = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
+        batter_hr_rate  = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
+        batter_barrel   = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
         batter_has_data = (batter_iso > 0 or batter_hr_rate > 0)
 
-        pitcher_iso     = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
-        pitcher_hr_rate = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
-        pitcher_barrel  = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
+        pitcher_iso      = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
+        pitcher_hr_rate  = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
+        pitcher_barrel   = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
         pitcher_has_data = (pitcher_iso > 0 or pitcher_hr_rate > 0)
 
         if not batter_has_data and not pitcher_has_data:
@@ -433,6 +510,7 @@ def prepare_combined(
     weather: pd.DataFrame,
     bvp: pd.DataFrame,
     lineups: pd.DataFrame,
+    active_roster: pd.DataFrame = None,
 ) -> pd.DataFrame:
     if batters.empty or pitchers.empty:
         print("Missing batter or pitcher data.")
@@ -491,6 +569,20 @@ def prepare_combined(
     batters = batters.copy()
     batters.columns = [c.strip() for c in batters.columns]
     batters = batters.rename(columns={"team": "batter_team"})
+
+    # ── IL filter ─────────────────────────────────────────────────────────
+    if active_roster is not None and not active_roster.empty and "player_id" in active_roster.columns:
+        active_ids    = set(active_roster["player_id"].astype(str).str.strip())
+        batter_id_col = "batter_id" if "batter_id" in batters.columns else "batter"
+        if batter_id_col in batters.columns:
+            before = len(batters)
+            batters["_active_id_str"] = batters[batter_id_col].astype(str).str.strip()
+            batters = batters[batters["_active_id_str"].isin(active_ids)].copy()
+            batters = batters.drop(columns=["_active_id_str"])
+            removed = before - len(batters)
+            print(f"IL filter: {removed} players removed (not on active roster), {len(batters)} remaining")
+    else:
+        print("Active roster unavailable — IL filter skipped.")
 
     # ── Lineup filter ──────────────────────────────────────────────────────
     if not lineups.empty and "player_id" in lineups.columns and "team" in lineups.columns:
@@ -622,7 +714,7 @@ def prepare_combined(
 
     # ── Coerce numeric columns ─────────────────────────────────────────────
     score_cols = [
-        "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
+        "barrel_pct_7d", "season_barrel_pct", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d",
         "avg_launch_angle", "avg_la_7d",
         "avg_ev_5d", "avg_ev_10d",
@@ -642,7 +734,7 @@ def prepare_combined(
         "pitcher_vs_lhh_hr9", "pitcher_vs_rhh_hr9",
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
-        "hr_7d", "season_hr", "season_fb",
+        "hr_7d", "season_hr", "season_fb", "season_hard_hit",
     ]
 
     dynamic_cols_in_combined = [
@@ -686,32 +778,34 @@ def prepare_combined(
     combined["bvp_score"] = bvp_results.apply(lambda x: x[0])
     combined["bvp_desc"]  = bvp_results.apply(lambda x: x[1])
 
-    combined["pitcher_quality_penalty"] = (
-        normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
-        normalize_inverted(combined["pitcher_hard_hit_pct"]) * 0.4
-    )
-
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
     combined["confidence"]    = combined.apply(assign_confidence, axis=1)
 
+    # ── Absolute scoring ───────────────────────────────────────────────────
     combined["score"] = (
-        normalize(combined["barrel_pct_7d"])            * WEIGHTS["barrel_pct_7d"] +
-        normalize(combined["hr_per_pa"])                 * WEIGHTS["hr_per_pa"] +
-        normalize(combined["hr_per_fb"])                 * WEIGHTS["hr_per_fb"] +
-        normalize(combined["iso"])                       * WEIGHTS["iso"] +
-        normalize(combined["avg_ev_7d"])                 * WEIGHTS["avg_ev_7d"] +
-        normalize(combined["hard_hit_pct_7d"])           * WEIGHTS["hard_hit_pct_7d"] +
-        normalize(combined["pitcher_barrel_pct"])        * WEIGHTS["pitcher_barrel_pct"] +
-        normalize(combined["pitcher_hr_per_fb"])         * WEIGHTS["pitcher_hr_per_fb"] +
-        normalize(combined["pitcher_hard_hit_pct"])      * WEIGHTS["pitcher_hard_hit_pct"] +
-        normalize(combined["park_hr_factor_norm"])       * WEIGHTS["park_hr_factor"] +
-        combined["weather_score"]                        * WEATHER_WEIGHT +
-        normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
-        normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT +
-        combined["pull_park_score"]                      * PULL_PARK_WEIGHT +
-        combined["momentum_score"]                       * MOMENTUM_WEIGHT +
-        combined["bvp_score"]                            * BVP_WEIGHT -
-        combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
+        combined["barrel_pct_7d"].apply(score_barrel_pct_7d) +
+        combined["season_barrel_pct"].apply(score_season_barrel_pct) +
+        combined["iso"].apply(score_iso) +
+        combined["hr_per_pa"].apply(score_hr_per_pa) +
+        combined["hr_per_fb"].apply(score_hr_per_fb) +
+        combined["avg_ev_7d"].apply(score_avg_ev_7d) +
+        combined["hard_hit_pct_7d"].apply(score_hard_hit_pct_7d) +
+        combined["pitcher_barrel_pct"].apply(score_pitcher_barrel_pct) +
+        combined["pitcher_hr_per_fb"].apply(score_pitcher_hr_per_fb) +
+        combined["pitcher_hard_hit_pct"].apply(score_pitcher_hard_hit_pct) +
+        combined["park_hr_factor_norm"].apply(score_park_factor) +
+        combined["weather_score"]       * WEATHER_WEIGHT +
+        combined["platoon_score"]       * PLATOON_BONUS_WEIGHT +
+        combined["pitch_matchup_score"] * PITCH_MATCHUP_WEIGHT +
+        combined["pull_park_score"]     * PULL_PARK_WEIGHT +
+        combined["momentum_score"]      * MOMENTUM_WEIGHT +
+        combined["bvp_score"]           * BVP_WEIGHT -
+        combined.apply(
+            lambda r: score_pitcher_quality_penalty(
+                safe_float(r.get("pitcher_barrel_pct")),
+                safe_float(r.get("pitcher_hard_hit_pct"))
+            ), axis=1
+        ) -
         combined["total_penalty"]
     )
 
@@ -725,6 +819,10 @@ def build_reason(row) -> str:
     barrel_7d = safe_float(row.get("barrel_pct_7d"))
     if barrel_7d >= 15:
         reasons.append(f"🔥 Hot — {barrel_7d:.1f}% barrel rate last 7 days")
+
+    season_barrel = safe_float(row.get("season_barrel_pct"))
+    if season_barrel >= 11:
+        reasons.append(f"💣 Elite season barrel% ({season_barrel:.1f}%)")
 
     momentum_desc = str(row.get("momentum_desc", ""))
     if momentum_desc:
@@ -743,9 +841,9 @@ def build_reason(row) -> str:
         reasons.append(f"⚡ Elite ISO ({iso:.3f})")
 
     p_barrel = safe_float(row.get("pitcher_barrel_pct"))
-    if p_barrel >= 10:
+    if p_barrel >= 11:
         reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
-    elif p_barrel <= 3:
+    elif p_barrel <= 4:
         reasons.append(f"⚠️ Tough pitcher — only {p_barrel:.1f}% barrels allowed")
 
     p_hr_fb = safe_float(row.get("pitcher_hr_per_fb"))
@@ -814,6 +912,7 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
         "reason":                     "Key Reasons",
         "batting_avg":                "Batting Avg",
         "barrel_pct_7d":              "Barrel% (7d)",
+        "season_barrel_pct":          "Barrel% (Season)",
         "barrel_pct_5d":              "Barrel% (5d)",
         "barrel_pct_10d":             "Barrel% (10d)",
         "momentum_desc":              "Momentum",
@@ -862,20 +961,9 @@ def build_main_picks(combined: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.DataFrame:
-    """
-    Build the High EV / Launch Angle Upside section.
-    Excludes any player already in the top 10 main picks.
-    New signals added:
-      - momentum (5d vs 10d EV and barrel trending up)
-      - BvP history vs today's pitcher
-      - hard hit rate vs season average (hot contact phase)
-      - season vs 7d hard hit rate gap (contact heating up)
-      - launch angle trend (7d LA moving toward HR zone)
-    """
     if combined.empty:
         return pd.DataFrame()
 
-    # Exclude players already in main top 10
     combined = combined.copy()
     if "player_name" in combined.columns and exclude_names:
         before   = len(combined)
@@ -889,7 +977,6 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
     else:
         combined["la_for_filter"] = combined["avg_launch_angle"].apply(safe_float)
 
-    # Filter: high EV (>92 mph) and launch angle below HR zone (<20 degrees)
     ev_df = combined[
         (combined["avg_ev_7d"] > 92) &
         (combined["la_for_filter"] < 20) &
@@ -900,44 +987,39 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
         print("No high EV / low launch angle candidates found.")
         return pd.DataFrame()
 
-    # ── New EV-specific signals ────────────────────────────────────────────
-
-    # Hard hit rate trending up vs season average
     ev_df["hard_hit_season_avg"] = ev_df.apply(
         lambda r: safe_float(r.get("season_hard_hit", 0)) / max(safe_float(r.get("season_bbe", 1)), 1) * 100,
         axis=1,
     )
     ev_df["hard_hit_trend"] = ev_df["hard_hit_pct_7d"] - ev_df["hard_hit_season_avg"]
+    ev_df["la_season"]      = ev_df["avg_launch_angle"].apply(safe_float)
+    ev_df["la_7d"]          = ev_df["avg_la_7d"].apply(safe_float)
+    ev_df["la_trend"]       = ev_df["la_7d"] - ev_df["la_season"]
+    ev_df["la_hr_gap"]      = (25 - ev_df["la_7d"]).abs()
+    ev_df["ev_momentum"]    = ev_df["momentum_score"].apply(safe_float)
 
-    # Launch angle trend — is 7d LA moving toward the HR zone (20-35 degrees)?
-    ev_df["la_season"]    = ev_df["avg_launch_angle"].apply(safe_float)
-    ev_df["la_7d"]        = ev_df["avg_la_7d"].apply(safe_float)
-    ev_df["la_trend"]     = ev_df["la_7d"] - ev_df["la_season"]
-
-    # Distance from ideal HR launch angle (25 degrees) — lower = closer to HR zone
-    ev_df["la_hr_gap"]    = (25 - ev_df["la_7d"]).abs()
-
-    # EV momentum already computed in combined — reuse
-    ev_df["ev_momentum"]  = ev_df["momentum_score"].apply(safe_float)
-
-    # ── EV score formula ──────────────────────────────────────────────────
     ev_df["ev_score"] = (
-        normalize(ev_df["avg_ev_7d"])                * 2.5 +  # raw exit velocity — highest weight
-        normalize(ev_df["hard_hit_pct_7d"])          * 1.5 +  # recent hard contact rate
-        normalize(ev_df["hard_hit_trend"])           * 0.8 +  # hard hit rate trending up vs season
-        normalize(ev_df["la_trend"])                 * 0.7 +  # launch angle trending toward HR zone
-        normalize(-ev_df["la_hr_gap"])               * 0.6 +  # how close to ideal HR launch angle
-        ev_df["ev_momentum"]                         * 0.8 +  # EV + barrel trending up (5d vs 10d)
-        ev_df["bvp_score"]                           * 0.7 +  # owns this pitcher historically
-        normalize(ev_df["pitcher_barrel_pct"])       * 1.5 +  # pitcher allows barrels
-        normalize(ev_df["pitcher_hr_per_fb"])        * 1.2 +  # pitcher gives up HRs on fly balls
-        normalize(ev_df["pitch_matchup_score"])      * 1.0 +  # pitch type matchup
-        normalize(ev_df["platoon_score"])            * 0.8 +  # platoon advantage
-        normalize(ev_df["park_hr_factor_norm"])      * 0.5 +  # park factor
-        ev_df["pull_park_score"]                     * 0.4 +  # pull hitter park dimensions
-        ev_df["weather_score"]                       * 0.3 -  # weather
-        ev_df["pitcher_quality_penalty"]             * 1.0 -  # elite pitcher penalty
-        ev_df["total_penalty"]                               # platoon/pitch weakness penalty
+        normalize(ev_df["avg_ev_7d"])                * 2.5 +
+        normalize(ev_df["hard_hit_pct_7d"])          * 1.5 +
+        normalize(ev_df["hard_hit_trend"])           * 0.8 +
+        normalize(ev_df["la_trend"])                 * 0.7 +
+        normalize(-ev_df["la_hr_gap"])               * 0.6 +
+        ev_df["ev_momentum"]                         * 0.8 +
+        ev_df["bvp_score"]                           * 0.7 +
+        normalize(ev_df["pitcher_barrel_pct"])       * 1.5 +
+        normalize(ev_df["pitcher_hr_per_fb"])        * 1.2 +
+        normalize(ev_df["pitch_matchup_score"])      * 1.0 +
+        normalize(ev_df["platoon_score"])            * 0.8 +
+        normalize(ev_df["park_hr_factor_norm"])      * 0.5 +
+        ev_df["pull_park_score"]                     * 0.4 +
+        ev_df["weather_score"]                       * 0.3 -
+        ev_df.apply(
+            lambda r: score_pitcher_quality_penalty(
+                safe_float(r.get("pitcher_barrel_pct")),
+                safe_float(r.get("pitcher_hard_hit_pct"))
+            ), axis=1
+        ) -
+        ev_df["total_penalty"]
     ).round(3)
 
     ev_sorted = ev_df.sort_values("ev_score", ascending=False)
@@ -956,16 +1038,14 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
         la    = la_7d if la_7d != 0.0 else la_s
         reasons.append(f"💥 Avg EV {ev:.1f} mph, launch angle {la:.1f}° (7d)")
 
-        # Launch angle trending toward HR zone
         la_trend = safe_float(row.get("la_trend"))
         if la_trend >= 3.0:
             reasons.append(f"📐 Launch angle trending up {la_s:.1f}°→{la_7d:.1f}° (approaching HR zone)")
         elif la_7d >= 15 and la_7d < 20:
             reasons.append(f"📐 Launch angle {la_7d:.1f}° — one adjustment from HR zone")
 
-        # Hard hit rate
-        hh        = safe_float(row.get("hard_hit_pct_7d"))
-        hh_trend  = safe_float(row.get("hard_hit_trend"))
+        hh       = safe_float(row.get("hard_hit_pct_7d"))
+        hh_trend = safe_float(row.get("hard_hit_trend"))
         if hh >= 50:
             reasons.append(f"🔨 Elite hard hit rate {hh:.1f}% (7d)")
         elif hh >= 40:
@@ -974,32 +1054,26 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
             hh_season = safe_float(row.get("hard_hit_season_avg"))
             reasons.append(f"📈 Hard hit rate heating up ({hh_season:.1f}% season → {hh:.1f}% last 7d)")
 
-        # Momentum
         momentum_desc = str(row.get("momentum_desc", ""))
         if momentum_desc:
             reasons.append(momentum_desc)
 
-        # BvP
         bvp_desc = str(row.get("bvp_desc", ""))
         if bvp_desc:
             reasons.append(bvp_desc)
 
-        # Pitcher
         p_barrel = safe_float(row.get("pitcher_barrel_pct"))
         if p_barrel >= 8:
             reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
 
-        # Platoon
         platoon_desc = str(row.get("platoon_desc", ""))
         if platoon_desc:
             reasons.append(f"🔄 {platoon_desc}")
 
-        # Pull park
         pull_desc = str(row.get("pull_park_desc", ""))
         if pull_desc:
             reasons.append(pull_desc)
 
-        # Pitch matchup
         pitch_desc = str(row.get("pitch_matchup_desc", ""))
         if pitch_desc:
             reasons.append(f"🎳 {pitch_desc}")
@@ -1224,7 +1298,17 @@ def log_todays_picks(
         else new_df
     )
 
+    # Preserve manually entered odds and bet_placed
+    preserve_cols = ["odds", "bet_placed"]
+    preserved = {}
+    for col in preserve_cols:
+        if col in combined_log.columns:
+            preserved[col] = combined_log[col].copy()
+
     combined_log = combined_log.replace([np.inf, -np.inf], np.nan).fillna("")
+
+    for col, values in preserved.items():
+        combined_log[col] = values.fillna("")
 
     ws.clear()
     values = [combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()
@@ -1316,9 +1400,9 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     def add_score(label, sub_df, bold=False):
         if sub_df.empty:
             return
-        total    = len(sub_df)
-        hits     = int(sub_df["hit_hr_bool"].sum())
-        rate     = round(hits / total * 100, 1)
+        total     = len(sub_df)
+        hits      = int(sub_df["hit_hr_bool"].sum())
+        rate      = round(hits / total * 100, 1)
         avg_score = round(sub_df["hr_score"].mean(), 2) if not sub_df["hr_score"].isna().all() else 0.0
         score_rows.append({
             "label":        label,
@@ -1329,81 +1413,70 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             "_bold":        bold,
         })
 
-    # ── Performance section ────────────────────────────────────────────────
+    # Performance section
     add_perf("🏆  Overall", scored, bold=True)
-
     perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for rank in range(1, 11):
         sub = scored[scored["rank"] == rank]
         if not sub.empty:
             add_perf(f"   Rank {rank}", sub)
-
     perf_rows.append({"label": "── By Confidence ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for tier in ["High", "Medium", "Low"]:
         sub = scored[scored["confidence"] == tier]
         if not sub.empty:
             add_perf(f"   {tier}", sub)
-
     perf_rows.append({"label": "── By Section ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for section in scored["section"].dropna().unique():
         sub = scored[scored["section"] == section]
         if not sub.empty:
             add_perf(f"   {section}", sub)
-
     perf_rows.append({"label": "── Rolling ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     max_date = scored["date"].max()
     add_perf("   Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
     add_perf("   Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
-    # ── ROI section ────────────────────────────────────────────────────────
+    # ROI section
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
-
         add_roi("💵  All Bets", bet_picks, bold=True)
-
         roi_rows.append({"label": "── By Confidence ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for tier in ["High", "Medium", "Low"]:
             sub = bet_picks[bet_picks["confidence"] == tier]
             if not sub.empty:
                 add_roi(f"   {tier}", sub)
-
         roi_rows.append({"label": "── By Rank ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for rank in range(1, 11):
             sub = bet_picks[bet_picks["rank"] == rank]
             if not sub.empty:
                 add_roi(f"   Rank {rank}", sub)
-
         roi_rows.append({"label": "── By Section ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for section in bet_picks["section"].dropna().unique():
             sub = bet_picks[bet_picks["section"] == section]
             if not sub.empty:
                 add_roi(f"   {section}", sub)
-
         roi_rows.append({"label": "── Rolling ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         max_bet = bet_picks["date"].max()
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
         add_roi("   Last 30 Days", bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=30)])
 
-    # ── Score tier section ─────────────────────────────────────────────────
+    # Score tier section
     add_score("📈  All Scored Picks", scored, bold=True)
-
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
-
     tiers = [
-        ("   11+",   scored[scored["hr_score"] >= 11]),
-        ("   10+",   scored[scored["hr_score"] >= 10]),
-        ("   9+",    scored[scored["hr_score"] >= 9]),
-        ("   8+",    scored[scored["hr_score"] >= 8]),
-        ("   7+",    scored[scored["hr_score"] >= 7]),
-        ("   6+",    scored[scored["hr_score"] >= 6]),
-        ("   Under 6", scored[scored["hr_score"] < 6]),
+        ("   11+",    scored[scored["hr_score"] >= 11]),
+        ("   10+",    scored[scored["hr_score"] >= 10]),
+        ("   9+",     scored[scored["hr_score"] >= 9]),
+        ("   8+",     scored[scored["hr_score"] >= 8]),
+        ("   7+",     scored[scored["hr_score"] >= 7]),
+        ("   6+",     scored[scored["hr_score"] >= 6]),
+        ("   Under 6",scored[scored["hr_score"] <  6]),
     ]
     for label, sub in tiers:
         if not sub.empty:
             add_score(label, sub)
 
-    # ── Write to sheet ─────────────────────────────────────────────────────
+    # Write to sheet
     try:
         ws = sh.worksheet("Scorecard")
         ws.clear()
@@ -1417,8 +1490,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     score_headers = ["Category", "Total Picks", "HR Count", "Hit Rate %", "Avg HR Score"]
 
     all_values = []
-
-    # Section 1 — Model Performance
     all_values.append(["📊  MODEL PERFORMANCE", "", "", ""])
     all_values.append(perf_headers)
     perf_start = 2
@@ -1431,18 +1502,14 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
         ])
 
-    perf_end = len(all_values)
     all_values.append(["", "", "", ""])
     all_values.append(["", "", "", ""])
-
     roi_section_start = len(all_values)
 
-    # Section 2 — Betting ROI
     if roi_rows:
         all_values.append(["💰  BETTING ROI", "", "", "", "", "", ""])
         all_values.append(roi_headers)
         roi_data_start = len(all_values)
-
         for r in roi_rows:
             all_values.append([
                 r.get("label", ""),
@@ -1459,10 +1526,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     all_values.append(["", "", "", "", "", "", ""])
     all_values.append(["", "", "", "", "", "", ""])
-
     score_section_start = len(all_values)
 
-    # Section 3 — Score Tier Analysis
     all_values.append(["📈  SCORE TIER ANALYSIS", "", "", "", ""])
     all_values.append(score_headers)
     score_data_start = len(all_values)
@@ -1478,9 +1543,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     ws.update(all_values)
 
-    # ── Formatting ─────────────────────────────────────────────────────────
+    # Formatting
     reqs = []
-
     C_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
     C_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
     C_BLUE      = {"red": 0.114, "green": 0.533, "blue": 0.898}
@@ -1501,58 +1565,11 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     total_cols = 7
 
     # Base style
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": 0, "endRowIndex": total_rows,
-                "startColumnIndex": 0, "endColumnIndex": total_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": C_BG,
-                    "textFormat": {
-                        "foregroundColor": C_WHITE,
-                        "fontFamily": "Roboto Mono",
-                        "fontSize": 10,
-                    },
-                    "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "CLIP",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
-        }
-    })
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows, "startColumnIndex": 0, "endColumnIndex": total_cols}, "cell": {"userEnteredFormat": {"backgroundColor": C_BG, "textFormat": {"foregroundColor": C_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10}, "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)"}})
 
-    # ── Performance section header ─────────────────────────────────────────
-    reqs.append({
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 5},
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": C_BLUE_DIM,
-                    "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontFamily": "Roboto", "fontSize": 13},
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
-        }
-    })
-
-    reqs.append({
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 4},
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": C_HEADER_BG,
-                    "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontFamily": "Roboto", "fontSize": 10},
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
+    # Performance header
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 5}, "cell": {"userEnteredFormat": {"backgroundColor": C_BLUE_DIM, "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontFamily": "Roboto", "fontSize": 13}, "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 0, "endColumnIndex": 4}, "cell": {"userEnteredFormat": {"backgroundColor": C_HEADER_BG, "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontFamily": "Roboto", "fontSize": 10}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
 
     # Performance data rows
     for i, r in enumerate(perf_rows):
@@ -1560,208 +1577,50 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         is_header = r.get("_header", False)
         is_bold   = r.get("_bold", False)
         rate      = r.get("hit_rate_pct", "")
-
         if is_header:
-            reqs.append({
-                "repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4},
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": C_HEADER_BG,
-                            "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True},
-                            "verticalAlignment": "MIDDLE",
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
-                }
-            })
+            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4}, "cell": {"userEnteredFormat": {"backgroundColor": C_HEADER_BG, "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True}, "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
         else:
             bg = C_BG if i % 2 == 0 else C_BG_ALT
-            reqs.append({
-                "repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4},
-                    "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-                    "fields": "userEnteredFormat(backgroundColor)",
-                }
-            })
-
+            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 4}, "cell": {"userEnteredFormat": {"backgroundColor": bg}}, "fields": "userEnteredFormat(backgroundColor)"}})
             if rate != "":
                 try:
                     rate_val = float(str(rate).replace("%", ""))
-                    if rate_val >= 15:
-                        rate_bg = C_GREEN_DIM
-                        rate_fg = C_GREEN
-                    elif rate_val <= 8:
-                        rate_bg = C_RED_DIM
-                        rate_fg = C_RED
-                    else:
-                        rate_bg = bg
-                        rate_fg = C_WHITE
-
-                    reqs.append({
-                        "repeatCell": {
-                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 3, "endColumnIndex": 4},
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "backgroundColor": rate_bg,
-                                    "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 15 or rate_val <= 8},
-                                    "horizontalAlignment": "CENTER",
-                                }
-                            },
-                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-                        }
-                    })
+                    rate_bg  = C_GREEN_DIM if rate_val >= 15 else C_RED_DIM if rate_val <= 8 else bg
+                    rate_fg  = C_GREEN if rate_val >= 15 else C_RED if rate_val <= 8 else C_WHITE
+                    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 3, "endColumnIndex": 4}, "cell": {"userEnteredFormat": {"backgroundColor": rate_bg, "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 15 or rate_val <= 8}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"}})
                 except Exception:
                     pass
-
             if is_bold and not is_header:
-                reqs.append({
-                    "repeatCell": {
-                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1},
-                        "cell": {
-                            "userEnteredFormat": {
-                                "textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontSize": 11},
-                            }
-                        },
-                        "fields": "userEnteredFormat(textFormat)",
-                    }
-                })
+                reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"foregroundColor": C_BLUE, "bold": True, "fontSize": 11}}}, "fields": "userEnteredFormat(textFormat)"}})
 
-    # ── ROI section header ─────────────────────────────────────────────────
-    reqs.append({
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": roi_section_start, "endRowIndex": roi_section_start + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": C_GOLD_DIM,
-                    "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontFamily": "Roboto", "fontSize": 13},
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
-        }
-    })
+    # ROI header
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": roi_section_start, "endRowIndex": roi_section_start + 1, "startColumnIndex": 0, "endColumnIndex": total_cols}, "cell": {"userEnteredFormat": {"backgroundColor": C_GOLD_DIM, "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontFamily": "Roboto", "fontSize": 13}, "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
 
     if roi_rows:
-        reqs.append({
-            "repeatCell": {
-                "range": {"sheetId": ws_id, "startRowIndex": roi_section_start + 1, "endRowIndex": roi_section_start + 2, "startColumnIndex": 0, "endColumnIndex": total_cols},
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": C_HEADER_BG,
-                        "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontFamily": "Roboto", "fontSize": 10},
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE",
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-            }
-        })
-
+        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": roi_section_start + 1, "endRowIndex": roi_section_start + 2, "startColumnIndex": 0, "endColumnIndex": total_cols}, "cell": {"userEnteredFormat": {"backgroundColor": C_HEADER_BG, "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontFamily": "Roboto", "fontSize": 10}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
         for i, r in enumerate(roi_rows):
             row_idx    = roi_data_start + i
             is_header  = r.get("_header", False)
             is_bold    = r.get("_bold", False)
             roi_val    = r.get("_roi_val", 0)
             profit_val = r.get("_profit_val", 0)
-
             if is_header:
-                reqs.append({
-                    "repeatCell": {
-                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
-                        "cell": {
-                            "userEnteredFormat": {
-                                "backgroundColor": C_HEADER_BG,
-                                "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True},
-                                "verticalAlignment": "MIDDLE",
-                            }
-                        },
-                        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
-                    }
-                })
+                reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": total_cols}, "cell": {"userEnteredFormat": {"backgroundColor": C_HEADER_BG, "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True}, "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
             else:
                 bg = C_BG if i % 2 == 0 else C_BG_ALT
-                reqs.append({
-                    "repeatCell": {
-                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": total_cols},
-                        "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-                        "fields": "userEnteredFormat(backgroundColor)",
-                    }
-                })
-
+                reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": total_cols}, "cell": {"userEnteredFormat": {"backgroundColor": bg}}, "fields": "userEnteredFormat(backgroundColor)"}})
                 if roi_val != 0 or r.get("bets_placed", "") != "":
                     roi_fg = C_GREEN if roi_val > 0 else C_RED if roi_val < 0 else C_WHITE
                     roi_bg = C_GREEN_DIM if roi_val > 0 else C_RED_DIM if roi_val < 0 else bg
-                    reqs.append({
-                        "repeatCell": {
-                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 6, "endColumnIndex": 7},
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "backgroundColor": roi_bg,
-                                    "textFormat": {"foregroundColor": roi_fg, "bold": True},
-                                    "horizontalAlignment": "CENTER",
-                                }
-                            },
-                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-                        }
-                    })
-
+                    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 6, "endColumnIndex": 7}, "cell": {"userEnteredFormat": {"backgroundColor": roi_bg, "textFormat": {"foregroundColor": roi_fg, "bold": True}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"}})
                     profit_fg = C_GREEN if profit_val > 0 else C_RED if profit_val < 0 else C_WHITE
-                    reqs.append({
-                        "repeatCell": {
-                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 5, "endColumnIndex": 6},
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "textFormat": {"foregroundColor": profit_fg, "bold": True},
-                                    "horizontalAlignment": "CENTER",
-                                }
-                            },
-                            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-                        }
-                    })
-
+                    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 5, "endColumnIndex": 6}, "cell": {"userEnteredFormat": {"textFormat": {"foregroundColor": profit_fg, "bold": True}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
                 if is_bold:
-                    reqs.append({
-                        "repeatCell": {
-                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1},
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontSize": 11},
-                                }
-                            },
-                            "fields": "userEnteredFormat(textFormat)",
-                        }
-                    })
+                    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"foregroundColor": C_GOLD, "bold": True, "fontSize": 11}}}, "fields": "userEnteredFormat(textFormat)"}})
 
-    # ── Score tier section header ──────────────────────────────────────────
-    reqs.append({
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": score_section_start, "endRowIndex": score_section_start + 1, "startColumnIndex": 0, "endColumnIndex": 5},
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": C_PURPLE_DIM,
-                    "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontFamily": "Roboto", "fontSize": 13},
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
-        }
-    })
-
-    reqs.append({
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": score_section_start + 1, "endRowIndex": score_section_start + 2, "startColumnIndex": 0, "endColumnIndex": 5},
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": C_HEADER_BG,
-                    "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontFamily": "Roboto", "fontSize": 10},
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
+    # Score tier header
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": score_section_start, "endRowIndex": score_section_start + 1, "startColumnIndex": 0, "endColumnIndex": 5}, "cell": {"userEnteredFormat": {"backgroundColor": C_PURPLE_DIM, "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontFamily": "Roboto", "fontSize": 13}, "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": score_section_start + 1, "endRowIndex": score_section_start + 2, "startColumnIndex": 0, "endColumnIndex": 5}, "cell": {"userEnteredFormat": {"backgroundColor": C_HEADER_BG, "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontFamily": "Roboto", "fontSize": 10}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
 
     # Score tier data rows
     for i, r in enumerate(score_rows):
@@ -1769,115 +1628,34 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         is_header = r.get("_header", False)
         is_bold   = r.get("_bold", False)
         rate      = r.get("hit_rate_pct", "")
-
         if is_header:
-            reqs.append({
-                "repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 5},
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": C_HEADER_BG,
-                            "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True},
-                            "verticalAlignment": "MIDDLE",
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
-                }
-            })
+            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 5}, "cell": {"userEnteredFormat": {"backgroundColor": C_HEADER_BG, "textFormat": {"foregroundColor": C_GREY, "bold": True, "fontSize": 9, "italic": True}, "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)"}})
         else:
             bg = C_BG if i % 2 == 0 else C_BG_ALT
-            reqs.append({
-                "repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 5},
-                    "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-                    "fields": "userEnteredFormat(backgroundColor)",
-                }
-            })
-
+            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 5}, "cell": {"userEnteredFormat": {"backgroundColor": bg}}, "fields": "userEnteredFormat(backgroundColor)"}})
             if rate != "":
                 try:
                     rate_val = float(str(rate).replace("%", ""))
-                    if rate_val >= 15:
-                        rate_bg = C_GREEN_DIM
-                        rate_fg = C_GREEN
-                    elif rate_val <= 8:
-                        rate_bg = C_RED_DIM
-                        rate_fg = C_RED
-                    else:
-                        rate_bg = bg
-                        rate_fg = C_WHITE
-
-                    reqs.append({
-                        "repeatCell": {
-                            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 3, "endColumnIndex": 4},
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "backgroundColor": rate_bg,
-                                    "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 15 or rate_val <= 8},
-                                    "horizontalAlignment": "CENTER",
-                                }
-                            },
-                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-                        }
-                    })
+                    rate_bg  = C_GREEN_DIM if rate_val >= 15 else C_RED_DIM if rate_val <= 8 else bg
+                    rate_fg  = C_GREEN if rate_val >= 15 else C_RED if rate_val <= 8 else C_WHITE
+                    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 3, "endColumnIndex": 4}, "cell": {"userEnteredFormat": {"backgroundColor": rate_bg, "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 15 or rate_val <= 8}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"}})
                 except Exception:
                     pass
-
             if is_bold and not is_header:
-                reqs.append({
-                    "repeatCell": {
-                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1},
-                        "cell": {
-                            "userEnteredFormat": {
-                                "textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontSize": 11},
-                            }
-                        },
-                        "fields": "userEnteredFormat(textFormat)",
-                    }
-                })
+                reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"foregroundColor": C_PURPLE, "bold": True, "fontSize": 11}}}, "fields": "userEnteredFormat(textFormat)"}})
 
-    # ── Column widths ──────────────────────────────────────────────────────
+    # Column widths, row heights, freeze, tab color
     col_widths = [220, 100, 80, 100, 120, 120, 100]
     for i, width in enumerate(col_widths):
-        reqs.append({
-            "updateDimensionProperties": {
-                "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
-                "properties": {"pixelSize": width},
-                "fields": "pixelSize",
-            }
-        })
+        reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1}, "properties": {"pixelSize": width}, "fields": "pixelSize"}})
 
-    # Row heights
-    reqs.append({
-        "updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": total_rows},
-            "properties": {"pixelSize": 32},
-            "fields": "pixelSize",
-        }
-    })
+    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": total_rows}, "properties": {"pixelSize": 32}, "fields": "pixelSize"}})
 
     for row_idx in [0, roi_section_start, score_section_start]:
-        reqs.append({
-            "updateDimensionProperties": {
-                "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": row_idx, "endIndex": row_idx + 1},
-                "properties": {"pixelSize": 44},
-                "fields": "pixelSize",
-            }
-        })
+        reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": row_idx, "endIndex": row_idx + 1}, "properties": {"pixelSize": 44}, "fields": "pixelSize"}})
 
-    reqs.append({
-        "updateSheetProperties": {
-            "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}},
-            "fields": "gridProperties.frozenRowCount",
-        }
-    })
-
-    reqs.append({
-        "updateSheetProperties": {
-            "properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": C_GOLD}},
-            "fields": "tabColorStyle",
-        }
-    })
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}}, "fields": "gridProperties.frozenRowCount"}})
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": C_GOLD}}, "fields": "tabColorStyle"}})
 
     try:
         sh.batch_update({"requests": reqs})
@@ -1958,66 +1736,12 @@ def format_picks_sheet(
 
     reqs = []
 
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": 0, "endRowIndex": total_rows,
-                "startColumnIndex": 0, "endColumnIndex": 55,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_BG,
-                    "textFormat": {
-                        "foregroundColor": COLOR_WHITE,
-                        "fontFamily": "Roboto Mono",
-                        "fontSize": 10,
-                    },
-                    "verticalAlignment": "MIDDLE",
-                    "wrapStrategy": "WRAP",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
-        }
-    })
-
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": 0, "endRowIndex": 1,
-                "startColumnIndex": 0, "endColumnIndex": main_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_ACCENT_DIM,
-                    "textFormat": {
-                        "foregroundColor": COLOR_ACCENT,
-                        "bold": True,
-                        "fontFamily": "Roboto",
-                        "fontSize": 11,
-                    },
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows, "startColumnIndex": 0, "endColumnIndex": 55}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG, "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10}, "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_ACCENT_DIM, "textFormat": {"foregroundColor": COLOR_ACCENT, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
 
     for i in range(main_row_count):
         row_idx = i + 1
-        reqs.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": ws_id,
-                    "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
-                    "startColumnIndex": 0, "endColumnIndex": main_cols,
-                },
-                "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}},
-                "fields": "userEnteredFormat(backgroundColor)",
-            }
-        })
+        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}}, "fields": "userEnteredFormat(backgroundColor)"}})
 
     medals = [
         (1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
@@ -2026,154 +1750,28 @@ def format_picks_sheet(
     ]
     for rank, bg, fg in medals:
         if main_row_count >= rank:
-            reqs.append({
-                "repeatCell": {
-                    "range": {
-                        "sheetId": ws_id,
-                        "startRowIndex": rank, "endRowIndex": rank + 1,
-                        "startColumnIndex": 0, "endColumnIndex": main_cols,
-                    },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": bg,
-                            "textFormat": {"foregroundColor": fg, "bold": True, "fontSize": 10},
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat)",
-                }
-            })
+            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": rank, "endRowIndex": rank + 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": bg, "textFormat": {"foregroundColor": fg, "bold": True, "fontSize": 10}}}, "fields": "userEnteredFormat(backgroundColor,textFormat)"}})
 
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": 1, "endRowIndex": main_row_count + 1,
-                "startColumnIndex": 0, "endColumnIndex": 1,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT},
-                    "horizontalAlignment": "CENTER",
-                }
-            },
-            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-        }
-    })
-
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": 1, "endRowIndex": main_row_count + 1,
-                "startColumnIndex": 8, "endColumnIndex": 9,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN},
-                    "horizontalAlignment": "CENTER",
-                }
-            },
-            "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-        }
-    })
-
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": ev_start_row, "endRowIndex": ev_start_row + 1,
-                "startColumnIndex": 0, "endColumnIndex": ev_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_ACCENT_DIM,
-                    "textFormat": {"foregroundColor": COLOR_ORANGE, "bold": True, "fontFamily": "Roboto", "fontSize": 12},
-                    "horizontalAlignment": "LEFT",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
-
-    reqs.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": ev_col_header_row, "endRowIndex": ev_col_header_row + 1,
-                "startColumnIndex": 0, "endColumnIndex": ev_cols,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": COLOR_EV_HEADER,
-                    "textFormat": {"foregroundColor": COLOR_ORANGE, "bold": True, "fontFamily": "Roboto", "fontSize": 11},
-                    "horizontalAlignment": "CENTER",
-                    "verticalAlignment": "MIDDLE",
-                }
-            },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-        }
-    })
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": main_row_count + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": main_row_count + 1, "startColumnIndex": 8, "endColumnIndex": 9}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_start_row, "endRowIndex": ev_start_row + 1, "startColumnIndex": 0, "endColumnIndex": ev_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_ACCENT_DIM, "textFormat": {"foregroundColor": COLOR_ORANGE, "bold": True, "fontFamily": "Roboto", "fontSize": 12}, "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_col_header_row, "endRowIndex": ev_col_header_row + 1, "startColumnIndex": 0, "endColumnIndex": ev_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_EV_HEADER, "textFormat": {"foregroundColor": COLOR_ORANGE, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
 
     for i in range(ev_data_row_count):
         row_idx = ev_col_header_row + 1 + i
-        reqs.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": ws_id,
-                    "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
-                    "startColumnIndex": 0, "endColumnIndex": ev_cols,
-                },
-                "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}},
-                "fields": "userEnteredFormat(backgroundColor)",
-            }
-        })
+        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": ev_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}}, "fields": "userEnteredFormat(backgroundColor)"}})
 
     if ev_data_row_count > 0:
         for col_idx, font_size in [(0, 14), (8, 11)]:
-            reqs.append({
-                "repeatCell": {
-                    "range": {
-                        "sheetId": ws_id,
-                        "startRowIndex": ev_col_header_row + 1,
-                        "endRowIndex": ev_col_header_row + 1 + ev_data_row_count,
-                        "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1,
-                    },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "textFormat": {"bold": True, "fontSize": font_size, "foregroundColor": COLOR_ORANGE},
-                            "horizontalAlignment": "CENTER",
-                        }
-                    },
-                    "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-                }
-            })
+            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_col_header_row + 1, "endRowIndex": ev_col_header_row + 1 + ev_data_row_count, "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": font_size, "foregroundColor": COLOR_ORANGE}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
 
-    reqs.append({
-        "updateSheetProperties": {
-            "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}},
-            "fields": "gridProperties.frozenRowCount",
-        }
-    })
-
-    reqs.append({
-        "updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 42},
-            "fields": "pixelSize",
-        }
-    })
-    reqs.append({
-        "updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": total_rows},
-            "properties": {"pixelSize": 58},
-            "fields": "pixelSize",
-        }
-    })
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}}, "fields": "gridProperties.frozenRowCount"}})
+    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 42}, "fields": "pixelSize"}})
+    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": total_rows}, "properties": {"pixelSize": 58}, "fields": "pixelSize"}})
 
     col_widths = [
         50, 160, 50, 55, 175, 55, 75, 175, 75, 80, 380,
-        75, 90, 75, 75, 200, 75, 75, 65, 80, 80,
+        75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80,
         85, 85, 85, 100, 100, 75, 220,
         60, 60, 70, 200, 220,
         120, 120, 130, 130, 90, 90,
@@ -2181,20 +1779,9 @@ def format_picks_sheet(
         75, 65, 65, 65, 65,
     ]
     for i, width in enumerate(col_widths):
-        reqs.append({
-            "updateDimensionProperties": {
-                "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
-                "properties": {"pixelSize": width},
-                "fields": "pixelSize",
-            }
-        })
+        reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1}, "properties": {"pixelSize": width}, "fields": "pixelSize"}})
 
-    reqs.append({
-        "updateSheetProperties": {
-            "properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": COLOR_ACCENT}},
-            "fields": "tabColorStyle",
-        }
-    })
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": COLOR_ACCENT}}, "fields": "tabColorStyle"}})
 
     try:
         sh.batch_update({"requests": reqs})
@@ -2208,12 +1795,13 @@ def main() -> None:
     gc = get_gspread_client()
 
     print("Reading data from Google Sheets...")
-    batters  = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
-    pitchers = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
-    parks    = read_sheet(gc, sheet_id, "Park_Factors")
-    weather  = read_sheet(gc, sheet_id, "Weather")
-    bvp      = read_sheet(gc, sheet_id, "BvP_History")
-    lineups  = read_sheet(gc, sheet_id, "Confirmed_Lineups")
+    batters       = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
+    pitchers      = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
+    parks         = read_sheet(gc, sheet_id, "Park_Factors")
+    weather       = read_sheet(gc, sheet_id, "Weather")
+    bvp           = read_sheet(gc, sheet_id, "BvP_History")
+    lineups       = read_sheet(gc, sheet_id, "Confirmed_Lineups")
+    active_roster = read_sheet(gc, sheet_id, "Active_Rosters")
 
     print(f"Batters: {len(batters)} rows")
     print(f"Pitchers: {len(pitchers)} rows")
@@ -2221,8 +1809,9 @@ def main() -> None:
     print(f"Weather: {len(weather)} rows")
     print(f"BvP History: {len(bvp)} rows")
     print(f"Confirmed Lineups: {len(lineups)} rows")
+    print(f"Active Roster: {len(active_roster)} rows")
 
-    combined = prepare_combined(batters, pitchers, parks, weather, bvp, lineups)
+    combined = prepare_combined(batters, pitchers, parks, weather, bvp, lineups, active_roster)
 
     if combined.empty:
         print("WARNING: No combined data — check all sheets have data.")
@@ -2230,7 +1819,6 @@ def main() -> None:
 
     picks = build_main_picks(combined)
 
-    # Build set of names already in main picks to exclude from EV section
     exclude_from_ev: Set[str] = set()
     if not picks.empty and "Batter" in picks.columns:
         exclude_from_ev = set(picks["Batter"].dropna().tolist())
