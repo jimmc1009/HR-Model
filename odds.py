@@ -16,12 +16,28 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-ODDS_API_KEY  = os.environ.get("ODDS_API_KEY", "")
-SPORT         = "baseball_mlb"
-REGIONS       = "us"
-MARKETS       = "batter_home_runs"
-ODDS_FORMAT   = "american"
-BOOKMAKERS    = "draftkings,fanduel,betmgm,caesars"
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
+SPORT        = "baseball_mlb"
+ODDS_FORMAT  = "american"
+MARKETS      = "batter_home_runs"
+
+# All major US bookmakers
+BOOKMAKERS = ",".join([
+    "draftkings",
+    "fanduel",
+    "betmgm",
+    "caesars",
+    "pointsbetus",
+    "betonlineag",
+    "mybookieag",
+    "bovada",
+    "betrivers",
+    "unibet_us",
+    "williamhill_us",
+    "superbook",
+    "wynnbet",
+    "hardrock_us",
+])
 
 
 def get_gspread_client() -> gspread.Client:
@@ -32,17 +48,14 @@ def get_gspread_client() -> gspread.Client:
 
 
 def normalize_name(name: str) -> str:
-    """Strip accents and lowercase for fuzzy name matching."""
     name = unicodedata.normalize("NFD", name)
     name = "".join(c for c in name if unicodedata.category(c) != "Mn")
     return name.lower().strip()
 
 
 def get_today_events() -> List[dict]:
-    """Fetch today's MLB game event IDs from The Odds API."""
-    url = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events"
+    url    = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events"
     params = {"apiKey": ODDS_API_KEY}
-
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
@@ -55,38 +68,20 @@ def get_today_events() -> List[dict]:
 
 
 def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List[dict]:
-    url = (
-        f"https://api.the-odds-api.com/v4/sports/{SPORT}"
-        f"/events/{event_id}/odds"
-    )
+    url    = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events/{event_id}/odds"
     params = {
-        "apiKey":     ODDS_API_KEY,
-        "regions":    REGIONS,
-        "markets":    MARKETS,
-        "oddsFormat": ODDS_FORMAT,
+        "apiKey":      ODDS_API_KEY,
+        "bookmakers":  BOOKMAKERS,
+        "markets":     MARKETS,
+        "oddsFormat":  ODDS_FORMAT,
     }
 
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-
-        # Debug — print raw response for first game only
-        if away_team == "Detroit Tigers":
-            print(f"DEBUG raw response keys: {list(data.keys())}")
-            bookmakers = data.get("bookmakers", [])
-            print(f"DEBUG bookmakers count: {len(bookmakers)}")
-            if bookmakers:
-                print(f"DEBUG first bookmaker: {bookmakers[0].get('key')}")
-                markets = bookmakers[0].get("markets", [])
-                print(f"DEBUG markets: {[m.get('key') for m in markets]}")
-                if markets:
-                    print(f"DEBUG first 3 outcomes: {markets[0].get('outcomes', [])[:3]}")
-            else:
-                print(f"DEBUG full response: {json.dumps(data)[:500]}")
-
     except Exception as e:
-        print(f"  Failed: {e}")
+        print(f"  Failed for {away_team} @ {home_team}: {e}")
         return []
 
     rows = []
@@ -96,6 +91,7 @@ def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List
             if market.get("key") != "batter_home_runs":
                 continue
             for outcome in market.get("outcomes", []):
+                # player name is in description for props
                 player_name = outcome.get("description") or outcome.get("name", "")
                 price       = outcome.get("price")
                 if player_name and price is not None:
@@ -108,41 +104,47 @@ def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List
                         "event_id":    event_id,
                     })
 
+    if rows:
+        books_found = list({r["bookmaker"] for r in rows})
+        print(f"  ✓ {away_team} @ {home_team}: {len(set(r['player_name'] for r in rows))} players, {len(books_found)} books: {books_found}")
+    else:
+        print(f"  ✗ {away_team} @ {home_team}: no props found")
+
     return rows
 
 
-
 def build_odds_table(events: List[dict]) -> pd.DataFrame:
-    """
-    Fetch HR odds for all today's games and build a consolidated table
-    with the best available odds per player across all bookmakers.
-    """
     all_rows = []
 
     for event in events:
         event_id  = event.get("id", "")
         home_team = event.get("home_team", "")
         away_team = event.get("away_team", "")
-
-        print(f"  Fetching HR odds: {away_team} @ {home_team}...")
-        rows = get_hr_odds_for_event(event_id, home_team, away_team)
+        rows      = get_hr_odds_for_event(event_id, home_team, away_team)
         all_rows.extend(rows)
-
-        # Be polite to the API — small delay between requests
         time.sleep(0.3)
 
     if not all_rows:
-        print("No HR prop odds found.")
+        print("No HR prop odds found across any bookmaker.")
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
 
-    # For each player take the best (highest) odds across all bookmakers
-    # Higher American odds = more value
+    # Filter out outlier odds — anything above +3000 is likely a novelty line
+    df = df[df["odds"] <= 3000].copy()
+
+    # For each player get consensus odds across books
+    def consensus_odds(odds_list):
+        # Use median to avoid outlier high/low lines
+        return int(pd.Series(odds_list).median())
+
     best_odds = (
         df.groupby("player_name")
         .agg(
-            best_odds=("odds", "median"),
+            consensus_odds=("odds", lambda x: int(pd.Series(x).median())),
+            best_odds=("odds", "max"),
+            worst_odds=("odds", "min"),
+            num_books=("bookmaker", "nunique"),
             bookmakers=("bookmaker", lambda x: ",".join(sorted(set(x)))),
             home_team=("home_team", "first"),
             away_team=("away_team", "first"),
@@ -150,22 +152,24 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
         .reset_index()
     )
 
-    # Add normalized name for matching with picks
+    # Use consensus (median) as the primary odds figure
     best_odds["player_name_norm"] = best_odds["player_name"].apply(normalize_name)
 
-    # Calculate implied probability from American odds
     def implied_prob(odds: int) -> float:
         if odds > 0:
             return round(100 / (odds + 100) * 100, 2)
         else:
             return round(abs(odds) / (abs(odds) + 100) * 100, 2)
 
-    best_odds["implied_prob_pct"] = best_odds["best_odds"].apply(implied_prob)
+    best_odds["implied_prob_pct"] = best_odds["consensus_odds"].apply(implied_prob)
 
     # Sort by implied probability descending (chalk first)
     best_odds = best_odds.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
 
-    print(f"Built odds table: {len(best_odds)} players with HR props")
+    print(f"\nBuilt odds table: {len(best_odds)} players across {df['bookmaker'].nunique()} bookmakers")
+    print("\nTop 15 by implied probability:")
+    print(best_odds[["player_name", "consensus_odds", "implied_prob_pct", "num_books", "bookmakers"]].head(15).to_string(index=False))
+
     return best_odds
 
 
@@ -180,10 +184,10 @@ def write_dataframe_to_sheet(
         ws = sh.worksheet(worksheet_name)
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=worksheet_name, rows=500, cols=10)
+        ws = sh.add_worksheet(title=worksheet_name, rows=500, cols=12)
 
-    df = df.copy()
-    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
+    df     = df.copy()
+    df     = df.replace([np.inf, -np.inf], np.nan).fillna("")
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
     ws.update(values)
 
@@ -210,15 +214,8 @@ def main() -> None:
         print("No odds data to write.")
         return
 
-    # Show summary
-    print("\nTop 20 HR prop odds (by implied probability):")
-    print(odds_df[["player_name", "best_odds", "implied_prob_pct", "bookmakers"]].head(20).to_string(index=False))
-
     write_dataframe_to_sheet(gc, sheet_id, "HR_Odds", odds_df)
-    print(f"\nWritten {len(odds_df)} player odds to HR_Odds sheet")
-
-    # Show remaining API quota
-    print(f"\nAPI requests remaining: check your dashboard at the-odds-api.com")
+    print(f"Written {len(odds_df)} player odds to HR_Odds sheet")
 
 
 if __name__ == "__main__":
