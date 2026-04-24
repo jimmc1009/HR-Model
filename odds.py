@@ -15,10 +15,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
-SPORT        = "baseball_mlb"
-ODDS_FORMAT  = "american"
-MARKETS      = "batter_home_runs"
+ODDS_API_KEY  = os.environ.get("ODDS_API_KEY", "")
+SPORT         = "baseball_mlb"
+ODDS_FORMAT   = "american"
+MARKETS       = "batter_home_runs"
+EXCLUDE_BOOKS = {"fliff", "espnbet"}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -41,43 +42,21 @@ def get_today_events() -> List[dict]:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         events = resp.json()
-        print(f"Found {len(events)} MLB events from The Odds API")
-        return events
+
+        # Deduplicate by event ID
+        seen   = set()
+        unique = []
+        for e in events:
+            eid = e.get("id", "")
+            if eid and eid not in seen:
+                seen.add(eid)
+                unique.append(e)
+
+        print(f"Found {len(unique)} unique MLB events (from {len(events)} total)")
+        return unique
     except Exception as e:
         print(f"Failed to fetch events: {e}")
         return []
-
-
-def debug_first_event(event_id: str, home_team: str, away_team: str) -> None:
-    """Print full raw API response for one game to diagnose missing books."""
-    url    = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events/{event_id}/odds"
-    params = {
-        "apiKey":     ODDS_API_KEY,
-        "regions":    "us,us2",
-        "markets":    "h2h",
-        "oddsFormat": ODDS_FORMAT,
-    }
-
-
-    print(f"\n=== DEBUG: {away_team} @ {home_team} ===")
-    print(f"URL: {url}")
-    print(f"Params: {params}")
-
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        print(f"Status: {resp.status_code}")
-        print(f"Remaining requests header: {resp.headers.get('x-requests-remaining', 'N/A')}")
-        print(f"Used requests header: {resp.headers.get('x-requests-used', 'N/A')}")
-        data = resp.json()
-
-        bookmakers = data.get("bookmakers", [])
-        print(f"Total bookmakers in response: {len(bookmakers)}")
-        for bm in bookmakers:
-            markets = [m.get("key") for m in bm.get("markets", [])]
-            print(f"  {bm.get('key')}: markets={markets}")
-
-    except Exception as e:
-        print(f"Debug failed: {e}")
 
 
 def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List[dict]:
@@ -100,6 +79,10 @@ def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List
     rows = []
     for bookmaker in data.get("bookmakers", []):
         book_key = bookmaker.get("key", "")
+
+        if book_key in EXCLUDE_BOOKS:
+            continue
+
         for market in bookmaker.get("markets", []):
             if market.get("key") != "batter_home_runs":
                 continue
@@ -107,14 +90,16 @@ def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List
                 player_name = outcome.get("description") or outcome.get("name", "")
                 price       = outcome.get("price")
                 if player_name and price is not None:
-                    rows.append({
-                        "player_name": player_name,
-                        "odds":        int(price),
-                        "bookmaker":   book_key,
-                        "home_team":   home_team,
-                        "away_team":   away_team,
-                        "event_id":    event_id,
-                    })
+                    # Only keep positive odds — negative = "No HR" line
+                    if int(price) > 0:
+                        rows.append({
+                            "player_name": player_name,
+                            "odds":        int(price),
+                            "bookmaker":   book_key,
+                            "home_team":   home_team,
+                            "away_team":   away_team,
+                            "event_id":    event_id,
+                        })
 
     if rows:
         books_found = list({r["bookmaker"] for r in rows})
@@ -142,14 +127,13 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
 
     df = pd.DataFrame(all_rows)
 
-    # Filter out outlier odds above +3000 — novelty lines
+    # Filter extreme outlier odds above +3000
     df = df[df["odds"] <= 3000].copy()
 
     if df.empty:
-        print("All odds were filtered out as outliers.")
+        print("All odds filtered out.")
         return pd.DataFrame()
 
-    # Build consensus odds per player
     best_odds = (
         df.groupby("player_name")
         .agg(
@@ -173,15 +157,13 @@ def build_odds_table(events: List[dict]) -> pd.DataFrame:
             return round(abs(odds) / (abs(odds) + 100) * 100, 2)
 
     best_odds["implied_prob_pct"] = best_odds["consensus_odds"].apply(implied_prob)
-
-    # Sort by implied probability descending (chalk first)
     best_odds = best_odds.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
 
     num_books = df["bookmaker"].nunique()
     print(f"\nBuilt odds table: {len(best_odds)} players across {num_books} bookmakers")
     print(f"Books found: {sorted(df['bookmaker'].unique())}")
     print("\nTop 20 by implied probability:")
-    print(best_odds[["player_name", "consensus_odds", "implied_prob_pct", "num_books", "bookmakers"]].head(20).to_string(index=False))
+    print(best_odds[["player_name", "consensus_odds", "implied_prob_pct", "num_books"]].head(20).to_string(index=False))
 
     return best_odds
 
@@ -216,14 +198,6 @@ def main() -> None:
     print("Fetching today's MLB events from The Odds API...")
     events = get_today_events()
 
-    if events:
-        first = events[0]
-        debug_first_event(
-            first.get("id", ""),
-            first.get("home_team", ""),
-            first.get("away_team", "")
-        )
-
     if not events:
         print("No events found — odds sheet will not be updated.")
         return
@@ -241,4 +215,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
