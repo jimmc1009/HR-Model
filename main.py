@@ -58,6 +58,12 @@ OUT_EVENTS = {
 
 MIN_BBE_VS_PITCHER = 5
 
+MLB_TEAM_IDS = [
+    108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+    118, 119, 120, 121, 133, 134, 135, 136, 137, 138,
+    139, 140, 141, 142, 143, 144, 145, 146, 147, 158,
+]
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -120,10 +126,14 @@ def get_season_statcast() -> pd.DataFrame:
 
 
 def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
+    """
+    Fetch confirmed batting lineups from MLB Stats API.
+    Returns {team_abbr: set of confirmed batter MLB IDs}.
+    Falls back to ESPN. If neither works returns empty dict.
+    """
     today_str = date.today().strftime("%Y-%m-%d")
     lineups: Dict[str, Set[int]] = {}
 
-    # Try MLB Stats API
     try:
         url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -138,16 +148,19 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
                 lineups_data = g.get("lineups", {})
                 if not lineups_data:
                     continue
+
                 for side, side_key in [("homePlayers", "home"), ("awayPlayers", "away")]:
                     players = lineups_data.get(side, [])
                     if not players:
                         players = g.get("teams", {}).get(side_key, {}).get("battingOrder", [])
                     if not players:
                         continue
+
                     abbr = g.get("teams", {}).get(side_key, {}).get(
                         "team", {}
                     ).get("abbreviation", "")
                     abbr = ESPN_TO_MLB.get(str(abbr).strip(), str(abbr).strip())
+
                     if abbr:
                         player_ids = set()
                         for p in players:
@@ -170,7 +183,6 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     except Exception as e:
         print(f"MLB Stats API lineup fetch failed: {e}")
 
-    # Try MLB.com lineup page directly via the game feed
     try:
         schedule_url = (
             f"https://statsapi.mlb.com/api/v1/schedule"
@@ -199,17 +211,14 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
 
         for game_pk, home_abbr, away_abbr in game_pks:
             try:
-                feed_url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
+                feed_url  = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
                 feed_resp = requests.get(feed_url, timeout=15)
                 feed_resp.raise_for_status()
-                feed = feed_resp.json()
+                feed      = feed_resp.json()
 
-                game_data = feed.get("gameData", {})
-                players   = game_data.get("players", {})
-
-                live_data    = feed.get("liveData", {})
-                boxscore     = live_data.get("boxscore", {})
-                teams_box    = boxscore.get("teams", {})
+                live_data = feed.get("liveData", {})
+                boxscore  = live_data.get("boxscore", {})
+                teams_box = boxscore.get("teams", {})
 
                 for side, abbr in [("home", home_abbr), ("away", away_abbr)]:
                     if not abbr:
@@ -238,7 +247,6 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     except Exception as e:
         print(f"Game feed lineup fetch failed: {e}")
 
-    # ESPN fallback
     try:
         today_espn = date.today().strftime("%Y%m%d")
         url = (
@@ -276,6 +284,38 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     print("No confirmed lineups available — lineup filter will not be applied.")
     return {}
 
+
+def get_active_roster_ids() -> Set[int]:
+    """
+    Fetch active 26-man roster player IDs for all MLB teams.
+    Players on IL will not appear in active rosters.
+    Returns set of active player IDs. Empty set = filter skipped.
+    """
+    active_ids: Set[int] = set()
+    failed = 0
+
+    for team_id in MLB_TEAM_IDS:
+        try:
+            url  = (
+                f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster"
+                f"?rosterType=active&season=2026"
+            )
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            for player in data.get("roster", []):
+                pid = player.get("person", {}).get("id")
+                if pid:
+                    active_ids.add(int(pid))
+        except Exception:
+            failed += 1
+
+    if active_ids:
+        print(f"Active roster check: {len(active_ids)} active players across 30 teams ({failed} teams failed)")
+    else:
+        print("Active roster check failed for all teams — IL filter will not be applied.")
+
+    return active_ids
 
 
 def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
@@ -516,7 +556,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
 
     today = date.today()
 
-    # Rolling windows — 5d and 10d added for momentum scoring
     rolling_parts = []
     for days in [5, 7, 10, 14, 30]:
         cutoff = pd.Timestamp(today - timedelta(days=days))
@@ -830,6 +869,16 @@ def main() -> None:
         print(f"Written {len(bvp_df)} BvP rows to BvP_History")
     else:
         print("No BvP data to write.")
+
+    # Fetch active rosters for IL check
+    print("Fetching active rosters...")
+    active_roster_ids = get_active_roster_ids()
+    if active_roster_ids:
+        active_roster_df = pd.DataFrame({"player_id": list(active_roster_ids)})
+        write_dataframe_to_sheet(gc, sheet_id, "Active_Rosters", active_roster_df)
+        print(f"Written {len(active_roster_ids)} active player IDs to Active_Rosters")
+    else:
+        print("No active roster data to write.")
 
     # Fetch confirmed lineups
     print("Fetching confirmed lineups...")
