@@ -48,6 +48,37 @@ def get_today_events() -> List[dict]:
         return []
 
 
+def debug_first_event(event_id: str, home_team: str, away_team: str) -> None:
+    """Print full raw API response for one game to diagnose missing books."""
+    url    = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events/{event_id}/odds"
+    params = {
+        "apiKey":     ODDS_API_KEY,
+        "regions":    "us,us2",
+        "markets":    MARKETS,
+        "oddsFormat": ODDS_FORMAT,
+    }
+
+    print(f"\n=== DEBUG: {away_team} @ {home_team} ===")
+    print(f"URL: {url}")
+    print(f"Params: {params}")
+
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        print(f"Status: {resp.status_code}")
+        print(f"Remaining requests header: {resp.headers.get('x-requests-remaining', 'N/A')}")
+        print(f"Used requests header: {resp.headers.get('x-requests-used', 'N/A')}")
+        data = resp.json()
+
+        bookmakers = data.get("bookmakers", [])
+        print(f"Total bookmakers in response: {len(bookmakers)}")
+        for bm in bookmakers:
+            markets = [m.get("key") for m in bm.get("markets", [])]
+            print(f"  {bm.get('key')}: markets={markets}")
+
+    except Exception as e:
+        print(f"Debug failed: {e}")
+
+
 def get_hr_odds_for_event(event_id: str, home_team: str, away_team: str) -> List[dict]:
     url    = f"https://api.the-odds-api.com/v4/sports/{SPORT}/events/{event_id}/odds"
     params = {
