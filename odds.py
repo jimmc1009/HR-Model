@@ -213,7 +213,7 @@ def main() -> None:
     gc       = get_gspread_client()
 
     print("Fetching today's MLB events from The Odds API...")
-        events = get_today_events()
+    events = get_today_events()
 
     if events:
         first = events[0]
@@ -222,12 +222,6 @@ def main() -> None:
             first.get("home_team", ""),
             first.get("away_team", "")
         )
-
-    if not events:
-        print("No events found — odds sheet will not be updated.")
-        return
-
-    
 
     if not events:
         print("No events found — odds sheet will not be updated.")
@@ -246,3 +240,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
