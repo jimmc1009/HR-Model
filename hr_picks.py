@@ -58,6 +58,13 @@ COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
 COLOR_EV_HEADER = {"red": 0.100, "green": 0.100, "blue": 0.100}
 
 
+def get_gspread_client() -> gspread.Client:
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info = json.loads(raw_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+
 # ── Absolute scoring functions ─────────────────────────────────────────────
 
 def safe_float(val, default=0.0) -> float:
