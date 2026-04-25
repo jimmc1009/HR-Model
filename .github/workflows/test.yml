@@ -15,7 +15,7 @@ on:
           - weather.py
           - odds.py
           - hr_picks.py
-          -backtest.py
+          - backtest.py
 jobs:
   test:
     runs-on: ubuntu-latest
