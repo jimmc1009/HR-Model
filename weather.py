@@ -28,87 +28,42 @@ ESPN_TO_MLB = {
 
 # cf_direction = compass degrees from home plate to center field
 # 0/360=North, 90=East, 180=South, 270=West
-# Sources: Google Maps satellite, Scoopy Ballpark blog, Andrew Clem Baseball,
-#          Hardball Times orientation study. Roof stadiums have cf_direction=0
-#          since weather is irrelevant.
-#
-# Key corrections vs original:
-#   CLE: 310 → 0   (faces due North, not NW)
-#   CWS: 5  → 135  (faces SE, built across street from old Comiskey)
-#   DET: 340 → 150 (faces SSE to give skyline view)
-#   PIT: 30 → 113  (faces ESE toward Allegheny River)
-#   CIN: 20 → 113  (faces ESE)
-#   MIN: 330 → 90  (faces due East)
-#   SF:  50 → 90   (faces due East toward bay)
-#   STL: 340 → 68  (faces ENE)
-#   NYY: 20 → 68   (faces ENE)
-#   BAL: 55 → 23   (faces NNE)
-#   WSH: 5  → 23   (faces NNE)
-#   LAD: 25 → 23   (faces NNE)
-#   NYM: 355 → 23  (faces NNE)
-#   PHI: 350 → 13  (faces just N of NNE per research)
-#   CHC: 135 → 23  (faces NNE, not SE)
-#   ATL: 25 → 23   (faces NNE, Truist Park)
-#   KC:  10 → 45   (faces NE)
-#   BOS: 95 → 45   (faces NE)
-#   LAA: 5  → 45   (faces NE)
-#   SEA: 0  → 45   (faces NE — roof, irrelevant but corrected)
-#   COL: 345 → 0   (faces due North)
-#   AZ:  0  → 0    (roof — irrelevant)
-#   SD:  310 → 0   (faces due North)
-#   ATH: 30 → 68   (Sutter Health Park faces ENE)
+# All outdoor park values measured via Google Maps satellite imagery
+# using home plate to center field bearing calculator.
+# Roof stadiums have cf_direction=0 (weather irrelevant).
 
 PARKS = [
-    # Roof stadiums — weather always neutral, cf_direction irrelevant
-    {"team": "AZ",  "park": "Chase Field",           "lat": 33.4453, "lon": -112.0667, "roof": True,  "cf_direction": 0},
-    {"team": "HOU", "park": "Minute Maid Park",       "lat": 29.7573, "lon": -95.3555,  "roof": True,  "cf_direction": 0},
-    {"team": "MIA", "park": "loanDepot park",          "lat": 25.7781, "lon": -80.2197,  "roof": True,  "cf_direction": 0},
-    {"team": "MIL", "park": "American Family Field",   "lat": 43.0280, "lon": -87.9712,  "roof": True,  "cf_direction": 0},
-    {"team": "SEA", "park": "T-Mobile Park",           "lat": 47.5914, "lon": -122.3325, "roof": True,  "cf_direction": 0},
-    {"team": "TB",  "park": "Tropicana Field",         "lat": 27.7683, "lon": -82.6534,  "roof": True,  "cf_direction": 0},
-    {"team": "TEX", "park": "Globe Life Field",        "lat": 32.7512, "lon": -97.0832,  "roof": True,  "cf_direction": 0},
-    {"team": "TOR", "park": "Rogers Centre",           "lat": 43.6414, "lon": -79.3894,  "roof": True,  "cf_direction": 0},
-
-    # Outdoor stadiums — cf_direction verified from satellite imagery
-    # North-facing parks (cf ~0 degrees)
-    {"team": "COL", "park": "Coors Field",                    "lat": 39.7559, "lon": -104.9942, "roof": False, "cf_direction": 0},
-    {"team": "CLE", "park": "Progressive Field",              "lat": 41.4962, "lon": -81.6852,  "roof": False, "cf_direction": 0},
-    {"team": "SD",  "park": "Petco Park",                     "lat": 32.7073, "lon": -117.1567, "roof": False, "cf_direction": 0},
-
-    # NNE-facing parks (cf ~22 degrees)
-    {"team": "ATL", "park": "Truist Park",                    "lat": 33.8908, "lon": -84.4678,  "roof": False, "cf_direction": 22},
-    {"team": "BAL", "park": "Oriole Park at Camden Yards",    "lat": 39.2838, "lon": -76.6218,  "roof": False, "cf_direction": 22},
-    {"team": "CHC", "park": "Wrigley Field",                  "lat": 41.9484, "lon": -87.6553,  "roof": False, "cf_direction": 22},
-    {"team": "LAD", "park": "Dodger Stadium",                 "lat": 34.0739, "lon": -118.2400, "roof": False, "cf_direction": 22},
-    {"team": "NYM", "park": "Citi Field",                     "lat": 40.7571, "lon": -73.8458,  "roof": False, "cf_direction": 22},
-    {"team": "WSH", "park": "Nationals Park",                 "lat": 38.8730, "lon": -77.0074,  "roof": False, "cf_direction": 22},
-
-    # ~13 degrees (just N of NNE)
-    {"team": "PHI", "park": "Citizens Bank Park",             "lat": 39.9061, "lon": -75.1665,  "roof": False, "cf_direction": 13},
-
-    # NE-facing parks (cf ~45 degrees)
-    {"team": "BOS", "park": "Fenway Park",                    "lat": 42.3467, "lon": -71.0972,  "roof": False, "cf_direction": 45},
-    {"team": "KC",  "park": "Kauffman Stadium",               "lat": 39.0517, "lon": -94.4803,  "roof": False, "cf_direction": 45},
-    {"team": "LAA", "park": "Angel Stadium",                  "lat": 33.8003, "lon": -117.8827, "roof": False, "cf_direction": 45},
-
-    # ENE-facing parks (cf ~68 degrees)
-    {"team": "ATH", "park": "Sutter Health Park",             "lat": 38.5803, "lon": -121.5002, "roof": False, "cf_direction": 68},
-    {"team": "NYY", "park": "Yankee Stadium",                 "lat": 40.8296, "lon": -73.9262,  "roof": False, "cf_direction": 68},
-    {"team": "STL", "park": "Busch Stadium",                  "lat": 38.6226, "lon": -90.1928,  "roof": False, "cf_direction": 68},
-
-    # East-facing parks (cf ~90 degrees)
-    {"team": "MIN", "park": "Target Field",                   "lat": 44.9817, "lon": -93.2781,  "roof": False, "cf_direction": 90},
-    {"team": "SF",  "park": "Oracle Park",                    "lat": 37.7786, "lon": -122.3893, "roof": False, "cf_direction": 90},
-
-    # ESE-facing parks (cf ~113 degrees)
-    {"team": "CIN", "park": "Great American Ball Park",       "lat": 39.0979, "lon": -84.5082,  "roof": False, "cf_direction": 113},
-    {"team": "PIT", "park": "PNC Park",                       "lat": 40.4469, "lon": -80.0057,  "roof": False, "cf_direction": 113},
-
-    # SE-facing parks (cf ~135 degrees) — built to minimize local wind
-    {"team": "CWS", "park": "Guaranteed Rate Field",          "lat": 41.8300, "lon": -87.6339,  "roof": False, "cf_direction": 135},
-
-    # SSE-facing parks (cf ~150 degrees) — built for skyline views
-    {"team": "DET", "park": "Comerica Park",                  "lat": 42.3390, "lon": -83.0485,  "roof": False, "cf_direction": 150},
+    # Alphabetical by team code
+    {"team": "ATH", "park": "Sutter Health Park",          "lat": 38.5803, "lon": -121.5002, "roof": False, "cf_direction": 41},
+    {"team": "ATL", "park": "Truist Park",                 "lat": 33.8908, "lon": -84.4678,  "roof": False, "cf_direction": 153},
+    {"team": "AZ",  "park": "Chase Field",                 "lat": 33.4453, "lon": -112.0667, "roof": True,  "cf_direction": 0},
+    {"team": "BAL", "park": "Oriole Park at Camden Yards", "lat": 39.2838, "lon": -76.6218,  "roof": False, "cf_direction": 27},
+    {"team": "BOS", "park": "Fenway Park",                 "lat": 42.3467, "lon": -71.0972,  "roof": False, "cf_direction": 40},
+    {"team": "CHC", "park": "Wrigley Field",               "lat": 41.9484, "lon": -87.6553,  "roof": False, "cf_direction": 34},
+    {"team": "CIN", "park": "Great American Ball Park",    "lat": 39.0979, "lon": -84.5082,  "roof": False, "cf_direction": 120},
+    {"team": "CLE", "park": "Progressive Field",           "lat": 41.4962, "lon": -81.6852,  "roof": False, "cf_direction": 0},
+    {"team": "COL", "park": "Coors Field",                 "lat": 39.7559, "lon": -104.9942, "roof": False, "cf_direction": 0},
+    {"team": "CWS", "park": "Guaranteed Rate Field",       "lat": 41.8300, "lon": -87.6339,  "roof": False, "cf_direction": 123},
+    {"team": "DET", "park": "Comerica Park",               "lat": 42.3390, "lon": -83.0485,  "roof": False, "cf_direction": 147},
+    {"team": "HOU", "park": "Daikin Park",                 "lat": 29.7573, "lon": -95.3555,  "roof": True,  "cf_direction": 0},
+    {"team": "KC",  "park": "Kauffman Stadium",            "lat": 39.0517, "lon": -94.4803,  "roof": False, "cf_direction": 41},
+    {"team": "LAA", "park": "Angel Stadium",               "lat": 33.8003, "lon": -117.8827, "roof": False, "cf_direction": 38},
+    {"team": "LAD", "park": "Dodger Stadium",              "lat": 34.0739, "lon": -118.2400, "roof": False, "cf_direction": 20},
+    {"team": "MIA", "park": "loanDepot park",              "lat": 25.7781, "lon": -80.2197,  "roof": True,  "cf_direction": 0},
+    {"team": "MIL", "park": "American Family Field",       "lat": 43.0280, "lon": -87.9712,  "roof": True,  "cf_direction": 0},
+    {"team": "MIN", "park": "Target Field",                "lat": 44.9817, "lon": -93.2781,  "roof": False, "cf_direction": 90},
+    {"team": "NYM", "park": "Citi Field",                  "lat": 40.7571, "lon": -73.8458,  "roof": False, "cf_direction": 9},
+    {"team": "NYY", "park": "Yankee Stadium",              "lat": 40.8296, "lon": -73.9262,  "roof": False, "cf_direction": 72},
+    {"team": "PHI", "park": "Citizens Bank Park",          "lat": 39.9061, "lon": -75.1665,  "roof": False, "cf_direction": 3},
+    {"team": "PIT", "park": "PNC Park",                    "lat": 40.4469, "lon": -80.0057,  "roof": False, "cf_direction": 112},
+    {"team": "SD",  "park": "Petco Park",                  "lat": 32.7073, "lon": -117.1567, "roof": False, "cf_direction": 0},
+    {"team": "SEA", "park": "T-Mobile Park",               "lat": 47.5914, "lon": -122.3325, "roof": False, "cf_direction": 43},
+    {"team": "SF",  "park": "Oracle Park",                 "lat": 37.7786, "lon": -122.3893, "roof": False, "cf_direction": 82},
+    {"team": "STL", "park": "Busch Stadium",               "lat": 38.6226, "lon": -90.1928,  "roof": False, "cf_direction": 60},
+    {"team": "TB",  "park": "Tropicana Field",             "lat": 27.7683, "lon": -82.6534,  "roof": True,  "cf_direction": 0},
+    {"team": "TEX", "park": "Globe Life Field",            "lat": 32.7512, "lon": -97.0832,  "roof": True,  "cf_direction": 0},
+    {"team": "TOR", "park": "Rogers Centre",               "lat": 43.6414, "lon": -79.3894,  "roof": True,  "cf_direction": 0},
+    {"team": "WSH", "park": "Nationals Park",              "lat": 38.8730, "lon": -77.0074,  "roof": False, "cf_direction": 23},
 ]
 
 PARK_BY_TEAM = {p["team"]: p for p in PARKS}
@@ -334,18 +289,16 @@ def hr_weather_boost(
     # Temperature effect — each 10°F above/below 72°F adds/subtracts 0.5
     temp_delta = (temp_f - 72) / 10
     if temp_delta >= 0:
-        score += temp_delta * 0.5   # heat bonus
+        score += temp_delta * 0.5
     else:
-        score += temp_delta * 0.8   # cold penalty hits harder
+        score += temp_delta * 0.8
 
     if not pd.isna(wind_mph) and not pd.isna(wind_dir) and wind_mph > 0:
         wind_to = (wind_dir + 180) % 360
         diff = abs(angle_difference(wind_to, cf_direction))
 
-        # alignment: +1.0 = straight out, -1.0 = straight in, 0 = crosswind
         alignment = (90 - diff) / 90
 
-        # Asymmetric multipliers — wind in penalizes more than wind out rewards
         if alignment >= 0:
             multiplier = WIND_OUT_MULTIPLIER
         else:
@@ -388,9 +341,9 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
         if team not in playing_home_teams:
             continue
 
-        roof = park["roof"]
+        roof         = park["roof"]
         cf_direction = park["cf_direction"]
-        game_info = games.get(team, {})
+        game_info    = games.get(team, {})
 
         if roof:
             rows.append({
@@ -407,7 +360,7 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
                 "boost_note":       "Roof — weather neutral",
             })
         else:
-            w = weather_data.get(team, {})
+            w        = weather_data.get(team, {})
             temp_f   = w.get("temp_f")
             wind_mph = w.get("wind_mph")
             wind_dir = w.get("wind_dir_deg")
@@ -442,7 +395,7 @@ def build_weather_table(games: Dict[str, dict]) -> pd.DataFrame:
                     wind_context = "Calm"
 
                 boost_note = (
-                    "HR friendly"    if boost >= 1.0
+                    "HR friendly"     if boost >= 1.0
                     else "HR suppressing" if boost <= -1.0
                     else "Neutral"
                 )
