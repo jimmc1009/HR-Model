@@ -2,6 +2,7 @@ import os
 import json
 from datetime import date, timedelta
 from typing import Dict, Set
+import unicodedata
 
 import pandas as pd
 import numpy as np
@@ -37,15 +38,11 @@ PULL_PARK_WEIGHT     = 0.6
 MOMENTUM_WEIGHT      = 0.8
 BVP_WEIGHT           = 0.9
 
-ISO_GAP_SMALL  = 0.030
-ISO_GAP_MEDIUM = 0.060
-ISO_GAP_LARGE  = 0.100
-ISO_GAP_SEVERE = 0.150
-
-MIN_BATTING_AVG  = 0.200
-MAX_PER_TEAM     = 2
-MAX_CHALK_PICKS  = 3       # max picks with consensus_odds <= CHALK_ODDS_THRESHOLD
-CHALK_ODDS_THRESHOLD = 310 # +310 or shorter = chalk
+MIN_BATTING_AVG      = 0.200
+MAX_PER_TEAM         = 2
+MAX_CHALK_PICKS      = 3
+CHALK_ODDS_THRESHOLD = 310
+MIN_START_RATE       = 0.20
 
 COLOR_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
@@ -89,7 +86,6 @@ def safe_float(val, default=0.0) -> float:
 
 
 def normalize_name(name: str) -> str:
-    import unicodedata
     name = unicodedata.normalize("NFD", str(name))
     name = "".join(c for c in name if unicodedata.category(c) != "Mn")
     return name.lower().strip()
@@ -397,12 +393,14 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         batter_barrel_vs = safe_float(row.get("vs_lhp_barrel_pct", 0))
         batter_hr_vs     = safe_float(row.get("vs_lhp_hr_rate", 0))
         matchup_label    = f"{batter_hand}HH vs LHP"
+        start_rate       = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
     elif p_throws == "R":
         iso_vs_this      = iso_vs_rhp
         iso_vs_opp       = iso_vs_lhp
         batter_barrel_vs = safe_float(row.get("vs_rhp_barrel_pct", 0))
         batter_hr_vs     = safe_float(row.get("vs_rhp_hr_rate", 0))
         matchup_label    = f"{batter_hand}HH vs RHP"
+        start_rate       = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
     else:
         return 0.0, "", 0.0
 
@@ -424,20 +422,27 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
     if has_iso_data:
-        if iso_gap >= ISO_GAP_SEVERE:
-            penalty = 2.5
-            parts.append(f"🚨 Severe platoon weakness ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
-        elif iso_gap >= ISO_GAP_LARGE:
-            penalty = 1.5
-            parts.append(f"❌ Platoon disadvantage ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
-        elif iso_gap >= ISO_GAP_MEDIUM:
-            penalty = 0.7
-            parts.append(f"⚠️ Moderate platoon weakness ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap <= -ISO_GAP_MEDIUM:
-            score += 1.0
+        if iso_gap > 0:
+            # Continuous penalty — scales linearly with gap size
+            penalty = round(min(iso_gap * 15.0, 4.5), 3)
+            if iso_gap >= 0.150:
+                parts.append(f"🚨 Severe platoon weakness ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
+            elif iso_gap >= 0.100:
+                parts.append(f"❌ Platoon disadvantage ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
+            elif iso_gap >= 0.060:
+                parts.append(f"⚠️ Moderate platoon weakness ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand")
+        elif iso_gap < 0:
+            # Continuous bonus — scales linearly with advantage size
+            score += round(min(abs(iso_gap) * 10.0, 3.0), 3)
             parts.append(f"✅ Platoon advantage ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
         else:
             parts.append(f"↔️ Neutral platoon ({matchup_label})")
+
+    # Start rate penalty
+    if start_rate < 0.50:
+        start_penalty = round((0.50 - start_rate) * 4.0, 3)
+        penalty      += start_penalty
+        parts.append(f"⚠️ Rarely starts vs this hand ({start_rate:.0%} start rate)")
 
     score += pitcher_barrel_vs * 0.06
     score += pitcher_hr_vs     * 0.04
@@ -558,6 +563,31 @@ def prepare_combined(
     else:
         print("Active roster unavailable — IL filter skipped.")
 
+    # ── Handedness starts filter ───────────────────────────────────────────
+    if "pitcher_hand" in pitchers.columns and "lhp_start_rate" in batters.columns:
+        # Merge pitcher hand temporarily to apply filter
+        temp_merge = batters.merge(
+            pitchers[["batter_team", "pitcher_hand"]].drop_duplicates(),
+            on="batter_team", how="left"
+        )
+
+        def handedness_filter(row) -> bool:
+            p_hand = str(row.get("pitcher_hand", "")).strip().upper()
+            if p_hand == "L":
+                rate = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
+            elif p_hand == "R":
+                rate = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
+            else:
+                return True
+            return rate >= MIN_START_RATE
+
+        mask   = temp_merge.apply(handedness_filter, axis=1)
+        before = len(batters)
+        batters = batters[mask.values].copy()
+        print(f"Handedness filter: {before - len(batters)} platoon sits removed, {len(batters)} remaining")
+    else:
+        print("Handedness filter skipped — start rate data not available")
+
     # ── Lineup filter ──────────────────────────────────────────────────────
     if not lineups.empty and "player_id" in lineups.columns and "team" in lineups.columns:
         confirmed_teams = set(lineups["team"].unique())
@@ -672,6 +702,7 @@ def prepare_combined(
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "hr_7d", "season_hr", "season_fb", "season_hard_hit",
+        "lhp_start_rate", "rhp_start_rate",
     ]
 
     dynamic_cols = [c for c in combined.columns if c.startswith("pitcher_iso_allowed_") or c.startswith("pitcher_hr_rate_allowed_") or c.startswith("pitcher_barrel_pct_allowed_")]
@@ -828,11 +859,6 @@ def apply_odds_diversity_cap(
     sorted_df: pd.DataFrame,
     odds_lookup: dict,
 ) -> pd.DataFrame:
-    """
-    Apply chalk cap: max MAX_CHALK_PICKS picks with consensus_odds <= CHALK_ODDS_THRESHOLD.
-    Players with no odds data pass through freely.
-    Returns top 10 after applying cap and team cap.
-    """
     selected    = []
     chalk_count = 0
     team_counts = {}
@@ -841,15 +867,14 @@ def apply_odds_diversity_cap(
         if len(selected) >= 10:
             break
 
-        team        = str(row.get("batter_team", ""))
-        team_count  = team_counts.get(team, 0)
+        team       = str(row.get("batter_team", ""))
+        team_count = team_counts.get(team, 0)
         if team_count >= MAX_PER_TEAM:
             continue
 
-        player_norm   = normalize_name(str(row.get("player_name", "")))
+        player_norm    = normalize_name(str(row.get("player_name", "")))
         consensus_odds = odds_lookup.get(player_norm, None)
-
-        is_chalk = consensus_odds is not None and consensus_odds <= CHALK_ODDS_THRESHOLD
+        is_chalk       = consensus_odds is not None and consensus_odds <= CHALK_ODDS_THRESHOLD
 
         if is_chalk and chalk_count >= MAX_CHALK_PICKS:
             continue
@@ -875,7 +900,6 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
     combined = combined.copy()
     combined["reason"] = combined.apply(build_reason, axis=1)
 
-    # Build odds lookup from HR_Odds sheet
     odds_lookup = {}
     if odds_df is not None and not odds_df.empty and "player_name_norm" in odds_df.columns and "consensus_odds" in odds_df.columns:
         for _, row in odds_df.iterrows():
@@ -899,7 +923,6 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
         )
         print(f"Diversity cap applied: {chalk_in_picks} chalk picks (≤+{CHALK_ODDS_THRESHOLD}) in top 10")
     else:
-        # Fallback — original team cap only
         combined_sorted["team_count"] = combined_sorted.groupby("batter_team").cumcount()
         top10 = combined_sorted[combined_sorted["team_count"] < MAX_PER_TEAM].head(10).copy()
         top10 = top10.drop(columns=["team_count"])
@@ -942,6 +965,8 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
         "bvp_iso":                    "BvP ISO",
         "bvp_desc":                   "BvP Notes",
         "platoon_desc":               "Platoon Matchup",
+        "lhp_start_rate":             "LHP Start Rate",
+        "rhp_start_rate":             "RHP Start Rate",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":          "Pitcher HR/FB% Allowed",
         "pitcher_vs_lhh_barrel_pct":  "Pitcher Barrel% vs LHH",
@@ -1242,19 +1267,19 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
         score_col = "HR Score" if section == "Main" else "EV Score"
         for _, row in df.iterrows():
             new_rows.append({
-                "date":          today_str,
-                "rank":          str(row.get("Rank", "")),
-                "player_name":   str(row.get("Batter", "")),
-                "player_id":     "",
-                "team":          str(row.get("Team", "")),
-                "pitcher_id":    "",
-                "park_name":     str(row.get("Park", "")),
-                "hr_score":      str(row.get(score_col, "")),
-                "confidence":    str(row.get("Confidence", "")),
-                "hit_hr":        "Pending",
-                "section":       section,
-                "odds":          "",
-                "bet_placed":    "",
+                "date":        today_str,
+                "rank":        str(row.get("Rank", "")),
+                "player_name": str(row.get("Batter", "")),
+                "player_id":   "",
+                "team":        str(row.get("Team", "")),
+                "pitcher_id":  "",
+                "park_name":   str(row.get("Park", "")),
+                "hr_score":    str(row.get(score_col, "")),
+                "confidence":  str(row.get("Confidence", "")),
+                "hit_hr":      "Pending",
+                "section":     section,
+                "odds":        "",
+                "bet_placed":  "",
             })
 
     build_log_rows(picks,      "Main")
@@ -1382,7 +1407,14 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
-    for label, sub in [("   13+", scored[scored["hr_score"] >= 13]), ("   12+", scored[scored["hr_score"] >= 12]), ("   11+", scored[scored["hr_score"] >= 11]), ("   10+", scored[scored["hr_score"] >= 10]), ("   9+", scored[scored["hr_score"] >= 9]), ("   Under 9", scored[scored["hr_score"] < 9])]:
+    for label, sub in [
+        ("   13+",    scored[scored["hr_score"] >= 13]),
+        ("   12+",    scored[scored["hr_score"] >= 12]),
+        ("   11+",    scored[scored["hr_score"] >= 11]),
+        ("   10+",    scored[scored["hr_score"] >= 10]),
+        ("   9+",     scored[scored["hr_score"] >= 9]),
+        ("   Under 9",scored[scored["hr_score"] <  9]),
+    ]:
         if not sub.empty: add_score(label, sub)
 
     try:
@@ -1622,7 +1654,7 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, main_row_count: int, e
     reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 42}, "fields": "pixelSize"}})
     reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": total_rows}, "properties": {"pixelSize": 58}, "fields": "pixelSize"}})
 
-    col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380, 75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85, 85, 100, 100, 75, 220, 60, 60, 70, 200, 220, 120, 120, 130, 130, 90, 90, 90, 75, 90, 75, 90, 75, 240, 75, 65, 65, 65, 65]
+    col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380, 75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85, 85, 100, 100, 75, 75, 75, 220, 60, 60, 70, 200, 220, 120, 120, 130, 130, 90, 90, 90, 75, 90, 75, 90, 75, 240, 75, 65, 65, 65, 65]
     for i, width in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1}, "properties": {"pixelSize": width}, "fields": "pixelSize"}})
 

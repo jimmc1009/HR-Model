@@ -126,11 +126,6 @@ def get_season_statcast() -> pd.DataFrame:
 
 
 def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
-    """
-    Fetch confirmed batting lineups from MLB Stats API.
-    Returns {team_abbr: set of confirmed batter MLB IDs}.
-    Falls back to ESPN. If neither works returns empty dict.
-    """
     today_str = date.today().strftime("%Y-%m-%d")
     lineups: Dict[str, Set[int]] = {}
 
@@ -286,11 +281,6 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
 
 
 def get_active_roster_ids() -> Set[int]:
-    """
-    Fetch active 26-man roster player IDs for all MLB teams.
-    Players on IL will not appear in active rosters.
-    Returns set of active player IDs. Empty set = filter skipped.
-    """
     active_ids: Set[int] = set()
     failed = 0
 
@@ -394,11 +384,51 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
     return bbe
 
 
+def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate how often each batter starts against LHP vs RHP.
+    Returns DataFrame with batter_id, starts_vs_lhp, starts_vs_rhp,
+    total_starts, lhp_start_rate, rhp_start_rate.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    pa_df = df[df["events"].notna()].copy()
+    pa_df = pa_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "batter"] if c in pa_df.columns]
+    )
+
+    if "p_throws" not in pa_df.columns:
+        return pd.DataFrame()
+
+    vs_lhp = (
+        pa_df[pa_df["p_throws"] == "L"]
+        .groupby("batter")
+        .agg(starts_vs_lhp=("game_pk", "nunique"))
+        .reset_index()
+    )
+
+    vs_rhp = (
+        pa_df[pa_df["p_throws"] == "R"]
+        .groupby("batter")
+        .agg(starts_vs_rhp=("game_pk", "nunique"))
+        .reset_index()
+    )
+
+    starts = vs_lhp.merge(vs_rhp, on="batter", how="outer").fillna(0)
+    starts["total_starts"]   = starts["starts_vs_lhp"] + starts["starts_vs_rhp"]
+    starts["lhp_start_rate"] = (
+        starts["starts_vs_lhp"] / starts["total_starts"].replace(0, np.nan)
+    ).round(3)
+    starts["rhp_start_rate"] = (
+        starts["starts_vs_rhp"] / starts["total_starts"].replace(0, np.nan)
+    ).round(3)
+
+    starts = starts.rename(columns={"batter": "batter_id"})
+    return starts
+
+
 def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build batter vs specific pitcher historical stats.
-    Only includes matchups with >= MIN_BBE_VS_PITCHER PA.
-    """
     if df.empty:
         return pd.DataFrame()
 
@@ -584,7 +614,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     for grp in rolling_parts:
         combined = combined.merge(grp, on="batter", how="left")
 
-    # Platoon splits
     if "p_throws" in bbe.columns and "stand" in bbe.columns:
         stand_map = (
             bbe[bbe["stand"].notna()]
@@ -636,7 +665,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     else:
         combined["batter_hand"] = ""
 
-    # Pitch type splits
     if "pitch_type" in bbe.columns:
         pitch_bbe = bbe[bbe["pitch_type"].notna()].copy()
         pitch_bbe["pitch_type"] = pitch_bbe["pitch_type"].astype("string").str.upper().str.strip()
@@ -700,7 +728,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
                 combined = combined.merge(hr_pivot,     on="batter", how="left")
                 combined = combined.merge(barrel_pivot, on="batter", how="left")
 
-    # Pitch group splits
     if "pitch_group" in bbe.columns:
         for group in ["fastball", "breaking", "offspeed", "knuckleball"]:
             sub = bbe[bbe["pitch_group"] == group].copy()
@@ -741,7 +768,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
             g = g.drop(columns=drop_cols, errors="ignore")
             combined = combined.merge(g[["batter", f"iso_vs_{group}", f"hr_rate_vs_{group}"]], on="batter", how="left")
 
-    # Team mapping
     team_map = (
         df.sort_values("game_date")
         .drop_duplicates(subset=["batter"], keep="last")
@@ -749,7 +775,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     )
     combined = combined.merge(team_map, on="batter", how="left")
 
-    # Minimum sample filter
     combined = combined[
         (combined["season_bbe"] >= 25) &
         (combined["pa"] >= 30)
@@ -852,6 +877,16 @@ def main() -> None:
         )
         batter_df = batter_df[batter_df["player_name"] != ""].copy()
         batter_df = batter_df.rename(columns={"batter": "batter_id"})
+
+        # Build and merge handedness start rates
+        print("Building handedness start rates...")
+        start_rates = build_handedness_start_rates(raw_df)
+        if not start_rates.empty:
+            batter_df = batter_df.merge(start_rates, on="batter_id", how="left")
+            batter_df["lhp_start_rate"] = batter_df["lhp_start_rate"].fillna(0.5)
+            batter_df["rhp_start_rate"] = batter_df["rhp_start_rate"].fillna(0.5)
+            print(f"Handedness start rates added for {len(start_rates)} batters")
+
         write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_2026", batter_df)
         print("Written to Batter_Statcast_2026")
 
