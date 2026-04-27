@@ -96,6 +96,8 @@ def regress(value: float, league_avg: float, sample: float, full_sample: float) 
 
 
 def score_barrel_pct_7d(v: float, bbe_7d: float) -> float:
+    if bbe_7d < 5:
+        return 0.0
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
     if v >= 20: return 2.0
     if v >= 15: return 1.5
@@ -140,6 +142,8 @@ def score_hr_per_fb(v: float, pa: float) -> float:
 
 
 def score_avg_ev_7d(v: float, bbe_7d: float) -> float:
+    if bbe_7d < 5:
+        return 0.0
     v = regress(v, LEAGUE_AVG_EV_7D, bbe_7d, MIN_BBE_7D_FULL)
     if v >= 97: return 1.0
     if v >= 94: return 0.6
@@ -148,6 +152,8 @@ def score_avg_ev_7d(v: float, bbe_7d: float) -> float:
 
 
 def score_hard_hit_pct_7d(v: float, bbe_7d: float) -> float:
+    if bbe_7d < 5:
+        return 0.0
     v = regress(v, LEAGUE_AVG_HARD_HIT_7D, bbe_7d, MIN_BBE_7D_FULL)
     if v >= 55: return 0.8
     if v >= 45: return 0.5
