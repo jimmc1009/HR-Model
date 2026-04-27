@@ -386,46 +386,95 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate how often each batter starts against LHP vs RHP.
-    Returns DataFrame with batter_id, starts_vs_lhp, starts_vs_rhp,
-    total_starts, lhp_start_rate, rhp_start_rate.
+    Calculate how often each batter starts when their team faces LHP vs RHP.
+    Denominator is team games vs that handedness, not total batter games.
+    This gives a true platoon usage rate independent of schedule distribution.
     """
     if df.empty:
         return pd.DataFrame()
 
+    if "p_throws" not in df.columns:
+        return pd.DataFrame()
+
+    # Need batting team — derive if not present
+    if "batting_team" not in df.columns:
+        if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
+            df = df.copy()
+            df["batting_team"] = df.apply(
+                lambda r: str(r["away_team"]).strip()
+                if str(r["inning_topbot"]).lower().startswith("top")
+                else str(r["home_team"]).strip(), axis=1,
+            )
+        else:
+            return pd.DataFrame()
+
+    # One row per batter per game (deduplicate)
     pa_df = df[df["events"].notna()].copy()
     pa_df = pa_df.drop_duplicates(
         subset=[c for c in ["game_pk", "batter"] if c in pa_df.columns]
     )
 
-    if "p_throws" not in pa_df.columns:
-        return pd.DataFrame()
-
-    vs_lhp = (
+    # ── Team games vs each handedness ─────────────────────────────────────
+    # How many games did each team play vs LHP / RHP
+    team_vs_lhp = (
         pa_df[pa_df["p_throws"] == "L"]
-        .groupby("batter")
-        .agg(starts_vs_lhp=("game_pk", "nunique"))
-        .reset_index()
+        .groupby("batting_team")["game_pk"]
+        .nunique()
+        .reset_index(name="team_games_vs_lhp")
     )
 
-    vs_rhp = (
+    team_vs_rhp = (
         pa_df[pa_df["p_throws"] == "R"]
-        .groupby("batter")
-        .agg(starts_vs_rhp=("game_pk", "nunique"))
-        .reset_index()
+        .groupby("batting_team")["game_pk"]
+        .nunique()
+        .reset_index(name="team_games_vs_rhp")
     )
 
-    starts = vs_lhp.merge(vs_rhp, on="batter", how="outer").fillna(0)
-    starts["total_starts"]   = starts["starts_vs_lhp"] + starts["starts_vs_rhp"]
+    # ── Batter games vs each handedness ───────────────────────────────────
+    # How many of those games did each batter actually appear in
+    batter_vs_lhp = (
+        pa_df[pa_df["p_throws"] == "L"]
+        .groupby(["batter", "batting_team"])["game_pk"]
+        .nunique()
+        .reset_index(name="batter_games_vs_lhp")
+    )
+
+    batter_vs_rhp = (
+        pa_df[pa_df["p_throws"] == "R"]
+        .groupby(["batter", "batting_team"])["game_pk"]
+        .nunique()
+        .reset_index(name="batter_games_vs_rhp")
+    )
+
+    # ── Merge and calculate true start rates ──────────────────────────────
+    starts = batter_vs_lhp.merge(batter_vs_rhp, on=["batter", "batting_team"], how="outer").fillna(0)
+    starts = starts.merge(team_vs_lhp, on="batting_team", how="left")
+    starts = starts.merge(team_vs_rhp, on="batting_team", how="left")
+    starts["team_games_vs_lhp"] = starts["team_games_vs_lhp"].fillna(0)
+    starts["team_games_vs_rhp"] = starts["team_games_vs_rhp"].fillna(0)
+
+    # True start rate = batter appearances / team games vs that hand
     starts["lhp_start_rate"] = (
-        starts["starts_vs_lhp"] / starts["total_starts"].replace(0, np.nan)
+        starts["batter_games_vs_lhp"] /
+        starts["team_games_vs_lhp"].replace(0, np.nan)
     ).round(3)
+
     starts["rhp_start_rate"] = (
-        starts["starts_vs_rhp"] / starts["total_starts"].replace(0, np.nan)
+        starts["batter_games_vs_rhp"] /
+        starts["team_games_vs_rhp"].replace(0, np.nan)
     ).round(3)
+
+    # Fill missing with 0.5 (neutral — not enough data)
+    starts["lhp_start_rate"] = starts["lhp_start_rate"].fillna(0.5)
+    starts["rhp_start_rate"] = starts["rhp_start_rate"].fillna(0.5)
 
     starts = starts.rename(columns={"batter": "batter_id"})
-    return starts
+
+    print(f"Built handedness start rates for {len(starts)} batters")
+    return starts[["batter_id", "batting_team", "batter_games_vs_lhp", "batter_games_vs_rhp",
+                    "team_games_vs_lhp", "team_games_vs_rhp",
+                    "lhp_start_rate", "rhp_start_rate"]]
+
 
 
 def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
