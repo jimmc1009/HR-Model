@@ -32,7 +32,7 @@ MIN_BBE_7D_PARTIAL   = 5
 
 PLATOON_BONUS_WEIGHT = 0.8
 PITCH_MATCHUP_WEIGHT = 1.2
-WEATHER_WEIGHT       = 0.4
+WEATHER_WEIGHT       = 1.2
 PULL_PARK_WEIGHT     = 0.6
 MOMENTUM_WEIGHT      = 0.8
 BVP_WEIGHT           = 0.9
@@ -1382,7 +1382,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
-    for label, sub in [("   11+", scored[scored["hr_score"] >= 11]), ("   10+", scored[scored["hr_score"] >= 10]), ("   9+", scored[scored["hr_score"] >= 9]), ("   8+", scored[scored["hr_score"] >= 8]), ("   7+", scored[scored["hr_score"] >= 7]), ("   6+", scored[scored["hr_score"] >= 6]), ("   Under 6", scored[scored["hr_score"] < 6])]:
+    for label, sub in [("   13+", scored[scored["hr_score"] >= 13]), ("   12+", scored[scored["hr_score"] >= 12]), ("   11+", scored[scored["hr_score"] >= 11]), ("   10+", scored[scored["hr_score"] >= 10]), ("   9+", scored[scored["hr_score"] >= 9]), ("   Under 9", scored[scored["hr_score"] < 9])]:
         if not sub.empty: add_score(label, sub)
 
     try:

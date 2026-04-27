@@ -17,9 +17,9 @@ SCOPES = [
 
 SEASON_START = "2026-03-26"
 
-FASTBALLS = {"FF", "SI", "FC", "FA"}
-BREAKING  = {"SL", "CU", "KC", "CS", "SV", "ST"}
-OFFSPEED  = {"CH", "FS", "FO", "SC"}
+FASTBALLS   = {"FF", "SI", "FC", "FA"}
+BREAKING    = {"SL", "CU", "KC", "CS", "SV", "ST"}
+OFFSPEED    = {"CH", "FS", "FO", "SC"}
 KNUCKLEBALL = {"KN"}
 
 ESPN_TO_MLB = {
@@ -56,34 +56,29 @@ OUT_EVENTS = {
     "strikeout_double_play",
 }
 
-WEIGHTS = {
-    "barrel_pct_7d":            2.0,
-    "hr_per_pa":                1.8,
-    "hr_per_fb":                1.5,
-    "iso":                      1.2,
-    "avg_ev_7d":                1.0,
-    "hard_hit_pct_7d":          0.8,
-    "pitcher_barrel_pct":       1.5,
-    "pitcher_hr_per_fb":        1.5,
-    "pitcher_hard_hit_pct":     0.8,
-    "park_hr_factor":           0.5,
-    "pitcher_quality_penalty":  1.2,
-}
+# ── Regression constants ───────────────────────────────────────────────────
+LEAGUE_AVG_HR_PER_PA     = 2.5
+LEAGUE_AVG_HR_PER_FB     = 10.0
+LEAGUE_AVG_ISO           = 0.155
+LEAGUE_AVG_BARREL_7D     = 11.0
+LEAGUE_AVG_SEASON_BARREL = 8.0
+LEAGUE_AVG_HARD_HIT_7D   = 40.0
+LEAGUE_AVG_EV_7D         = 89.0
+
+MIN_PA_FULL        = 150
+MIN_BBE_7D_FULL    = 20
+MIN_BATTING_AVG    = 0.200
+MAX_PER_TEAM       = 2
 
 PLATOON_BONUS_WEIGHT = 0.8
 PITCH_MATCHUP_WEIGHT = 1.2
 WEATHER_WEIGHT       = 0.4
-MIN_BATTING_AVG      = 0.225
+PULL_PARK_WEIGHT     = 0.6
+MOMENTUM_WEIGHT      = 0.8
+BVP_WEIGHT           = 0.9
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
-
-def get_gspread_client() -> gspread.Client:
-    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    info = json.loads(raw_json)
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    return gspread.authorize(creds)
-
+# ── Absolute scoring functions ─────────────────────────────────────────────
 
 def safe_float(val, default=0.0) -> float:
     try:
@@ -95,6 +90,122 @@ def safe_float(val, default=0.0) -> float:
         return default
 
 
+def regress(value: float, league_avg: float, sample: float, full_sample: float) -> float:
+    weight = min(sample / full_sample, 1.0)
+    return (value * weight) + (league_avg * (1 - weight))
+
+
+def score_barrel_pct_7d(v: float, bbe_7d: float) -> float:
+    v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
+    if v >= 20: return 2.0
+    if v >= 15: return 1.5
+    if v >= 10: return 1.0
+    if v >= 6:  return 0.4
+    return 0.0
+
+
+def score_season_barrel_pct(v: float, pa: float) -> float:
+    v = regress(v, LEAGUE_AVG_SEASON_BARREL, pa, MIN_PA_FULL)
+    if v >= 14: return 1.2
+    if v >= 11: return 0.9
+    if v >=  9: return 0.6
+    if v >=  7: return 0.3
+    return 0.0
+
+
+def score_iso(v: float, pa: float) -> float:
+    v = regress(v, LEAGUE_AVG_ISO, pa, MIN_PA_FULL)
+    if v >= 0.300: return 1.2
+    if v >= 0.250: return 0.9
+    if v >= 0.200: return 0.6
+    if v >= 0.175: return 0.4
+    if v >= 0.150: return 0.2
+    return 0.0
+
+
+def score_hr_per_pa(v: float, pa: float) -> float:
+    v = regress(v, LEAGUE_AVG_HR_PER_PA, pa, MIN_PA_FULL)
+    if v >= 6.0: return 1.8
+    if v >= 4.0: return 1.2
+    if v >= 2.5: return 0.6
+    return 0.0
+
+
+def score_hr_per_fb(v: float, pa: float) -> float:
+    v = regress(v, LEAGUE_AVG_HR_PER_FB, pa, MIN_PA_FULL)
+    if v >= 20: return 1.5
+    if v >= 15: return 1.0
+    if v >= 10: return 0.5
+    return 0.0
+
+
+def score_avg_ev_7d(v: float, bbe_7d: float) -> float:
+    v = regress(v, LEAGUE_AVG_EV_7D, bbe_7d, MIN_BBE_7D_FULL)
+    if v >= 97: return 1.0
+    if v >= 94: return 0.6
+    if v >= 91: return 0.3
+    return 0.0
+
+
+def score_hard_hit_pct_7d(v: float, bbe_7d: float) -> float:
+    v = regress(v, LEAGUE_AVG_HARD_HIT_7D, bbe_7d, MIN_BBE_7D_FULL)
+    if v >= 55: return 0.8
+    if v >= 45: return 0.5
+    if v >= 35: return 0.2
+    return 0.0
+
+
+def score_pitcher_barrel_pct(v: float) -> float:
+    if v >= 14: return 1.5
+    if v >= 11: return 1.0
+    if v >=  9: return 0.6
+    if v >=  7: return 0.3
+    return 0.0
+
+
+def score_pitcher_hr_per_fb(v: float) -> float:
+    if v >= 20: return 1.5
+    if v >= 15: return 1.0
+    if v >= 13: return 0.6
+    if v >= 10: return 0.3
+    return 0.0
+
+
+def score_pitcher_hard_hit_pct(v: float) -> float:
+    if v >= 45: return 0.8
+    if v >= 38: return 0.5
+    if v >= 32: return 0.2
+    return 0.0
+
+
+def score_park_factor(v: float) -> float:
+    if v >= 20:  return 0.5
+    if v >= 10:  return 0.3
+    if v >= 0:   return 0.1
+    if v >= -10: return -0.1
+    return -0.3
+
+
+def score_pitcher_quality_penalty(
+    barrel_pct: float,
+    hard_hit_pct: float,
+    hr_per_fb: float,
+    pitcher_bbe: float,
+) -> float:
+    sample_weight = min(safe_float(pitcher_bbe) / 80.0, 1.0)
+    penalty = 0.0
+    if barrel_pct <= 4:   penalty += 0.8
+    elif barrel_pct <= 5: penalty += 0.5
+    elif barrel_pct <= 6: penalty += 0.3
+    if hard_hit_pct <= 30:   penalty += 0.5
+    elif hard_hit_pct <= 33: penalty += 0.3
+    elif hard_hit_pct <= 36: penalty += 0.15
+    if hr_per_fb <= 6:    penalty += 0.5
+    elif hr_per_fb <= 8:  penalty += 0.3
+    elif hr_per_fb <= 10: penalty += 0.1
+    return round(penalty * sample_weight, 3)
+
+
 def normalize(series: pd.Series) -> pd.Series:
     mn = series.min()
     mx = series.max()
@@ -103,12 +214,13 @@ def normalize(series: pd.Series) -> pd.Series:
     return (series - mn) / (mx - mn)
 
 
-def normalize_inverted(series: pd.Series) -> pd.Series:
-    mn = series.min()
-    mx = series.max()
-    if mx == mn:
-        return pd.Series([0.5] * len(series), index=series.index)
-    return 1 - (series - mn) / (mx - mn)
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def get_gspread_client() -> gspread.Client:
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info = json.loads(raw_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return gspread.authorize(creds)
 
 
 def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
@@ -281,7 +393,7 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     df["is_barrel"]   = df.apply(is_barrel, axis=1)
     df["is_hard_hit"] = df["launch_speed"] >= 95
     df["is_hr"]       = df["events"].astype("string").str.lower().eq("home_run")
-    df["is_fly_ball"] = df["launch_angle"].between(25, 50, inclusive="both")
+    df["is_fly_ball"] = df["launch_angle"].between(20, 50, inclusive="both")
 
     if "stand" in df.columns and "hc_x" in df.columns:
         df["is_pull"] = df.apply(
@@ -540,7 +652,7 @@ def build_pitcher_features(
     )
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
-    ip_df = df[
+    ip_df     = df[
         df["pitcher"].isin(starter_ids) &
         df["events"].astype("string").str.lower().isin(OUT_EVENTS)
     ]
@@ -568,7 +680,6 @@ def build_pitcher_features(
     season["season_barrel_pct_allowed"] = (season["season_barrel_allowed"] / season["season_bbe_allowed"].replace(0, np.nan) * 100).round(2)
     season["hard_hit_pct_allowed"]      = (season["season_hard_hit_allowed"] / season["season_bbe_allowed"].replace(0, np.nan) * 100).round(2)
     season["avg_ev_allowed"]            = season["avg_ev_allowed"].round(2)
-    season["hr9"]                       = (season["season_hr_allowed"] / season["ip"].replace(0, np.nan) * 9).round(2)
 
     if "pitcher_hand" not in season.columns:
         season["pitcher_hand"] = ""
@@ -605,11 +716,11 @@ def build_pitcher_features(
             grp[f"{label}_hr9"]        = (grp[f"{label}_hr"] / grp[f"{label}_ip"].replace(0, np.nan) * 9).round(2)
             season = season.merge(grp, on="pitcher", how="left")
 
-    team_by_pitcher = {v: k for k, v in starters_by_team.items()}
-    season["pitcher_team"]   = season["pitcher"].map(
+    team_by_pitcher  = {v: k for k, v in starters_by_team.items()}
+    season["pitcher_team"]  = season["pitcher"].map(
         lambda x: team_by_pitcher.get(int(x), "") if pd.notna(x) else ""
     )
-    season["opposing_team"]  = season["pitcher_team"].map(
+    season["opposing_team"] = season["pitcher_team"].map(
         lambda t: matchups.get(str(t), "")
     )
 
@@ -673,7 +784,7 @@ def compute_platoon_score(row: pd.Series) -> Tuple[float, str, float]:
 
 
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
-    scores       = []
+    scores        = []
     pitch_penalty = 0.0
 
     for rank in range(1, 4):
@@ -683,9 +794,9 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
 
-        iso     = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
-        hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
-        barrel  = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
+        iso      = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
+        hr_rate  = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
+        barrel   = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
         has_data = (iso > 0 or hr_rate > 0)
 
         if has_data:
@@ -704,10 +815,10 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     score_cols = [
-        "barrel_pct_7d", "hr_per_pa", "hr_per_fb", "iso",
-        "avg_ev_7d", "hard_hit_pct_7d",
+        "barrel_pct_7d", "bbe_7d", "season_barrel_pct", "pa",
+        "hr_per_pa", "hr_per_fb", "iso", "avg_ev_7d", "hard_hit_pct_7d",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
-        "park_hr_factor",
+        "pitcher_bbe_allowed", "park_hr_factor",
         "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "vs_lhp_hr_rate", "vs_rhp_hr_rate",
         "vs_lhp_iso", "vs_rhp_iso",
@@ -719,7 +830,6 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
             combined[col] = 0.0
 
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
-    combined["weather_score"]       = 0.0
 
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"]   = platoon_results.apply(lambda x: x[0])
@@ -731,25 +841,31 @@ def score_matchups(combined: pd.DataFrame) -> pd.DataFrame:
 
     combined["total_penalty"] = combined[["platoon_penalty", "pitch_penalty"]].max(axis=1)
 
-    combined["pitcher_quality_penalty"] = (
-        normalize_inverted(combined["pitcher_barrel_pct"]) * 0.6 +
-        normalize_inverted(combined["pitcher_hard_hit_pct"]) * 0.4
-    )
+    # Cap context scores
+    combined["platoon_score_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
+    combined["pitch_matchup_score_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.5)
 
+    # Absolute scoring with regression to mean
     combined["score"] = (
-        normalize(combined["barrel_pct_7d"])            * WEIGHTS["barrel_pct_7d"] +
-        normalize(combined["hr_per_pa"])                 * WEIGHTS["hr_per_pa"] +
-        normalize(combined["hr_per_fb"])                 * WEIGHTS["hr_per_fb"] +
-        normalize(combined["iso"])                       * WEIGHTS["iso"] +
-        normalize(combined["avg_ev_7d"])                 * WEIGHTS["avg_ev_7d"] +
-        normalize(combined["hard_hit_pct_7d"])           * WEIGHTS["hard_hit_pct_7d"] +
-        normalize(combined["pitcher_barrel_pct"])        * WEIGHTS["pitcher_barrel_pct"] +
-        normalize(combined["pitcher_hr_per_fb"])         * WEIGHTS["pitcher_hr_per_fb"] +
-        normalize(combined["pitcher_hard_hit_pct"])      * WEIGHTS["pitcher_hard_hit_pct"] +
-        normalize(combined["park_hr_factor_norm"])       * WEIGHTS["park_hr_factor"] +
-        normalize(combined["platoon_score"])             * PLATOON_BONUS_WEIGHT +
-        normalize(combined["pitch_matchup_score"])       * PITCH_MATCHUP_WEIGHT -
-        combined["pitcher_quality_penalty"]              * WEIGHTS["pitcher_quality_penalty"] -
+        combined.apply(lambda r: score_barrel_pct_7d(safe_float(r["barrel_pct_7d"]), safe_float(r.get("bbe_7d", 0))), axis=1) +
+        combined.apply(lambda r: score_season_barrel_pct(safe_float(r["season_barrel_pct"]), safe_float(r["pa"])), axis=1) +
+        combined.apply(lambda r: score_iso(safe_float(r["iso"]), safe_float(r["pa"])), axis=1) +
+        combined.apply(lambda r: score_hr_per_pa(safe_float(r["hr_per_pa"]), safe_float(r["pa"])), axis=1) +
+        combined.apply(lambda r: score_hr_per_fb(safe_float(r["hr_per_fb"]), safe_float(r["pa"])), axis=1) +
+        combined.apply(lambda r: score_avg_ev_7d(safe_float(r["avg_ev_7d"]), safe_float(r.get("bbe_7d", 0))), axis=1) +
+        combined.apply(lambda r: score_hard_hit_pct_7d(safe_float(r["hard_hit_pct_7d"]), safe_float(r.get("bbe_7d", 0))), axis=1) +
+        combined["pitcher_barrel_pct"].apply(score_pitcher_barrel_pct) +
+        combined["pitcher_hr_per_fb"].apply(score_pitcher_hr_per_fb) +
+        combined["pitcher_hard_hit_pct"].apply(score_pitcher_hard_hit_pct) +
+        combined["park_hr_factor_norm"].apply(score_park_factor) +
+        combined["platoon_score_capped"]         * PLATOON_BONUS_WEIGHT +
+        combined["pitch_matchup_score_capped"]   * PITCH_MATCHUP_WEIGHT -
+        combined.apply(lambda r: score_pitcher_quality_penalty(
+            safe_float(r.get("pitcher_barrel_pct")),
+            safe_float(r.get("pitcher_hard_hit_pct")),
+            safe_float(r.get("pitcher_hr_per_fb")),
+            safe_float(r.get("pitcher_bbe_allowed")),
+        ), axis=1) -
         combined["total_penalty"]
     )
 
@@ -780,20 +896,14 @@ def assign_confidence(row: pd.Series) -> str:
         points += 1
         batter_points = 1
 
-    if pitcher_bbe >= 80:
-        points += 2
-    elif pitcher_bbe >= 40:
-        points += 1
+    if pitcher_bbe >= 80:   points += 2
+    elif pitcher_bbe >= 40: points += 1
 
-    if not small_sample_park:
-        points += 1
+    if not small_sample_park: points += 1
 
-    if points >= 4 and batter_points >= 1:
-        return "High"
-    elif points >= 2 and batter_points >= 1:
-        return "Medium"
-    else:
-        return "Low"
+    if points >= 4 and batter_points >= 1:   return "High"
+    elif points >= 2 and batter_points >= 1: return "Medium"
+    else:                                     return "Low"
 
 
 def build_park_factors(df: pd.DataFrame) -> pd.DataFrame:
@@ -809,8 +919,8 @@ def build_park_factors(df: pd.DataFrame) -> pd.DataFrame:
     )
     park_stats = park_stats[park_stats["home_team"].notna()].copy()
 
-    league_hr_rate         = park_stats["hr"].sum() / park_stats["pa"].sum()
-    park_stats["hr_rate"]  = park_stats["hr"] / park_stats["pa"].replace(0, np.nan)
+    league_hr_rate        = park_stats["hr"].sum() / park_stats["pa"].sum()
+    park_stats["hr_rate"] = park_stats["hr"] / park_stats["pa"].replace(0, np.nan)
     park_stats["park_hr_factor"] = (park_stats["hr_rate"] / league_hr_rate * 100).round(1)
     park_stats["small_sample"]   = park_stats["pa"] < 50
     park_stats = park_stats.rename(columns={"home_team": "team"})
@@ -826,20 +936,23 @@ def build_scorecard(picks_log: pd.DataFrame) -> pd.DataFrame:
     picks_log["hit_hr_bool"] = picks_log["hit_hr"] == "Yes"
     picks_log["rank"]        = pd.to_numeric(picks_log["rank"], errors="coerce")
     picks_log["date"]        = pd.to_datetime(picks_log["date"])
+    picks_log["hr_score"]    = pd.to_numeric(picks_log["hr_score"], errors="coerce")
 
     rows = []
 
     def add_row(category, subcategory, sub_df):
         if sub_df.empty:
             return
-        total = len(sub_df)
-        hits  = sub_df["hit_hr_bool"].sum()
+        total     = len(sub_df)
+        hits      = sub_df["hit_hr_bool"].sum()
+        avg_score = round(sub_df["hr_score"].mean(), 2) if not sub_df["hr_score"].isna().all() else 0.0
         rows.append({
             "category":     category,
             "subcategory":  subcategory,
             "total_picks":  total,
             "hr_count":     int(hits),
             "hit_rate_pct": round(hits / total * 100, 1),
+            "avg_score":    avg_score,
         })
 
     add_row("Overall", "All Picks", picks_log)
@@ -852,6 +965,18 @@ def build_scorecard(picks_log: pd.DataFrame) -> pd.DataFrame:
 
     for section in picks_log["section"].dropna().unique():
         add_row("By Section", section, picks_log[picks_log["section"] == section])
+
+    # Score tiers
+    for label, sub in [
+        ("Score 11+",    picks_log[picks_log["hr_score"] >= 11]),
+        ("Score 10+",    picks_log[picks_log["hr_score"] >= 10]),
+        ("Score 9+",     picks_log[picks_log["hr_score"] >= 9]),
+        ("Score 8+",     picks_log[picks_log["hr_score"] >= 8]),
+        ("Score 7+",     picks_log[picks_log["hr_score"] >= 7]),
+        ("Score 6+",     picks_log[picks_log["hr_score"] >= 6]),
+        ("Score Under 6",picks_log[picks_log["hr_score"] <  6]),
+    ]:
+        add_row("By Score Tier", label, sub)
 
     max_date = picks_log["date"].max()
     add_row("Rolling", "Last 7 Days",  picks_log[picks_log["date"] >= max_date - timedelta(days=7)])
@@ -944,7 +1069,6 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         )
         combined["park_hr_factor"] = combined["park_hr_factor"].fillna(100.0)
         combined["small_sample"]   = combined["small_sample"].fillna(False)
-        combined["hr_weather_boost"] = 0.0
 
         if "batting_avg" in combined.columns:
             combined["batting_avg"] = combined["batting_avg"].apply(safe_float)
@@ -962,7 +1086,7 @@ def run_backtest(full_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
         combined_sorted = combined.sort_values("score", ascending=False)
         combined_sorted["team_count"] = combined_sorted.groupby("batter_team").cumcount()
-        top10 = combined_sorted[combined_sorted["team_count"] < 2].head(10).copy()
+        top10 = combined_sorted[combined_sorted["team_count"] < MAX_PER_TEAM].head(10).copy()
         top10 = top10.drop(columns=["team_count"])
         top10["rank"] = range(1, len(top10) + 1)
 
@@ -1039,12 +1163,6 @@ def merge_with_existing_picks_log(
     sheet_id: str,
     new_picks: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Merge backtest picks with existing Picks_Log.
-    - Keeps all existing rows that have odds/bet_placed filled in
-    - Only adds backtest rows for dates not already in the log
-    - Preserves manually entered odds and bet_placed on any matching rows
-    """
     sh = gc.open_by_key(sheet_id)
 
     try:
@@ -1057,24 +1175,15 @@ def merge_with_existing_picks_log(
     if existing.empty:
         return new_picks
 
-    # Dates already in the log
     existing_dates = set(existing["date"].astype(str).str.strip().unique())
     new_dates      = set(new_picks["date"].astype(str).str.strip().unique())
 
-    # Backtest rows for dates NOT already in existing log
-    truly_new = new_picks[~new_picks["date"].isin(existing_dates)].copy()
-
-    # For dates already in the log, preserve existing rows as-is
-    # (they may have odds/bet_placed filled in)
-    already_logged = existing[existing["date"].isin(new_dates)].copy()
-
-    # Rows in existing that are from before the backtest window — keep as-is
+    truly_new        = new_picks[~new_picks["date"].isin(existing_dates)].copy()
+    already_logged   = existing[existing["date"].isin(new_dates)].copy()
     outside_backtest = existing[~existing["date"].isin(new_dates)].copy()
 
-    # Ensure all dataframes have the same columns
     all_cols = list(dict.fromkeys(
-        list(new_picks.columns) +
-        list(existing.columns)
+        list(new_picks.columns) + list(existing.columns)
     ))
     for col in all_cols:
         for df_ in [truly_new, already_logged, outside_backtest]:
@@ -1131,15 +1240,14 @@ def main() -> None:
     print("\nScorecard:")
     print(scorecard.to_string(index=False))
 
-    # Merge with existing log to preserve manually entered odds/bet_placed
     print("\nMerging with existing Picks_Log...")
     merged_log = merge_with_existing_picks_log(gc, sheet_id, picks_log)
 
     write_sheet(gc, sheet_id, "Picks_Log", merged_log, rows=5000, cols=20)
     print("Written to Picks_Log")
 
-    write_sheet(gc, sheet_id, "Scorecard", scorecard, rows=100, cols=10)
-    print("Written to Scorecard")
+    write_sheet(gc, sheet_id, "Backtest_Scorecard", scorecard, rows=100, cols=10)
+    print("Written to Backtest_Scorecard")
 
 
 if __name__ == "__main__":
