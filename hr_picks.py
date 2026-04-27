@@ -42,7 +42,7 @@ MIN_BATTING_AVG      = 0.200
 MAX_PER_TEAM         = 2
 MAX_CHALK_PICKS      = 3
 CHALK_ODDS_THRESHOLD = 310
-MIN_START_RATE       = 0.35
+MIN_START_RATE       = 0.20
 
 COLOR_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
