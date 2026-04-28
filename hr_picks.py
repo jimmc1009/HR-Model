@@ -865,11 +865,25 @@ def apply_odds_diversity_cap(
     sorted_df: pd.DataFrame,
     odds_lookup: dict,
 ) -> pd.DataFrame:
+    """
+    Apply chalk cap and deprioritize players with no odds data.
+    Pass 1 — players WITH odds data, chalk cap enforced
+    Pass 2 — players WITHOUT odds data fill remaining slots
+    """
     selected    = []
     chalk_count = 0
     team_counts = {}
+    no_odds_candidates = []
 
+    # Pass 1 — players with odds data
     for _, row in sorted_df.iterrows():
+        player_norm    = normalize_name(str(row.get("player_name", "")))
+        consensus_odds = odds_lookup.get(player_norm, None)
+
+        if consensus_odds is None:
+            no_odds_candidates.append(row)
+            continue
+
         if len(selected) >= 10:
             break
 
@@ -878,10 +892,7 @@ def apply_odds_diversity_cap(
         if team_count >= MAX_PER_TEAM:
             continue
 
-        player_norm    = normalize_name(str(row.get("player_name", "")))
-        consensus_odds = odds_lookup.get(player_norm, None)
-        is_chalk       = consensus_odds is not None and consensus_odds <= CHALK_ODDS_THRESHOLD
-
+        is_chalk = consensus_odds <= CHALK_ODDS_THRESHOLD
         if is_chalk and chalk_count >= MAX_CHALK_PICKS:
             continue
 
@@ -889,6 +900,24 @@ def apply_odds_diversity_cap(
         team_counts[team] = team_count + 1
         if is_chalk:
             chalk_count += 1
+
+    # Pass 2 — fill remaining slots with no-odds players
+    if len(selected) < 10:
+        for row in no_odds_candidates:
+            if len(selected) >= 10:
+                break
+
+            team       = str(row.get("batter_team", ""))
+            team_count = team_counts.get(team, 0)
+            if team_count >= MAX_PER_TEAM:
+                continue
+
+            selected.append(row)
+            team_counts[team] = team_count + 1
+
+        no_odds_used = len(selected) - sum(1 for r in selected if odds_lookup.get(normalize_name(str(r.get("player_name", "")))) is not None)
+        if no_odds_used > 0:
+            print(f"  {no_odds_used} picks filled from no-odds candidates (fallback)")
 
     if not selected:
         return pd.DataFrame()
