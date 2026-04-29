@@ -1,8 +1,9 @@
 import os
 import json
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import Dict, Set
 import unicodedata
+import pytz
 
 import pandas as pd
 import numpy as np
@@ -429,7 +430,6 @@ def compute_platoon_score(row: pd.Series) -> tuple:
 
     if has_iso_data:
         if iso_gap > 0:
-            # Continuous penalty — scales linearly with gap size
             penalty = round(min(iso_gap * 15.0, 4.5), 3)
             if iso_gap >= 0.150:
                 parts.append(f"🚨 Severe platoon weakness ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
@@ -438,13 +438,11 @@ def compute_platoon_score(row: pd.Series) -> tuple:
             elif iso_gap >= 0.060:
                 parts.append(f"⚠️ Moderate platoon weakness ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand")
         elif iso_gap < 0:
-            # Continuous bonus — scales linearly with advantage size
             score += round(min(abs(iso_gap) * 10.0, 3.0), 3)
             parts.append(f"✅ Platoon advantage ({matchup_label}) — ISO {iso_vs_this:.3f} vs this hand vs {iso_vs_opp:.3f} vs opposite")
         else:
             parts.append(f"↔️ Neutral platoon ({matchup_label})")
 
-    # Start rate penalty
     if start_rate < 0.50:
         start_penalty = round((0.50 - start_rate) * 4.0, 3)
         penalty      += start_penalty
@@ -571,7 +569,6 @@ def prepare_combined(
 
     # ── Handedness starts filter ───────────────────────────────────────────
     if "pitcher_hand" in pitchers.columns and "lhp_start_rate" in batters.columns:
-        # Merge pitcher hand temporarily to apply filter
         temp_merge = batters.merge(
             pitchers[["batter_team", "pitcher_hand"]].drop_duplicates(),
             on="batter_team", how="left"
@@ -870,9 +867,9 @@ def apply_odds_diversity_cap(
     Pass 1 — players WITH odds data, chalk cap enforced
     Pass 2 — players WITHOUT odds data fill remaining slots
     """
-    selected    = []
-    chalk_count = 0
-    team_counts = {}
+    selected           = []
+    chalk_count        = 0
+    team_counts        = {}
     no_odds_candidates = []
 
     # Pass 1 — players with odds data
@@ -915,7 +912,10 @@ def apply_odds_diversity_cap(
             selected.append(row)
             team_counts[team] = team_count + 1
 
-        no_odds_used = len(selected) - sum(1 for r in selected if odds_lookup.get(normalize_name(str(r.get("player_name", "")))) is not None)
+        no_odds_used = len(selected) - sum(
+            1 for r in selected
+            if odds_lookup.get(normalize_name(str(r.get("player_name", "")))) is not None
+        )
         if no_odds_used > 0:
             print(f"  {no_odds_used} picks filled from no-odds candidates (fallback)")
 
@@ -1041,86 +1041,58 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
         if excluded > 0:
             print(f"EV section: excluded {excluded} players already in top 10")
 
-    if "avg_la_7d" in combined.columns:
-        combined["la_for_filter"] = combined["avg_la_7d"].apply(safe_float)
-    else:
-        combined["la_for_filter"] = combined["avg_launch_angle"].apply(safe_float)
+    # ── EV + LA filter with HR pedigree requirement ────────────────────────
+    combined["la_recent"] = combined.get("avg_la_7d", combined.get("avg_launch_angle", pd.Series(0, index=combined.index))).apply(safe_float)
+    combined["ev_recent"] = combined["avg_ev_7d"].apply(safe_float)
 
     ev_df = combined[
-        (combined["avg_ev_7d"] > 92) &
-        (combined["la_for_filter"] < 20) &
-        (combined["la_for_filter"] > -90)
+        (combined["ev_recent"] >= 92) &           # raw power confirmed
+        (combined["la_recent"] < 18) &            # not elevating recently
+        (combined["la_recent"] > -45) &           # not hitting into the ground every AB
+        (combined["season_barrel_pct"] >= 6) &    # real HR hitter pedigree
+        (combined["iso"] >= 0.150)                # power in the profile
     ].copy()
 
     if ev_df.empty:
-        print("No high EV / low launch angle candidates found.")
+        print("No EV / launch angle upside candidates found.")
         return pd.DataFrame()
 
-    ev_df["hard_hit_season_avg"] = ev_df.apply(
-        lambda r: safe_float(r.get("season_hard_hit", 0)) / max(safe_float(r.get("season_bbe", 1)), 1) * 100,
-        axis=1,
-    )
-    ev_df["hard_hit_trend"] = ev_df["hard_hit_pct_7d"] - ev_df["hard_hit_season_avg"]
-    ev_df["la_season"]      = ev_df["avg_launch_angle"].apply(safe_float)
-    ev_df["la_7d"]          = ev_df["avg_la_7d"].apply(safe_float)
-    ev_df["la_trend"]       = ev_df["la_7d"] - ev_df["la_season"]
-    ev_df["la_hr_gap"]      = (25 - ev_df["la_7d"]).abs()
-    ev_df["ev_momentum"]    = ev_df["momentum_score"].apply(safe_float)
+    # Sort by main HR score — same scale as main picks
+    ev_df = ev_df.sort_values("score", ascending=False)
+    ev_df["team_count"] = ev_df.groupby("batter_team").cumcount()
+    ev_df = ev_df[ev_df["team_count"] < MAX_PER_TEAM].head(5).copy()
+    ev_df = ev_df.drop(columns=["team_count"])
+    ev_df["ev_rank"] = range(1, len(ev_df) + 1)
 
-    ev_df["ev_score"] = (
-        normalize(ev_df["avg_ev_7d"])                    * 2.5 +
-        normalize(ev_df["hard_hit_pct_7d"])              * 1.5 +
-        normalize(ev_df["hard_hit_trend"])               * 0.8 +
-        normalize(ev_df["la_trend"])                     * 0.7 +
-        normalize(-ev_df["la_hr_gap"])                   * 0.6 +
-        ev_df["ev_momentum"]                             * 0.8 +
-        ev_df["bvp_score_capped"]                        * 0.7 +
-        normalize(ev_df["pitcher_barrel_pct"])           * 1.5 +
-        normalize(ev_df["pitcher_hr_per_fb"])            * 1.2 +
-        normalize(ev_df["pitch_matchup_score_capped"])   * 1.0 +
-        normalize(ev_df["platoon_score_capped"])         * 0.8 +
-        normalize(ev_df["park_hr_factor_norm"])          * 0.5 +
-        ev_df["pull_park_score_capped"]                  * 0.4 +
-        ev_df["weather_score"]                           * 0.3 -
-        ev_df.apply(lambda r: score_pitcher_quality_penalty(
-            safe_float(r.get("pitcher_barrel_pct")),
-            safe_float(r.get("pitcher_hard_hit_pct")),
-            safe_float(r.get("pitcher_hr_per_fb")),
-            safe_float(r.get("pitcher_bbe_allowed")),
-        ), axis=1) -
-        ev_df["total_penalty"]
-    ).round(3)
-
-    ev_sorted = ev_df.sort_values("ev_score", ascending=False)
-    ev_sorted["team_count"] = ev_sorted.groupby("batter_team").cumcount()
-    ev_capped = ev_sorted[ev_sorted["team_count"] < MAX_PER_TEAM].head(5).copy()
-    ev_capped = ev_capped.drop(columns=["team_count"])
-    top5 = ev_capped
-    top5["ev_rank"] = range(1, len(top5) + 1)
+    print(f"Built {len(ev_df)} EV subsection picks")
 
     def build_ev_reason(row) -> str:
         reasons = []
-        ev    = safe_float(row.get("avg_ev_7d"))
-        la_7d = safe_float(row.get("avg_la_7d"))
-        la_s  = safe_float(row.get("avg_launch_angle"))
-        la    = la_7d if la_7d != 0.0 else la_s
-        reasons.append(f"💥 Avg EV {ev:.1f} mph, launch angle {la:.1f}° (7d)")
 
-        la_trend = safe_float(row.get("la_trend"))
-        if la_trend >= 3.0:
-            reasons.append(f"📐 Launch angle trending up {la_s:.1f}°→{la_7d:.1f}°")
-        elif la_7d >= 15 and la_7d < 20:
-            reasons.append(f"📐 Launch angle {la_7d:.1f}° — one adjustment from HR zone")
+        ev      = safe_float(row.get("avg_ev_7d"))
+        la_7d   = safe_float(row.get("avg_la_7d"))
+        la_s    = safe_float(row.get("avg_launch_angle"))
+        reasons.append(f"💥 Avg EV {ev:.1f} mph — raw power confirmed")
+        reasons.append(f"📐 LA {la_7d:.1f}° recently vs {la_s:.1f}° season avg — elevation missing")
 
-        hh       = safe_float(row.get("hard_hit_pct_7d"))
-        hh_trend = safe_float(row.get("hard_hit_trend"))
-        if hh >= 50:
-            reasons.append(f"🔨 Elite hard hit rate {hh:.1f}% (7d)")
-        elif hh >= 40:
-            reasons.append(f"🔨 {hh:.1f}% hard hit rate (7d)")
-        if hh_trend >= 10:
-            hh_season = safe_float(row.get("hard_hit_season_avg"))
-            reasons.append(f"📈 Hard hit rate heating up ({hh_season:.1f}% → {hh:.1f}% last 7d)")
+        iso = safe_float(row.get("iso"))
+        if iso >= 0.250:
+            reasons.append(f"⚡ Elite ISO {iso:.3f} — legitimate HR hitter")
+        elif iso >= 0.200:
+            reasons.append(f"⚡ Strong ISO {iso:.3f}")
+
+        barrel_s = safe_float(row.get("season_barrel_pct"))
+        barrel_7 = safe_float(row.get("barrel_pct_7d"))
+        if barrel_s >= 12:
+            reasons.append(f"💣 {barrel_s:.1f}% season barrel% — elite pedigree")
+        elif barrel_s >= 8:
+            reasons.append(f"💣 {barrel_s:.1f}% season barrel%")
+        if barrel_7 < barrel_s - 5:
+            reasons.append(f"📉 Recent barrel% ({barrel_7:.1f}%) below season avg ({barrel_s:.1f}%) — due for correction")
+
+        hr_pa = safe_float(row.get("hr_per_pa"))
+        if hr_pa >= 4:
+            reasons.append(f"💪 {hr_pa:.1f}% HR/PA season — when he elevates it leaves")
 
         momentum_desc = str(row.get("momentum_desc", ""))
         if momentum_desc:
@@ -1132,7 +1104,7 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
 
         p_barrel = safe_float(row.get("pitcher_barrel_pct"))
         if p_barrel >= 8:
-            reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
+            reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels — hittable")
 
         platoon_desc = str(row.get("platoon_desc", ""))
         if platoon_desc:
@@ -1142,14 +1114,15 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
         if pull_desc:
             reasons.append(pull_desc)
 
-        pitch_desc = str(row.get("pitch_matchup_desc", ""))
-        if pitch_desc:
-            reasons.append(f"🎳 {pitch_desc}")
+        wind_ctx = str(row.get("wind_context", ""))
+        boost    = safe_float(row.get("hr_weather_boost"))
+        if boost >= 1.0:
+            reasons.append(f"🌬️ {wind_ctx}")
 
-        reasons.append("⬆️ Launch angle correction = HR upside")
+        reasons.append("⬆️ One elevated swing away from a HR")
         return " | ".join(reasons)
 
-    top5["why"] = top5.apply(build_ev_reason, axis=1)
+    ev_df["why"] = ev_df.apply(build_ev_reason, axis=1)
 
     output_cols = {
         "ev_rank":                    "Rank",
@@ -1160,7 +1133,7 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
         "pitcher_hand":               "Throws",
         "opp_pitcher_team":           "Pitcher Team",
         "park_name":                  "Park",
-        "ev_score":                   "EV Score",
+        "score":                      "HR Score",
         "confidence":                 "Confidence",
         "why":                        "Why They're Here",
         "batting_avg":                "Batting Avg",
@@ -1169,40 +1142,45 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str]) -> pd.D
         "avg_ev_10d":                 "Avg EV (10d)",
         "avg_la_7d":                  "Avg Launch Angle (7d)",
         "avg_launch_angle":           "Avg Launch Angle (Season)",
-        "la_trend":                   "LA Trend (7d vs Season)",
         "hard_hit_pct_7d":            "Hard Hit% (7d)",
-        "hard_hit_season_avg":        "Hard Hit% (Season)",
-        "hard_hit_trend":             "Hard Hit% Trend",
+        "barrel_pct_7d":              "Barrel% (7d)",
+        "season_barrel_pct":          "Barrel% (Season)",
         "momentum_desc":              "Momentum",
+        "hr_per_pa":                  "HR/PA%",
+        "hr_per_fb":                  "HR/FB%",
+        "iso":                        "ISO",
+        "vs_lhp_iso":                 "ISO vs LHP",
+        "vs_rhp_iso":                 "ISO vs RHP",
+        "pull_rate":                  "Pull Rate%",
+        "pull_park_desc":             "Pull Park Matchup",
         "bvp_pa":                     "BvP PA",
         "bvp_hr":                     "BvP HR",
         "bvp_iso":                    "BvP ISO",
         "bvp_desc":                   "BvP Notes",
-        "hr_per_fb":                  "HR/FB%",
-        "pull_rate":                  "Pull Rate%",
-        "pull_park_desc":             "Pull Park Matchup",
-        "vs_lhp_iso":                 "ISO vs LHP",
-        "vs_rhp_iso":                 "ISO vs RHP",
         "platoon_desc":               "Platoon Matchup",
+        "lhp_start_rate":             "LHP Start Rate",
+        "rhp_start_rate":             "RHP Start Rate",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":          "Pitcher HR/FB%",
         "pitcher_vs_lhh_barrel_pct":  "Pitcher Barrel% vs LHH",
         "pitcher_vs_rhh_barrel_pct":  "Pitcher Barrel% vs RHH",
         "pitcher_vs_lhh_hr9":         "Pitcher HR/9 vs LHH",
         "pitcher_vs_rhh_hr9":         "Pitcher HR/9 vs RHH",
+        "top_pitch_1":                "Top Pitch 1",
+        "top_pitch_1_pct":            "Top Pitch 1 %",
+        "top_pitch_2":                "Top Pitch 2",
+        "top_pitch_2_pct":            "Top Pitch 2 %",
+        "top_pitch_3":                "Top Pitch 3",
+        "top_pitch_3_pct":            "Top Pitch 3 %",
         "pitch_matchup_desc":         "Pitch Matchup",
         "park_hr_factor":             "Park HR Factor",
-        "lf_dist":                    "LF Distance",
-        "lf_height":                  "LF Wall Height",
-        "rf_dist":                    "RF Distance",
-        "rf_height":                  "RF Wall Height",
         "hr_weather_boost":           "Weather Boost",
         "wind_context":               "Wind",
         "temp_f":                     "Temp (°F)",
     }
 
-    available = {k: v for k, v in output_cols.items() if k in top5.columns}
-    return top5[list(available.keys())].rename(columns=available)
+    available = {k: v for k, v in output_cols.items() if k in ev_df.columns}
+    return ev_df[list(available.keys())].rename(columns=available)
 
 
 def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
@@ -1299,7 +1277,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
     def build_log_rows(df: pd.DataFrame, section: str) -> None:
         if df.empty:
             return
-        score_col = "HR Score" if section == "Main" else "EV Score"
+        score_col = "HR Score" if section == "Main" else "HR Score"
         for _, row in df.iterrows():
             new_rows.append({
                 "date":        today_str,
@@ -1443,12 +1421,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
     for label, sub in [
-        ("   13+",    scored[scored["hr_score"] >= 13]),
-        ("   12+",    scored[scored["hr_score"] >= 12]),
-        ("   11+",    scored[scored["hr_score"] >= 11]),
-        ("   10+",    scored[scored["hr_score"] >= 10]),
-        ("   9+",     scored[scored["hr_score"] >= 9]),
-        ("   Under 9",scored[scored["hr_score"] <  9]),
+        ("   13+",     scored[scored["hr_score"] >= 13]),
+        ("   12+",     scored[scored["hr_score"] >= 12]),
+        ("   11+",     scored[scored["hr_score"] >= 11]),
+        ("   10+",     scored[scored["hr_score"] >= 10]),
+        ("   9+",      scored[scored["hr_score"] >= 9]),
+        ("   Under 9", scored[scored["hr_score"] <  9]),
     ]:
         if not sub.empty: add_score(label, sub)
 
@@ -1609,6 +1587,47 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     print("Scorecard updated.")
 
 
+def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
+    et     = pytz.timezone("America/New_York")
+    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+
+    sh = gc.open_by_key(sheet_id)
+    try:
+        ws = sh.worksheet("Top_HR_Picks")
+    except gspread.WorksheetNotFound:
+        return
+
+    ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
+
+    ws_id = ws.id
+    sh.batch_update({"requests": [{
+        "repeatCell": {
+            "range": {
+                "sheetId": ws_id,
+                "startRowIndex": 0,
+                "endRowIndex": 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": 10,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
+                    "textFormat": {
+                        "foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600},
+                        "bold": False,
+                        "fontFamily": "Roboto",
+                        "fontSize": 10,
+                    },
+                    "verticalAlignment": "MIDDLE",
+                    "horizontalAlignment": "LEFT",
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment)",
+        }
+    }]})
+    print(f"Last run timestamp written: {now_et}")
+
+
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df = df.replace([np.inf, -np.inf], np.nan)
@@ -1686,7 +1705,7 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, main_row_count: int, e
             reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_col_header_row + 1, "endRowIndex": ev_col_header_row + 1 + ev_data_row_count, "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": font_size, "foregroundColor": COLOR_ORANGE}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
 
     reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}}, "fields": "gridProperties.frozenRowCount"}})
-    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 42}, "fields": "pixelSize"}})
+    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 30}, "fields": "pixelSize"}})
     reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": total_rows}, "properties": {"pixelSize": 58}, "fields": "pixelSize"}})
 
     col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380, 75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85, 85, 100, 100, 75, 75, 75, 220, 60, 60, 70, 200, 220, 120, 120, 130, 130, 90, 90, 90, 75, 90, 75, 90, 75, 240, 75, 65, 65, 65, 65]
@@ -1761,6 +1780,7 @@ def main() -> None:
     resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks, ev_section)
     update_scorecard(gc, sheet_id)
+    write_last_run_timestamp(gc, sheet_id)
 
 
 if __name__ == "__main__":
