@@ -1620,9 +1620,10 @@ def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
                     },
                     "verticalAlignment": "MIDDLE",
                     "horizontalAlignment": "LEFT",
+                    "wrapStrategy": "OVERFLOW_CELL",
                 }
             },
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment)",
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
         }
     }]})
     print(f"Last run timestamp written: {now_et}")
