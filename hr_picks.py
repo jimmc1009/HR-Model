@@ -1334,7 +1334,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         print("Picks_Log is empty — skipping scorecard update.")
         return
 
-    scored = picks_log[picks_log["hit_hr"].isin(["Yes", "No"])].copy()
+    scored = picks_log[(picks_log["hit_hr"].isin(["Yes", "No"])) & (picks_log["section"] == "Main")].copy()
     if scored.empty:
         print("No scored picks yet — skipping scorecard update.")
         return
