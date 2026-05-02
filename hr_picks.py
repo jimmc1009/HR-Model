@@ -1352,7 +1352,14 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     if not bet_picks.empty:
         bet_picks["odds_num"]      = bet_picks["odds"].apply(lambda x: safe_float(str(x).replace("+", "").strip(), 0))
         bet_picks["profit_if_win"] = bet_picks["odds_num"].apply(american_odds_to_profit)
-        bet_picks["unit_result"]   = bet_picks.apply(lambda r: r["profit_if_win"] if r["hit_hr_bool"] else -1.0, axis=1)
+        bet_picks["bet_size"] = bet_picks["bet_placed"].apply(
+    lambda x: safe_float(str(x).replace("$", "").strip(), 1.0)
+    if str(x).strip().lower() not in ("", "yes", "no") else 1.0
+)
+    bet_picks["unit_result"] = bet_picks.apply(
+    lambda r: (r["profit_if_win"] * r["bet_size"]) if r["hit_hr_bool"] else -r["bet_size"],
+    axis=1
+)
 
     perf_rows  = []
     roi_rows   = []
