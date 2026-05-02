@@ -9,6 +9,21 @@ on:
         default: "full"
         type: choice
         options:
+          - full
+          - full_hr
+          - full_hrrbi
+          - full_ks
+          - main
+          - pitcher_statcast
+          - park_factors
+          - weather
+          - odds
+          - hr_picks
+          - backtest
+          - hrrbi_statcast
+          - hrrbi_picks
+          - ks_statcast
+          - ks_picks
 
 jobs:
   test:
@@ -29,7 +44,6 @@ jobs:
         run: |
           pip install pybaseball pandas numpy gspread oauth2client pytz requests
 
-      # ── Shared prerequisites (always run for picks scripts) ───────────────
       - name: Run main.py
         if: >
           inputs.script == 'full' ||
@@ -94,7 +108,6 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python odds.py
 
-      # ── HR model ──────────────────────────────────────────────────────────
       - name: Run hr_picks.py
         if: >
           inputs.script == 'full' ||
@@ -102,7 +115,7 @@ jobs:
           inputs.script == 'hr_picks'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks.py
 
       - name: Run backtest.py
@@ -112,7 +125,6 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python backtest.py
 
-      # ── HRRBI model ───────────────────────────────────────────────────────
       - name: Run hrrbi_statcast.py
         if: >
           inputs.script == 'full' ||
@@ -134,7 +146,6 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hrrbi_picks.py
 
-      # ── KS model ──────────────────────────────────────────────────────────
       - name: Run ks_statcast.py
         if: >
           inputs.script == 'full' ||
