@@ -1,25 +1,86 @@
-name: Update MLB HR Model
+name: MLB Model Pipeline
+
 on:
   workflow_dispatch:
+
 jobs:
-  update:
+  run-pipeline:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - name: Run full pipeline
+
+      - name: Install dependencies
         run: |
-          python main.py
-          python pitcher_statcast.py
-          python park_factors.py
-          python weather.py
-          python odds.py
-          python hr_picks.py
+          pip install pybaseball pandas numpy gspread oauth2client pytz requests
+
+      # ── Shared data pulls (all three models depend on these) ──────────────
+      - name: Run main.py (rosters, lineups, handedness)
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python main.py
+
+      - name: Run pitcher_statcast.py (pitcher HR stats)
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python pitcher_statcast.py
+
+      - name: Run park_factors.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python park_factors.py
+
+      - name: Run weather.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python weather.py
+
+      - name: Run odds.py (HR props)
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python odds.py
+
+      # ── HR Model ──────────────────────────────────────────────────────────
+      - name: Run hr_picks.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hr_picks.py
+
+      # ── H+R+RBI Model ─────────────────────────────────────────────────────
+      - name: Run hrrbi_statcast.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hrrbi_statcast.py
+
+      - name: Run hrrbi_picks.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hrrbi_picks.py
+
+      # ── Pitcher Strikeout Model ───────────────────────────────────────────
+      - name: Run ks_statcast.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_statcast.py
+
+      - name: Run ks_picks.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_picks.py
