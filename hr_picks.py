@@ -1344,15 +1344,36 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     scored["date"]        = pd.to_datetime(scored["date"], errors="coerce")
     scored["hr_score"]    = pd.to_numeric(scored["hr_score"], errors="coerce")
 
+    def is_bet_placed(x) -> bool:
+        s = str(x).replace("$", "").strip().lower()
+        if s in ("", "no", "nan"):
+            return False
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return s == "yes"
+
     bet_picks = scored[
-        (scored.get("bet_placed", pd.Series("", index=scored.index)).astype(str).str.strip().str.lower() == "yes") &
+        scored.get("bet_placed", pd.Series("", index=scored.index)).apply(is_bet_placed) &
         (scored.get("odds", pd.Series("", index=scored.index)).astype(str).str.strip() != "")
     ].copy()
 
     if not bet_picks.empty:
         bet_picks["odds_num"]      = bet_picks["odds"].apply(lambda x: safe_float(str(x).replace("+", "").strip(), 0))
         bet_picks["profit_if_win"] = bet_picks["odds_num"].apply(american_odds_to_profit)
-        bet_picks["unit_result"]   = bet_picks.apply(lambda r: r["profit_if_win"] if r["hit_hr_bool"] else -1.0, axis=1)
+
+        def parse_bet_size(x) -> float:
+            s = str(x).replace("$", "").strip().lower()
+            if s in ("", "yes", "no"):
+                return 1.0
+            return safe_float(s, 1.0)
+
+        bet_picks["bet_size"]    = bet_picks["bet_placed"].apply(parse_bet_size)
+        bet_picks["unit_result"] = bet_picks.apply(
+            lambda r: (r["profit_if_win"] * r["bet_size"]) if r["hit_hr_bool"] else -r["bet_size"],
+            axis=1
+        )
 
     perf_rows  = []
     roi_rows   = []
