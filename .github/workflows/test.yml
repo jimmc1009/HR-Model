@@ -151,7 +151,7 @@ jobs:
           inputs.script == 'hrrbi_picks'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GOOGLE_SHEET_ID: "1dev_sheet_id_placeholder"
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hrrbi_picks.py
 
       # ── KS model ──────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ jobs:
           inputs.script == 'ks_picks'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GOOGLE_SHEET_ID: "1dev_sheet_id_placeholder"
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_statcast.py
 
       - name: Run ks_picks.py
@@ -173,5 +173,5 @@ jobs:
           inputs.script == 'ks_picks'
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GOOGLE_SHEET_ID: "1dev_sheet_id_placeholder"
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_picks.py
