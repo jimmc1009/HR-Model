@@ -9,26 +9,6 @@ on:
         default: "full"
         type: choice
         options:
-          # ── Full pipelines ──────────────────────────────────────
-          - full                    # All three models end-to-end
-          - full_hr                 # HR model only (main → pitcher_statcast → park → weather → odds → hr_picks)
-          - full_hrrbi              # HRRBI model only (hrrbi_statcast → hrrbi_picks)
-          - full_ks                 # KS model only (ks_statcast → ks_picks)
-          # ── Shared data scripts ────────────────────────────────
-          - main
-          - pitcher_statcast
-          - park_factors
-          - weather
-          - odds
-          # ── HR model ───────────────────────────────────────────
-          - hr_picks
-          - backtest
-          # ── HRRBI model ────────────────────────────────────────
-          - hrrbi_statcast
-          - hrrbi_picks
-          # ── KS model ───────────────────────────────────────────
-          - ks_statcast
-          - ks_picks
 
 jobs:
   test:
