@@ -333,7 +333,12 @@ def write_dataframe_to_sheet(
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=60)
 
-    df = df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
+    df = df.copy()
+    df = df.replace([np.inf, -np.inf], np.nan)
+    for col in df.columns:
+    if hasattr(df[col], 'dtype') and hasattr(df[col].dtype, 'numpy_dtype'):
+        df[col] = df[col].astype(object)
+    df = df.fillna("")
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
     ws.update(values)
 
