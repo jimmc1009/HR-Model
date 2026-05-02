@@ -174,7 +174,11 @@ def build_hrrbi_statcast(sheet_id: str):
     except gspread.exceptions.WorksheetNotFound:
         out_ws = wb.add_worksheet(title="HRRBI_Statcast", rows=600, cols=50)
 
-    df = df.fillna("").replace([np.inf, -np.inf], "")
+    # Convert nullable integer/boolean columns to standard types before fillna
+    for col in df.columns:
+        if hasattr(df[col], "dtype") and str(df[col].dtype) in ("Int64","Int32","Int16","Int8","boolean"):
+            df[col] = df[col].astype(object)
+    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
     headers = df.columns.tolist()
     rows    = df.values.tolist()
     out_ws.update([headers] + rows)
