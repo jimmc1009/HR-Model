@@ -1,168 +1,54 @@
-name: MLB Model — Test Runner
-
+name: Test HR Model
 on:
   workflow_dispatch:
     inputs:
-      script:
-        description: "Script to run"
-        required: true
-        default: "full"
+      mode:
+        description: 'Run mode: full pipeline or single script'
+        required: false
+        default: 'full'
         type: choice
         options:
           - full
-          - full_hr
-          - full_hrrbi
-          - full_ks
-          - main
-          - pitcher_statcast
-          - park_factors
-          - weather
-          - odds
-          - hr_picks
-          - backtest
-          - hrrbi_statcast
-          - hrrbi_picks
-          - ks_statcast
-          - ks_picks
-
+          - main.py
+          - pitcher_statcast.py
+          - park_factors.py
+          - weather.py
+          - odds.py
+          - hrrbi_statcast.py
+          - ks_statcast.py
+          - hr_picks.py
+          - hrrbi_picks.py
+          - ks_picks.py
+          - backtest.py
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
     steps:
-      - name: Checkout repo (dev branch)
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v5
         with:
           ref: dev
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
+      - run: pip install -r requirements.txt
+      - name: Run full pipeline
+        if: github.event.inputs.mode == 'full'
         run: |
-          pip install pybaseball pandas numpy gspread oauth2client pytz requests
-
-      - name: Run main.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hr' ||
-          inputs.script == 'full_hrrbi' ||
-          inputs.script == 'full_ks' ||
-          inputs.script == 'main' ||
-          inputs.script == 'hr_picks' ||
-          inputs.script == 'hrrbi_picks' ||
-          inputs.script == 'ks_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python main.py
-
-      - name: Run pitcher_statcast.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hr' ||
-          inputs.script == 'pitcher_statcast' ||
-          inputs.script == 'hr_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python pitcher_statcast.py
-
-      - name: Run park_factors.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hr' ||
-          inputs.script == 'full_hrrbi' ||
-          inputs.script == 'full_ks' ||
-          inputs.script == 'park_factors' ||
-          inputs.script == 'hr_picks' ||
-          inputs.script == 'hrrbi_picks' ||
-          inputs.script == 'ks_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python park_factors.py
-
-      - name: Run weather.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hr' ||
-          inputs.script == 'weather' ||
-          inputs.script == 'hr_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python weather.py
-
-      - name: Run odds.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hr' ||
-          inputs.script == 'odds' ||
-          inputs.script == 'hr_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python odds.py
-
-      - name: Run hr_picks.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hr' ||
-          inputs.script == 'hr_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python hr_picks.py
-
-      - name: Run backtest.py
-        if: inputs.script == 'backtest'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python backtest.py
-
-      - name: Run hrrbi_statcast.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hrrbi' ||
-          inputs.script == 'hrrbi_statcast' ||
-          inputs.script == 'hrrbi_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python hrrbi_statcast.py
-
-      - name: Run hrrbi_picks.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_hrrbi' ||
-          inputs.script == 'hrrbi_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python hrrbi_picks.py
-
-      - name: Run ks_statcast.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_ks' ||
-          inputs.script == 'ks_statcast' ||
-          inputs.script == 'ks_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python ks_statcast.py
-
-      - name: Run ks_picks.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'full_ks' ||
-          inputs.script == 'ks_picks'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python ks_picks.py
+          python main.py
+          python pitcher_statcast.py
+          python park_factors.py
+          python weather.py
+          python hrrbi_statcast.py
+          python ks_statcast.py
+          python odds.py
+          python hr_picks.py
+          python hrrbi_picks.py
+          python ks_picks.py
+      - name: Run single script
+        if: github.event.inputs.mode != 'full'
+        run: python ${{ github.event.inputs.mode }}
