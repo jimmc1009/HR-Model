@@ -1,196 +1,405 @@
-"""
-hrrbi_statcast.py
-Pulls batter data for H+R+RBI model.
-Uses Batter_Statcast_2026 sheet already written by main.py (avoids FanGraphs).
-"""
+import os
+import json
+import time
+import unicodedata
+from datetime import date
+from typing import Dict, List
 
 import pandas as pd
 import numpy as np
-from pybaseball import statcast
-from datetime import date, timedelta
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import os
-import json
-import warnings
-warnings.filterwarnings("ignore")
+import requests
+from google.oauth2.service_account import Credentials
 
-def get_sheet(sheet_id: str):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    creds_dict = json.loads(creds_json)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    return client.open_by_key(sheet_id)
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-def days_ago(n):
-    return (date.today() - timedelta(days=n)).strftime("%Y-%m-%d")
+EXCLUDED_BOOKS = {"fliff", "espnbet"}
 
-def today_str():
-    return date.today().strftime("%Y-%m-%d")
+ESPN_TO_MLB = {
+    "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
+    "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
+    "COL": "COL", "OAK": "ATH", "CLE": "CLE", "CHC": "CHC",
+    "SEA": "SEA", "PHI": "PHI", "DET": "DET", "ARI": "AZ",
+    "TB":  "TB",  "SD":  "SD",  "STL": "STL", "ATL": "ATL",
+    "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
+    "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
+    "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
 
-def pull_14d_form():
-    print("Pulling 14-day Statcast form...")
+
+def get_gspread_client() -> gspread.Client:
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info = json.loads(raw_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+
+def normalize_name(name: str) -> str:
+    name = unicodedata.normalize("NFD", str(name))
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    return name.lower().strip()
+
+
+def get_mlb_events(api_key: str) -> List[dict]:
+    url = "https://api.the-odds-api.com/v4/sports/baseball_mlb/events"
+    resp = requests.get(url, params={"apiKey": api_key}, timeout=15)
+    resp.raise_for_status()
+    events = resp.json()
+    seen = set()
+    unique = []
+    for e in events:
+        if e["id"] not in seen:
+            seen.add(e["id"])
+            unique.append(e)
+    print(f"Found {len(unique)} unique MLB events (from {len(events)} total)")
+    return unique
+
+
+def fetch_props_for_event(
+    api_key: str,
+    event_id: str,
+    event_label: str,
+    market: str,
+    delay: float = 0.3,
+) -> List[dict]:
+    url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds"
+    params = {
+        "apiKey":      api_key,
+        "regions":     "us,us2",
+        "markets":     market,
+        "oddsFormat":  "american",
+    }
+    time.sleep(delay)
     try:
-        df = statcast(start_dt=days_ago(14), end_dt=today_str())
-        if df.empty:
-            return pd.DataFrame()
-
-        pa_events = [
-            "single","double","triple","home_run","walk","hit_by_pitch",
-            "strikeout","field_out","grounded_into_double_play","force_out",
-            "sac_fly","sac_bunt","fielders_choice","fielders_choice_out",
-            "double_play","triple_play",
-        ]
-        pa_df = df[df["events"].isin(pa_events)].copy()
-        pa_df["is_hit"] = pa_df["events"].isin(
-            ["single","double","triple","home_run"]
-        ).astype(int)
-
-        agg = pa_df.groupby("batter").agg(
-            pa_14d=("events","count"),
-            hits_14d=("is_hit","sum"),
-        ).reset_index()
-        agg["avg_14d"] = (agg["hits_14d"] / agg["pa_14d"]).round(3)
-        agg = agg.rename(columns={"batter":"mlb_id"})
-        print(f"  14-day form: {len(agg)} batters")
-        return agg[["mlb_id","pa_14d","hits_14d","avg_14d"]]
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("bookmakers", [])
     except Exception as e:
-        print(f"  WARNING: 14-day form failed: {e}")
+        print(f"  ✗ {event_label}: {e}")
+        return []
+
+
+def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
+    print(f"\nFetching HR prop odds for {len(events)} games...")
+    all_rows = []
+
+    for event in events:
+        event_id  = event["id"]
+        home_team = event.get("home_team", "")
+        away_team = event.get("away_team", "")
+        label     = f"{away_team} @ {home_team}"
+
+        bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs")
+
+        if not bookmakers:
+            print(f"  ✗ {label}: no props found")
+            continue
+
+        book_keys  = [b["key"] for b in bookmakers if b["key"] not in EXCLUDED_BOOKS]
+        player_odds: Dict[str, List[int]] = {}
+
+        for book in bookmakers:
+            if book["key"] in EXCLUDED_BOOKS:
+                continue
+            for market in book.get("markets", []):
+                if market["key"] != "batter_home_runs":
+                    continue
+                for outcome in market.get("outcomes", []):
+                    if outcome.get("name", "").lower() != "over":
+                        continue
+                    player = outcome.get("description", "").strip()
+                    price  = outcome.get("price")
+                    if player and price is not None:
+                        try:
+                            price_int = int(float(price))
+                            if price_int > 0:
+                                price_int = min(price_int, 3000)
+                                player_odds.setdefault(player, []).append(price_int)
+                        except (ValueError, TypeError):
+                            pass
+
+        if player_odds:
+            print(f"  ✓ {label}: {len(player_odds)} players, {len(book_keys)} books: {book_keys}")
+            for player, odds_list in player_odds.items():
+                consensus = int(np.median(odds_list))
+                implied   = round(100 / (consensus + 100) * 100, 2)
+                all_rows.append({
+                    "player_name":       player,
+                    "player_name_norm":  normalize_name(player),
+                    "home_team":         home_team,
+                    "away_team":         away_team,
+                    "consensus_odds":    consensus,
+                    "implied_prob_pct":  implied,
+                    "num_books":         len(odds_list),
+                })
+        else:
+            print(f"  ✗ {label}: no props found")
+
+    if not all_rows:
         return pd.DataFrame()
 
-def pull_7d_statcast():
-    print("Pulling 7-day Statcast BBE data...")
-    try:
-        df = statcast(start_dt=days_ago(7), end_dt=today_str())
-        if df.empty:
-            return pd.DataFrame()
+    df = pd.DataFrame(all_rows)
+    df = df.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
 
-        bbe = df[df["type"] == "X"].copy()
-        bbe = bbe[bbe["launch_speed"].notna()].copy()
+    print(f"\nBuilt HR odds table: {len(df)} players across {df['num_books'].max() if not df.empty else 0} bookmakers")
+    top20 = df.head(20)[["player_name", "consensus_odds", "implied_prob_pct", "num_books"]]
+    print(f"\nTop 20 by implied probability:\n{top20.to_string(index=False)}\n")
+    return df
 
-        # barrel: launch_speed >= 98 and launch_angle between 26-30, or
-        # higher speed with wider angle range (simplified Statcast definition)
-        def is_barrel(row):
-            ls = row["launch_speed"]
-            la = row["launch_angle"]
-            if pd.isna(ls) or pd.isna(la): return 0
-            if ls < 98: return 0
-            if ls >= 98 and 26 <= la <= 30: return 1
-            if ls >= 99 and 25 <= la <= 31: return 1
-            if ls >= 100 and 24 <= la <= 33: return 1
-            if ls >= 101 and 23 <= la <= 34: return 1
-            if ls >= 102 and 22 <= la <= 35: return 1
-            if ls >= 103 and 21 <= la <= 36: return 1
-            if ls >= 104 and 20 <= la <= 37: return 1
-            if ls >= 105 and 19 <= la <= 38: return 1
-            if ls >= 106 and 18 <= la <= 39: return 1
-            if ls >= 107 and 17 <= la <= 40: return 1
-            if ls >= 108 and 16 <= la <= 41: return 1
-            if ls >= 109 and 15 <= la <= 42: return 1
-            if ls >= 110 and 14 <= la <= 43: return 1
-            return 0
 
-        bbe["is_barrel"] = bbe.apply(is_barrel, axis=1)
+def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
+    print(f"\nFetching pitcher strikeout odds for {len(events)} games...")
+    all_rows = []
 
-        agg = bbe.groupby("batter").agg(
-            bbe_7d=("launch_speed","count"),
-            avg_ev_7d=("launch_speed","mean"),
-            avg_la_7d=("launch_angle","mean"),
-            hard_hit_7d=("launch_speed", lambda x: (x >= 95).sum()),
-            barrel_7d=("is_barrel","sum"),
-        ).reset_index()
+    for event in events:
+        event_id  = event["id"]
+        home_team = event.get("home_team", "")
+        away_team = event.get("away_team", "")
+        label     = f"{away_team} @ {home_team}"
 
-        agg["hard_hit_pct_7d"] = (agg["hard_hit_7d"] / agg["bbe_7d"] * 100).round(1)
-        agg["barrel_pct_7d"]   = (agg["barrel_7d"]   / agg["bbe_7d"] * 100).round(1)
-        agg["avg_ev_7d"]       = agg["avg_ev_7d"].round(1)
-        agg["avg_la_7d"]       = agg["avg_la_7d"].round(1)
-        agg = agg.rename(columns={"batter":"mlb_id"})
-        print(f"  7-day BBE: {len(agg)} batters")
-        return agg[["mlb_id","bbe_7d","avg_ev_7d","avg_la_7d","hard_hit_pct_7d","barrel_pct_7d"]]
-    except Exception as e:
-        print(f"  WARNING: 7-day Statcast failed: {e}")
+        bookmakers = fetch_props_for_event(api_key, event_id, label, "pitcher_strikeouts")
+
+        if not bookmakers:
+            print(f"  ✗ {label}: no K props found")
+            continue
+
+        book_keys = [b["key"] for b in bookmakers if b["key"] not in EXCLUDED_BOOKS]
+
+        # K props return over/under with a point (line)
+        # Structure: {"name": "Over", "description": "Paul Skenes", "price": -130, "point": 6.5}
+        pitcher_lines: Dict[str, Dict] = {}
+
+        for book in bookmakers:
+            if book["key"] in EXCLUDED_BOOKS:
+                continue
+            for market in book.get("markets", []):
+                if market["key"] != "pitcher_strikeouts":
+                    continue
+                for outcome in market.get("outcomes", []):
+                    side    = outcome.get("name", "").lower()
+                    pitcher = outcome.get("description", "").strip()
+                    price   = outcome.get("price")
+                    point   = outcome.get("point")
+
+                    if not pitcher or price is None or point is None:
+                        continue
+
+                    key = f"{pitcher}|{point}"
+                    if key not in pitcher_lines:
+                        pitcher_lines[key] = {
+                            "pitcher":    pitcher,
+                            "line":       float(point),
+                            "over_odds":  [],
+                            "under_odds": [],
+                        }
+
+                    try:
+                        price_int = int(float(price))
+                        if side == "over":
+                            pitcher_lines[key]["over_odds"].append(price_int)
+                        elif side == "under":
+                            pitcher_lines[key]["under_odds"].append(price_int)
+                    except (ValueError, TypeError):
+                        pass
+
+        if pitcher_lines:
+            print(f"  ✓ {label}: {len(pitcher_lines)} pitcher/line combos, {len(book_keys)} books")
+            for key, data in pitcher_lines.items():
+                over_odds  = data["over_odds"]
+                under_odds = data["under_odds"]
+                if not over_odds:
+                    continue
+
+                consensus_over  = int(np.median(over_odds))
+                consensus_under = int(np.median(under_odds)) if under_odds else None
+
+                # Implied prob from over odds
+                if consensus_over >= 0:
+                    implied = round(100 / (consensus_over + 100) * 100, 2)
+                else:
+                    implied = round(abs(consensus_over) / (abs(consensus_over) + 100) * 100, 2)
+
+                all_rows.append({
+                    "pitcher_name":      data["pitcher"],
+                    "pitcher_name_norm": normalize_name(data["pitcher"]),
+                    "home_team":         home_team,
+                    "away_team":         away_team,
+                    "k_line":            data["line"],
+                    "over_odds":         consensus_over,
+                    "under_odds":        consensus_under,
+                    "implied_prob_over": implied,
+                    "num_books":         len(over_odds),
+                })
+        else:
+            print(f"  ✗ {label}: no K props found")
+
+    if not all_rows:
         return pd.DataFrame()
 
-def build_hrrbi_statcast(sheet_id: str):
-    print("\n=== HRRBI Statcast Pull ===")
-    wb = get_sheet(sheet_id)
+    df = pd.DataFrame(all_rows)
+    # Keep the most common line per pitcher (books usually agree)
+    df = (
+        df.sort_values("num_books", ascending=False)
+        .drop_duplicates(subset=["pitcher_name_norm"], keep="first")
+        .sort_values("implied_prob_over", ascending=False)
+        .reset_index(drop=True)
+    )
 
-    # Load Batter_Statcast_2026 written by main.py — no FanGraphs needed
-    print("Loading Batter_Statcast_2026 from Google Sheets...")
+    print(f"\nBuilt KS odds table: {len(df)} pitchers")
+    print(df[["pitcher_name", "k_line", "over_odds", "under_odds", "num_books"]].head(15).to_string(index=False))
+    return df
+
+
+def build_hrrbi_odds(events: List[dict], api_key: str) -> pd.DataFrame:
+    """
+    Attempts to pull batter_hits_runs_rbis market.
+    Falls back gracefully if unavailable on free tier.
+    """
+    print(f"\nFetching H+R+RBI prop odds for {len(events)} games...")
+    all_rows = []
+    found_any = False
+
+    for event in events:
+        event_id  = event["id"]
+        home_team = event.get("home_team", "")
+        away_team = event.get("away_team", "")
+        label     = f"{away_team} @ {home_team}"
+
+        bookmakers = fetch_props_for_event(
+            api_key, event_id, label, "batter_hits_runs_rbis"
+        )
+
+        if not bookmakers:
+            continue
+
+        player_lines: Dict[str, Dict] = {}
+
+        for book in bookmakers:
+            if book["key"] in EXCLUDED_BOOKS:
+                continue
+            for market in book.get("markets", []):
+                if market["key"] != "batter_hits_runs_rbis":
+                    continue
+                for outcome in market.get("outcomes", []):
+                    side   = outcome.get("name", "").lower()
+                    player = outcome.get("description", "").strip()
+                    price  = outcome.get("price")
+                    point  = outcome.get("point")
+
+                    if not player or price is None or point is None:
+                        continue
+
+                    key = f"{player}|{point}"
+                    if key not in player_lines:
+                        player_lines[key] = {
+                            "player":     player,
+                            "line":       float(point),
+                            "over_odds":  [],
+                            "under_odds": [],
+                        }
+                    try:
+                        price_int = int(float(price))
+                        if side == "over":
+                            player_lines[key]["over_odds"].append(price_int)
+                        elif side == "under":
+                            player_lines[key]["under_odds"].append(price_int)
+                    except (ValueError, TypeError):
+                        pass
+
+        if player_lines:
+            found_any = True
+            for key, data in player_lines.items():
+                if not data["over_odds"]:
+                    continue
+                consensus_over  = int(np.median(data["over_odds"]))
+                consensus_under = int(np.median(data["under_odds"])) if data["under_odds"] else None
+
+                if consensus_over >= 0:
+                    implied = round(100 / (consensus_over + 100) * 100, 2)
+                else:
+                    implied = round(abs(consensus_over) / (abs(consensus_over) + 100) * 100, 2)
+
+                all_rows.append({
+                    "player_name":       data["player"],
+                    "player_name_norm":  normalize_name(data["player"]),
+                    "home_team":         home_team,
+                    "away_team":         away_team,
+                    "hrrbi_line":        data["line"],
+                    "over_odds":         consensus_over,
+                    "under_odds":        consensus_under,
+                    "implied_prob_over": implied,
+                    "num_books":         len(data["over_odds"]),
+                })
+
+    if not found_any:
+        print("  INFO: batter_hits_runs_rbis market not available — H+R+RBI odds will be empty")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    df = (
+        df.sort_values("num_books", ascending=False)
+        .drop_duplicates(subset=["player_name_norm"], keep="first")
+        .sort_values("implied_prob_over", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    print(f"\nBuilt H+R+RBI odds table: {len(df)} players")
+    return df
+
+
+def write_sheet(
+    gc: gspread.Client,
+    sheet_id: str,
+    worksheet_name: str,
+    df: pd.DataFrame,
+) -> None:
+    sh = gc.open_by_key(sheet_id)
     try:
-        ws = wb.worksheet("Batter_Statcast_2026")
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        print(f"  Loaded {len(df)} batters")
-    except Exception as e:
-        print(f"  ERROR: could not load Batter_Statcast_2026: {e}")
-        return
+        ws = sh.worksheet(worksheet_name)
+        ws.clear()
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=worksheet_name, rows=500, cols=20)
 
-    if df.empty:
-        print("ERROR: Batter_Statcast_2026 is empty — run main.py first")
-        return
+    df = df.copy().fillna("").replace([np.inf, -np.inf], "")
+    values = [df.columns.tolist()] + df.astype(str).values.tolist()
+    ws.update(values)
 
-    # Numeric coerce key columns
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(df[col])
 
-    # Pull supplemental data
-    form_14d  = pull_14d_form()
-    stat_7d   = pull_7d_statcast()
+def main() -> None:
+    api_key  = os.environ["ODDS_API_KEY"]
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    gc       = get_gspread_client()
 
-    # Merge on mlb_id if available
-    id_col = None
-    for c in ["mlb_id","batter_id","player_id"]:
-        if c in df.columns:
-            id_col = c
-            break
+    print("Fetching today's MLB events from The Odds API...")
+    events = get_mlb_events(api_key)
 
-    if id_col and not form_14d.empty:
-        df = df.merge(form_14d.rename(columns={"mlb_id": id_col}), on=id_col, how="left")
+    # ── HR props ──────────────────────────────────────────────────
+    hr_df = build_hr_odds(events, api_key)
+    if not hr_df.empty:
+        write_sheet(gc, sheet_id, "HR_Odds", hr_df)
+        print(f"Written {len(hr_df)} player odds to HR_Odds sheet")
+    else:
+        print("No HR odds data to write.")
 
-    if id_col and not stat_7d.empty:
-        df = df.merge(stat_7d.rename(columns={"mlb_id": id_col}), on=id_col, how="left")
+    # ── Pitcher K props ───────────────────────────────────────────
+    ks_df = build_ks_odds(events, api_key)
+    if not ks_df.empty:
+        write_sheet(gc, sheet_id, "KS_Odds", ks_df)
+        print(f"Written {len(ks_df)} pitcher K odds to KS_Odds sheet")
+    else:
+        print("No KS odds data to write.")
 
-    # Fill missing
-    for col in ["bbe_7d","avg_ev_7d","avg_la_7d","hard_hit_pct_7d","barrel_pct_7d",
-                "pa_14d","hits_14d","avg_14d"]:
-        if col not in df.columns:
-            df[col] = 0.0
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    # ── H+R+RBI props ─────────────────────────────────────────────
+    hrrbi_df = build_hrrbi_odds(events, api_key)
+    if not hrrbi_df.empty:
+        write_sheet(gc, sheet_id, "HRRBI_Odds", hrrbi_df)
+        print(f"Written {len(hrrbi_df)} player H+R+RBI odds to HRRBI_Odds sheet")
+    else:
+        print("No H+R+RBI odds data to write — sheet not created.")
 
-    df["hot_streak"]  = ((df["avg_14d"] >= 0.320) & (df["pa_14d"] >= 20)).astype(int)
-    df["cold_streak"] = ((df["avg_14d"] <= 0.180) & (df["pa_14d"] >= 20)).astype(int)
-
-    print(f"  Total batters in HRRBI_Statcast: {len(df)}")
-
-    # Write to sheet
-    try:
-        out_ws = wb.worksheet("HRRBI_Statcast")
-        out_ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        out_ws = wb.add_worksheet(title="HRRBI_Statcast", rows=600, cols=50)
-
-    # Convert nullable integer/boolean columns to standard types before fillna
-    for col in df.columns:
-        if hasattr(df[col], "dtype") and str(df[col].dtype) in ("Int64","Int32","Int16","Int8","boolean"):
-            df[col] = df[col].astype(object)
-    df = df.replace([np.inf, -np.inf], np.nan).fillna("")
-    headers = df.columns.tolist()
-    rows    = df.values.tolist()
-    out_ws.update([headers] + rows)
-
-    out_ws.format("A1:AZ1", {
-        "backgroundColor": {"red": 0.13, "green": 0.37, "blue": 0.73},
-        "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-    })
-    print(f"  ✓ HRRBI_Statcast written: {len(df)} rows")
 
 if __name__ == "__main__":
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID","")
-    if not sheet_id:
-        raise ValueError("GOOGLE_SHEET_ID not set")
-    build_hrrbi_statcast(sheet_id)
+    main()
