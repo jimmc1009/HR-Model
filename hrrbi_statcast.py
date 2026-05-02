@@ -1,13 +1,12 @@
 """
 hrrbi_statcast.py
-Pulls batter Statcast data for the H+R+RBI model.
-Outputs to 'HRRBI_Statcast' Google Sheet tab.
-Mirrors pitcher_statcast.py architecture from the HR model.
+Pulls batter data for H+R+RBI model.
+Uses Batter_Statcast_2026 sheet already written by main.py (avoids FanGraphs).
 """
 
 import pandas as pd
 import numpy as np
-from pybaseball import statcast_batter_exitvelo_barrels, batting_stats, statcast
+from pybaseball import statcast
 from datetime import date, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -16,7 +15,6 @@ import json
 import warnings
 warnings.filterwarnings("ignore")
 
-# ── Google Sheets auth ──────────────────────────────────────────────────────
 def get_sheet(sheet_id: str):
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -28,221 +26,167 @@ def get_sheet(sheet_id: str):
     client = gspread.authorize(creds)
     return client.open_by_key(sheet_id)
 
-# ── Date helpers ────────────────────────────────────────────────────────────
-def season_start() -> str:
-    return "2025-03-27"
-
-def days_ago(n: int) -> str:
+def days_ago(n):
     return (date.today() - timedelta(days=n)).strftime("%Y-%m-%d")
 
-def today_str() -> str:
+def today_str():
     return date.today().strftime("%Y-%m-%d")
 
-# ── Pull season FanGraphs batting stats (BA, OBP, ISO, wOBA, K%, BB%) ───────
-def pull_season_batting() -> pd.DataFrame:
-    print("Pulling season batting stats (FanGraphs)...")
+def pull_14d_form():
+    print("Pulling 14-day Statcast form...")
     try:
-        df = batting_stats(2025, qual=50)
-        cols = {
-            "IDfg": "fg_id",
-            "Name": "name",
-            "Team": "team",
-            "G": "games",
-            "PA": "pa",
-            "AB": "ab",
-            "H": "hits",
-            "HR": "hr",
-            "R": "runs",
-            "RBI": "rbi",
-            "AVG": "avg",
-            "OBP": "obp",
-            "SLG": "slg",
-            "ISO": "iso",
-            "wOBA": "woba",
-            "xwOBA": "xwoba",
-            "BABIP": "babip",
-            "BB%": "bb_pct",
-            "K%": "k_pct",
-            "LD%": "ld_pct",
-            "GB%": "gb_pct",
-            "FB%": "fb_pct",
-            "Hard%": "hard_hit_pct_season",
-            "Barrel%": "barrel_pct_season",
-            "EV": "avg_ev_season",
-            "Spd": "speed_score",
-            "SB": "sb",
-            "wRC+": "wrc_plus",
-            "BatPos": "avg_bat_order",  # average lineup spot
-        }
-        df = df.rename(columns={k: v for k, v in cols.items() if k in df.columns})
-        keep = [v for v in cols.values() if v in df.columns]
-        return df[keep].copy()
-    except Exception as e:
-        print(f"  WARNING: season batting pull failed: {e}")
-        return pd.DataFrame()
-
-# ── Pull 7-day Statcast batter data ─────────────────────────────────────────
-def pull_7d_statcast() -> pd.DataFrame:
-    print("Pulling 7-day Statcast batter data...")
-    start = days_ago(7)
-    end = today_str()
-    try:
-        df = statcast(start_dt=start, end_dt=end)
-        if df.empty:
-            print("  WARNING: no 7-day Statcast data returned")
-            return pd.DataFrame()
-
-        # Filter to batted ball events
-        bbe = df[df["type"] == "X"].copy()
-
-        agg = bbe.groupby("batter").agg(
-            bbe_7d=("launch_speed", "count"),
-            avg_ev_7d=("launch_speed", "mean"),
-            avg_la_7d=("launch_angle", "mean"),
-            hard_hit_7d=("launch_speed", lambda x: (x >= 95).sum()),
-            barrel_7d=("barrel", "sum"),
-        ).reset_index()
-
-        agg["hard_hit_pct_7d"] = (agg["hard_hit_7d"] / agg["bbe_7d"] * 100).round(1)
-        agg["barrel_pct_7d"] = (agg["barrel_7d"] / agg["bbe_7d"] * 100).round(1)
-        agg["avg_ev_7d"] = agg["avg_ev_7d"].round(1)
-        agg["avg_la_7d"] = agg["avg_la_7d"].round(1)
-        agg = agg.rename(columns={"batter": "mlb_id"})
-        return agg[["mlb_id", "bbe_7d", "avg_ev_7d", "avg_la_7d",
-                    "hard_hit_pct_7d", "barrel_pct_7d"]]
-    except Exception as e:
-        print(f"  WARNING: 7-day Statcast pull failed: {e}")
-        return pd.DataFrame()
-
-# ── Pull 14-day rolling H/R/RBI form from Statcast game logs ────────────────
-def pull_14d_form() -> pd.DataFrame:
-    """
-    Pulls PA-level data and aggregates hits, estimated runs scored proxy,
-    and RBI over last 14 days per batter.
-    """
-    print("Pulling 14-day H/R/RBI form...")
-    start = days_ago(14)
-    end = today_str()
-    try:
-        df = statcast(start_dt=start, end_dt=end)
+        df = statcast(start_dt=days_ago(14), end_dt=today_str())
         if df.empty:
             return pd.DataFrame()
 
         pa_events = [
-            "single", "double", "triple", "home_run",
-            "walk", "hit_by_pitch", "strikeout", "field_out",
-            "grounded_into_double_play", "force_out", "sac_fly",
-            "sac_bunt", "fielders_choice", "fielders_choice_out",
-            "double_play", "triple_play",
+            "single","double","triple","home_run","walk","hit_by_pitch",
+            "strikeout","field_out","grounded_into_double_play","force_out",
+            "sac_fly","sac_bunt","fielders_choice","fielders_choice_out",
+            "double_play","triple_play",
         ]
         pa_df = df[df["events"].isin(pa_events)].copy()
-
         pa_df["is_hit"] = pa_df["events"].isin(
-            ["single", "double", "triple", "home_run"]
+            ["single","double","triple","home_run"]
         ).astype(int)
 
-        pa_df["rbi_14d_est"] = pd.to_numeric(
-            pa_df.get("bat_score", 0), errors="coerce"
-        ).fillna(0)
-
         agg = pa_df.groupby("batter").agg(
-            pa_14d=("events", "count"),
-            hits_14d=("is_hit", "sum"),
+            pa_14d=("events","count"),
+            hits_14d=("is_hit","sum"),
+        ).reset_index()
+        agg["avg_14d"] = (agg["hits_14d"] / agg["pa_14d"]).round(3)
+        agg = agg.rename(columns={"batter":"mlb_id"})
+        print(f"  14-day form: {len(agg)} batters")
+        return agg[["mlb_id","pa_14d","hits_14d","avg_14d"]]
+    except Exception as e:
+        print(f"  WARNING: 14-day form failed: {e}")
+        return pd.DataFrame()
+
+def pull_7d_statcast():
+    print("Pulling 7-day Statcast BBE data...")
+    try:
+        df = statcast(start_dt=days_ago(7), end_dt=today_str())
+        if df.empty:
+            return pd.DataFrame()
+
+        bbe = df[df["type"] == "X"].copy()
+        bbe = bbe[bbe["launch_speed"].notna()].copy()
+
+        # barrel: launch_speed >= 98 and launch_angle between 26-30, or
+        # higher speed with wider angle range (simplified Statcast definition)
+        def is_barrel(row):
+            ls = row["launch_speed"]
+            la = row["launch_angle"]
+            if pd.isna(ls) or pd.isna(la): return 0
+            if ls < 98: return 0
+            if ls >= 98 and 26 <= la <= 30: return 1
+            if ls >= 99 and 25 <= la <= 31: return 1
+            if ls >= 100 and 24 <= la <= 33: return 1
+            if ls >= 101 and 23 <= la <= 34: return 1
+            if ls >= 102 and 22 <= la <= 35: return 1
+            if ls >= 103 and 21 <= la <= 36: return 1
+            if ls >= 104 and 20 <= la <= 37: return 1
+            if ls >= 105 and 19 <= la <= 38: return 1
+            if ls >= 106 and 18 <= la <= 39: return 1
+            if ls >= 107 and 17 <= la <= 40: return 1
+            if ls >= 108 and 16 <= la <= 41: return 1
+            if ls >= 109 and 15 <= la <= 42: return 1
+            if ls >= 110 and 14 <= la <= 43: return 1
+            return 0
+
+        bbe["is_barrel"] = bbe.apply(is_barrel, axis=1)
+
+        agg = bbe.groupby("batter").agg(
+            bbe_7d=("launch_speed","count"),
+            avg_ev_7d=("launch_speed","mean"),
+            avg_la_7d=("launch_angle","mean"),
+            hard_hit_7d=("launch_speed", lambda x: (x >= 95).sum()),
+            barrel_7d=("is_barrel","sum"),
         ).reset_index()
 
-        agg["avg_14d"] = (agg["hits_14d"] / agg["pa_14d"]).round(3)
-        agg = agg.rename(columns={"batter": "mlb_id"})
-        return agg[["mlb_id", "pa_14d", "hits_14d", "avg_14d"]]
+        agg["hard_hit_pct_7d"] = (agg["hard_hit_7d"] / agg["bbe_7d"] * 100).round(1)
+        agg["barrel_pct_7d"]   = (agg["barrel_7d"]   / agg["bbe_7d"] * 100).round(1)
+        agg["avg_ev_7d"]       = agg["avg_ev_7d"].round(1)
+        agg["avg_la_7d"]       = agg["avg_la_7d"].round(1)
+        agg = agg.rename(columns={"batter":"mlb_id"})
+        print(f"  7-day BBE: {len(agg)} batters")
+        return agg[["mlb_id","bbe_7d","avg_ev_7d","avg_la_7d","hard_hit_pct_7d","barrel_pct_7d"]]
     except Exception as e:
-        print(f"  WARNING: 14-day form pull failed: {e}")
+        print(f"  WARNING: 7-day Statcast failed: {e}")
         return pd.DataFrame()
 
-# ── Pull RISP stats from FanGraphs splits ───────────────────────────────────
-def pull_risp_stats() -> pd.DataFrame:
-    """
-    Pulls RISP wOBA/avg as RBI opportunity quality proxy.
-    Uses FanGraphs season splits qual=30.
-    """
-    print("Pulling RISP stats...")
-    try:
-        from pybaseball import batting_stats_range
-        # FanGraphs RISP splits not directly available via pybaseball
-        # Use season wOBA with RISP proxy from standard batting
-        # Flag for manual enrichment if needed
-        print("  INFO: RISP splits not available via pybaseball — using season wOBA as proxy")
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"  WARNING: RISP pull failed: {e}")
-        return pd.DataFrame()
-
-# ── Main assembly ────────────────────────────────────────────────────────────
 def build_hrrbi_statcast(sheet_id: str):
     print("\n=== HRRBI Statcast Pull ===")
-
-    season = pull_season_batting()
-    statcast_7d = pull_7d_statcast()
-    form_14d = pull_14d_form()
-
-    if season.empty:
-        print("ERROR: season batting data empty — aborting")
-        return
-
-    # Merge 7-day Statcast on mlb_id if available
-    # FanGraphs doesn't return mlb_id directly — join on name/team as fallback
-    # (full ID mapping handled in main.py roster pull)
-    df = season.copy()
-
-    if not statcast_7d.empty and "mlb_id" in df.columns:
-        df = df.merge(statcast_7d, on="mlb_id", how="left")
-
-    if not form_14d.empty and "mlb_id" in df.columns:
-        df = df.merge(form_14d, on="mlb_id", how="left")
-
-    # Fill missing 7d/14d columns with 0
-    for col in ["bbe_7d", "avg_ev_7d", "avg_la_7d",
-                "hard_hit_pct_7d", "barrel_pct_7d",
-                "pa_14d", "hits_14d", "avg_14d"]:
-        if col not in df.columns:
-            df[col] = 0.0
-        df[col] = df[col].fillna(0.0)
-
-    # Derived flags
-    df["hot_streak"] = ((df["avg_14d"] >= 0.320) & (df["pa_14d"] >= 20)).astype(int)
-    df["cold_streak"] = ((df["avg_14d"] <= 0.180) & (df["pa_14d"] >= 20)).astype(int)
-
-    # Sort by woba descending
-    sort_col = "woba" if "woba" in df.columns else (df.columns[0])
-    df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
-
-    print(f"  Total batters: {len(df)}")
-
-    # ── Write to Google Sheets ───────────────────────────────────────────────
-    print("Writing to Google Sheets (HRRBI_Statcast)...")
     wb = get_sheet(sheet_id)
 
+    # Load Batter_Statcast_2026 written by main.py — no FanGraphs needed
+    print("Loading Batter_Statcast_2026 from Google Sheets...")
     try:
-        ws = wb.worksheet("HRRBI_Statcast")
-        ws.clear()
+        ws = wb.worksheet("Batter_Statcast_2026")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        print(f"  Loaded {len(df)} batters")
+    except Exception as e:
+        print(f"  ERROR: could not load Batter_Statcast_2026: {e}")
+        return
+
+    if df.empty:
+        print("ERROR: Batter_Statcast_2026 is empty — run main.py first")
+        return
+
+    # Numeric coerce key columns
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(df[col])
+
+    # Pull supplemental data
+    form_14d  = pull_14d_form()
+    stat_7d   = pull_7d_statcast()
+
+    # Merge on mlb_id if available
+    id_col = None
+    for c in ["mlb_id","batter_id","player_id"]:
+        if c in df.columns:
+            id_col = c
+            break
+
+    if id_col and not form_14d.empty:
+        df = df.merge(form_14d.rename(columns={"mlb_id": id_col}), on=id_col, how="left")
+
+    if id_col and not stat_7d.empty:
+        df = df.merge(stat_7d.rename(columns={"mlb_id": id_col}), on=id_col, how="left")
+
+    # Fill missing
+    for col in ["bbe_7d","avg_ev_7d","avg_la_7d","hard_hit_pct_7d","barrel_pct_7d",
+                "pa_14d","hits_14d","avg_14d"]:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    df["hot_streak"]  = ((df["avg_14d"] >= 0.320) & (df["pa_14d"] >= 20)).astype(int)
+    df["cold_streak"] = ((df["avg_14d"] <= 0.180) & (df["pa_14d"] >= 20)).astype(int)
+
+    print(f"  Total batters in HRRBI_Statcast: {len(df)}")
+
+    # Write to sheet
+    try:
+        out_ws = wb.worksheet("HRRBI_Statcast")
+        out_ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = wb.add_worksheet(title="HRRBI_Statcast", rows=600, cols=40)
+        out_ws = wb.add_worksheet(title="HRRBI_Statcast", rows=600, cols=50)
 
     df = df.fillna("").replace([np.inf, -np.inf], "")
     headers = df.columns.tolist()
-    rows = df.values.tolist()
-    ws.update([headers] + rows)
+    rows    = df.values.tolist()
+    out_ws.update([headers] + rows)
 
-    # Header formatting
-    ws.format("A1:AZ1", {
+    out_ws.format("A1:AZ1", {
         "backgroundColor": {"red": 0.13, "green": 0.37, "blue": 0.73},
         "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
     })
-
     print(f"  ✓ HRRBI_Statcast written: {len(df)} rows")
 
-
 if __name__ == "__main__":
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID","")
     if not sheet_id:
-        raise ValueError("GOOGLE_SHEET_ID environment variable not set")
+        raise ValueError("GOOGLE_SHEET_ID not set")
     build_hrrbi_statcast(sheet_id)
-
