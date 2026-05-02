@@ -1,639 +1,700 @@
 """
-ks_picks.py
-Pitcher Strikeout model — absolute threshold scoring system.
-Mirrors hr_picks.py architecture exactly.
-Outputs Top 10 picks + EV subsection + scorecard to 'Top_KS_Picks' sheet.
+hrrbi_picks.py
+H+R+RBI model — absolute threshold scoring.
+Reads from HRRBI_Statcast, Pitcher_Statcast_2026, Park_Factors,
+Weather, HRRBI_Odds sheets.
+Outputs Top_HRRBI_Picks + HRRBI_Scorecard.
 """
+
+import os
+import json
+import unicodedata
+from datetime import date, datetime, timedelta
+from typing import Set
 
 import pandas as pd
 import numpy as np
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from datetime import date, datetime
+from gspread.exceptions import APIError
+from google.oauth2.service_account import Credentials
 import pytz
-import os
-import json
-import warnings
-warnings.filterwarnings("ignore")
 
-# ══════════════════════════════════════════════════════════════════
-# CONSTANTS
-# ══════════════════════════════════════════════════════════════════
-LEAGUE_AVG_K_PCT            = 22.5
-LEAGUE_AVG_SWSTR_PCT        = 11.0
-LEAGUE_AVG_CHASE_RATE       = 29.0
-LEAGUE_AVG_K_PER_9          = 8.8
-LEAGUE_AVG_BB_PCT           = 8.5
-LEAGUE_AVG_VELO             = 93.5
-LEAGUE_AVG_OPP_K_PCT        = 22.5  # league avg team K rate
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
-MIN_IP                      = 20    # minimum IP for full scoring
-MIN_GS                      = 4     # minimum starts
-AVG_IP_OPENER_THRESHOLD     = 4.0   # below this = opener/bulk risk
-TOP_N                       = 10
-MAX_PER_TEAM                = 1     # only 1 pitcher per team (1 start per day)
-MAX_CHALK_PICKS             = 4
+# ── Constants ──────────────────────────────────────────────────────────────
+LEAGUE_AVG_BA       = 0.248
+LEAGUE_AVG_OBP      = 0.318
+LEAGUE_AVG_WOBA     = 0.318
+LEAGUE_AVG_XWOBA    = 0.318
+LEAGUE_AVG_ISO      = 0.155
+LEAGUE_AVG_EV_7D    = 89.0
+LEAGUE_AVG_HH_7D    = 40.0
+LEAGUE_AVG_BARREL_7D= 11.0
 
-# ══════════════════════════════════════════════════════════════════
-# GOOGLE SHEETS AUTH
-# ══════════════════════════════════════════════════════════════════
-def get_sheet(sheet_id: str):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    creds_dict = json.loads(creds_json)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    return client.open_by_key(sheet_id)
+MIN_PA              = 80
+MIN_BBE_7D          = 5
+MIN_BATTING_AVG     = 0.190
+MAX_PER_TEAM        = 2
+MAX_CHALK_PICKS     = 3
+CHALK_ODDS_THRESHOLD= 140   # American odds — negative means chalk for O/U props
+TOP_N               = 10
 
-# ══════════════════════════════════════════════════════════════════
-# ABSOLUTE SCORING FUNCTIONS
-# ══════════════════════════════════════════════════════════════════
+COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
+COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
+COLOR_HEADER = {"red": 0.055, "green": 0.318, "blue": 0.580}
+COLOR_WHITE  = {"red": 1.000, "green": 1.000, "blue": 1.000}
+COLOR_GREEN  = {"red": 0.180, "green": 0.800, "blue": 0.443}
+COLOR_RED    = {"red": 0.910, "green": 0.259, "blue": 0.259}
+COLOR_GOLD   = {"red": 1.000, "green": 0.843, "blue": 0.000}
+COLOR_ORANGE = {"red": 0.980, "green": 0.502, "blue": 0.059}
 
-# ── Core K Ability ───────────────────────────────────────────────
-def score_k_pct_season(v: float, ip: float) -> float:
-    """Season K% — primary baseline."""
-    if ip < MIN_IP: return 0.0
-    if v >= 32.0: return 2.5
-    if v >= 28.0: return 2.0
-    if v >= 26.0: return 1.5
-    if v >= 24.0: return 1.0
-    if v >= 22.0: return 0.5
-    if v >= 20.0: return 0.2
-    if v <= 16.0: return -0.5
+
+def get_gspread_client() -> gspread.Client:
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info     = json.loads(raw_json)
+    creds    = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+
+def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
+    sh = gc.open_by_key(sheet_id)
+    try:
+        ws   = sh.worksheet(name)
+        data = ws.get_all_records()
+        return pd.DataFrame(data)
+    except gspread.WorksheetNotFound:
+        print(f"WARNING: Sheet '{name}' not found.")
+        return pd.DataFrame()
+
+
+def safe_float(val, default=0.0) -> float:
+    try:
+        f = float(val)
+        return default if (pd.isna(f) or np.isinf(f)) else f
+    except (ValueError, TypeError):
+        return default
+
+
+def normalize_name(name: str) -> str:
+    name = unicodedata.normalize("NFD", str(name))
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    return name.lower().strip()
+
+
+# ── Scoring functions ──────────────────────────────────────────────────────
+
+def score_avg(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 0.320: return 2.0
+    if v >= 0.300: return 1.5
+    if v >= 0.280: return 1.0
+    if v >= 0.260: return 0.5
+    if v >= 0.240: return 0.2
     return 0.0
 
-def score_swstr_pct(v: float, ip: float) -> float:
-    """Swinging strike % — #1 K predictor."""
-    if ip < MIN_IP: return 0.0
-    if v >= 15.0: return 2.5
-    if v >= 13.5: return 2.0
-    if v >= 12.5: return 1.5
-    if v >= 11.5: return 1.0
-    if v >= 10.5: return 0.5
-    if v >= 9.5:  return 0.1
-    if v <= 8.0:  return -0.5
+def score_xwoba(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 0.390: return 2.0
+    if v >= 0.360: return 1.5
+    if v >= 0.340: return 1.0
+    if v >= 0.320: return 0.5
+    if v >= 0.300: return 0.2
     return 0.0
 
-def score_chase_rate(v: float, ip: float) -> float:
-    """O-Swing% — batters chasing off zone = free Ks."""
-    if ip < MIN_IP: return 0.0
-    if v >= 35.0: return 1.5
-    if v >= 33.0: return 1.0
-    if v >= 31.0: return 0.6
-    if v >= 29.0: return 0.2
-    if v <= 24.0: return -0.5
-    if v <= 26.0: return -0.2
+def score_obp(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 0.400: return 1.5
+    if v >= 0.370: return 1.0
+    if v >= 0.350: return 0.6
+    if v >= 0.330: return 0.3
     return 0.0
 
-def score_k_per_9(v: float, ip: float) -> float:
-    """K/9 — rate stat context."""
-    if ip < MIN_IP: return 0.0
-    if v >= 13.0: return 1.5
-    if v >= 11.5: return 1.2
-    if v >= 10.5: return 0.9
-    if v >= 9.5:  return 0.6
-    if v >= 8.5:  return 0.3
-    if v <= 6.5:  return -0.5
-    if v <= 7.5:  return -0.2
+def score_iso(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 0.280: return 1.2
+    if v >= 0.230: return 0.9
+    if v >= 0.190: return 0.6
+    if v >= 0.165: return 0.3
     return 0.0
 
-def score_k_minus_bb(v: float, ip: float) -> float:
-    """K-BB% — command + dominance composite."""
-    if ip < MIN_IP: return 0.0
-    if v >= 22.0: return 1.2
-    if v >= 18.0: return 0.9
-    if v >= 15.0: return 0.6
-    if v >= 12.0: return 0.3
-    if v <= 8.0:  return -0.5
+def score_ld_pct(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 28.0: return 1.2
+    if v >= 24.0: return 0.8
+    if v >= 21.0: return 0.4
+    if v >= 18.0: return 0.1
     return 0.0
 
-# ── Stuff & Arsenal ──────────────────────────────────────────────
-def score_fastball_velo(v: float, ip: float) -> float:
-    """Higher velo = more swing and miss."""
-    if ip < MIN_IP: return 0.0
-    if v >= 98.0: return 1.5
-    if v >= 96.0: return 1.0
+def score_hard_hit_season(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 52.0: return 0.8
+    if v >= 45.0: return 0.5
+    if v >= 38.0: return 0.2
+    return 0.0
+
+def score_avg_ev_7d(v: float, bbe_7d: float) -> float:
+    if bbe_7d < MIN_BBE_7D: return 0.0
+    if v >= 97.0: return 1.0
     if v >= 94.0: return 0.6
-    if v >= 92.0: return 0.2
-    if v <= 89.0: return -0.5
-    if v <= 91.0: return -0.2
+    if v >= 91.0: return 0.3
     return 0.0
 
-def score_stuff_plus(v: float, ip: float) -> float:
-    """Stuff+ (100 = league avg). Composite pitch quality."""
-    if ip < MIN_IP or v == 0: return 0.0
-    if v >= 125: return 1.5
-    if v >= 115: return 1.0
-    if v >= 108: return 0.5
-    if v >= 100: return 0.1
-    if v <= 85:  return -0.5
-    if v <= 92:  return -0.2
+def score_hard_hit_7d(v: float, bbe_7d: float) -> float:
+    if bbe_7d < MIN_BBE_7D: return 0.0
+    if v >= 55.0: return 0.8
+    if v >= 45.0: return 0.5
+    if v >= 35.0: return 0.2
     return 0.0
 
-# ── Recent Form ───────────────────────────────────────────────────
-def score_swstr_trend(v: float) -> float:
-    """SwStr% delta: recent 21d vs season. Positive = heating up."""
-    if v >= 3.0:  return 1.5
-    if v >= 1.5:  return 1.0
-    if v >= 0.5:  return 0.4
-    if v <= -3.0: return -1.5
-    if v <= -1.5: return -1.0
-    if v <= -0.5: return -0.4
+def score_rolling_avg(v: float, pa: float) -> float:
+    """14-day rolling average — hot/cold form signal."""
+    if pa < 20: return 0.0
+    if v >= 0.360: return 1.5
+    if v >= 0.320: return 1.0
+    if v >= 0.290: return 0.5
+    if v >= 0.260: return 0.2
+    if v <= 0.180: return -1.0
+    if v <= 0.210: return -0.5
     return 0.0
 
-def score_k_per_start_21d(v: float) -> float:
-    """Avg Ks per start over last 3 starts."""
-    if v <= 0: return 0.0
-    if v >= 9.0: return 2.0
-    if v >= 7.5: return 1.5
-    if v >= 6.5: return 1.0
-    if v >= 5.5: return 0.5
-    if v >= 4.5: return 0.1
-    if v <= 3.0: return -1.0
-    if v <= 4.0: return -0.5
+def score_bat_order(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v <= 2.0: return 1.5
+    if v <= 3.5: return 1.2
+    if v <= 5.0: return 1.0
+    if v <= 6.5: return 0.4
     return 0.0
 
-def score_velo_trend(v: float) -> float:
-    """Recent velo vs season avg. Positive = gaining velocity."""
-    if v >= 1.5:  return 0.8
-    if v >= 0.5:  return 0.3
-    if v <= -2.0: return -1.0
-    if v <= -1.0: return -0.5
+def score_speed(v: float) -> float:
+    if v >= 7.0: return 0.8
+    if v >= 5.5: return 0.4
+    if v >= 4.0: return 0.1
     return 0.0
 
-# ── Innings / Workload ────────────────────────────────────────────
-def score_avg_ip_per_start(v: float, gs: int) -> float:
-    """
-    Avg innings per start = K ceiling proxy.
-    Opener/bulk risk (<4 IP) gets penalized.
-    """
-    if gs < MIN_GS: return 0.0
-    if v >= 6.5: return 1.5
-    if v >= 6.0: return 1.0
-    if v >= 5.5: return 0.5
-    if v >= 5.0: return 0.1
-    if v < AVG_IP_OPENER_THRESHOLD: return -2.0  # opener risk hard penalty
+def score_bb_pct(v: float, pa: float) -> float:
+    if pa < MIN_PA: return 0.0
+    if v >= 14.0: return 0.8
+    if v >= 10.0: return 0.5
+    if v >=  8.0: return 0.2
     return 0.0
 
-# ── Opponent Batter Profile ───────────────────────────────────────
-def score_opp_team_k_pct(v: float) -> float:
-    """Opposing team's strikeout rate — higher = more Ks for pitcher."""
-    if v >= 28.0: return 2.0
-    if v >= 26.0: return 1.5
-    if v >= 24.0: return 1.0
-    if v >= 22.0: return 0.5
-    if v >= 20.0: return 0.1
-    if v <= 16.0: return -1.5
-    if v <= 18.0: return -0.8
+def score_opp_whip(v: float) -> float:
+    if v >= 1.50: return 1.2
+    if v >= 1.35: return 0.8
+    if v >= 1.20: return 0.4
+    if v >= 1.10: return 0.1
+    if v <= 0.95: return -0.6
     return 0.0
 
-def score_opp_team_bb_pct(v: float) -> float:
-    """
-    Opposing team BB rate — patient lineups work counts,
-    reduce 2-strike opportunities.
-    """
-    if v >= 12.0: return -0.8
-    if v >= 10.0: return -0.4
-    if v <= 7.0:  return 0.4
-    if v <= 8.0:  return 0.2
+def score_opp_k_pct(v: float) -> float:
+    """High K pitcher suppresses H+R+RBI."""
+    if v >= 30.0: return -1.2
+    if v >= 26.0: return -0.8
+    if v >= 22.0: return -0.4
+    if v <= 16.0: return  0.6
+    if v <= 18.0: return  0.3
     return 0.0
 
-# ── Park & Environment ────────────────────────────────────────────
-def score_park_k_factor(v: float) -> float:
-    """Park K factor (100 = neutral). Altitude/foul territory affect Ks."""
-    if v >= 108: return 0.5
-    if v >= 104: return 0.3
-    if v >= 100: return 0.0
-    if v <= 90:  return -0.5   # Coors-type suppressor
-    if v <= 95:  return -0.2
+def score_opp_hard_hit(v: float) -> float:
+    """Pitcher allowing lots of hard contact = hittable."""
+    if v >= 45.0: return  0.8
+    if v >= 40.0: return  0.4
+    if v <= 30.0: return -0.6
+    if v <= 35.0: return -0.3
     return 0.0
 
-# ── Command ───────────────────────────────────────────────────────
-def score_first_pitch_strike(v: float, ip: float) -> float:
-    """F-Strike% — getting ahead = more 2-strike counts."""
-    if ip < MIN_IP: return 0.0
-    if v >= 68.0: return 0.8
-    if v >= 65.0: return 0.5
-    if v >= 62.0: return 0.2
-    if v <= 57.0: return -0.5
-    if v <= 59.0: return -0.2
+def score_park_hits(v: float) -> float:
+    """Park HR factor used as general hitter-friendliness proxy."""
+    norm = v - 100
+    if norm >= 20: return  0.5
+    if norm >= 10: return  0.3
+    if norm >=  0: return  0.1
+    if norm >= -10: return -0.1
+    return -0.3
+
+def score_weather_hits(boost: float) -> float:
+    """Weather boost from existing weather model — warm/wind out helps all offense."""
+    if boost >= 1.5: return  0.5
+    if boost >= 0.5: return  0.2
+    if boost <= -1.5: return -0.5
+    if boost <= -0.5: return -0.2
     return 0.0
 
-def score_bb_pct_pitcher(v: float, ip: float) -> float:
-    """Pitcher BB% — walks = fewer 2-strike counts."""
-    if ip < MIN_IP: return 0.0
-    if v <= 5.0:  return 0.8
-    if v <= 7.0:  return 0.4
-    if v <= 9.0:  return 0.0
-    if v >= 12.0: return -0.8
-    if v >= 10.0: return -0.4
-    return 0.0
 
-# ══════════════════════════════════════════════════════════════════
-# MAIN SCORING FUNCTION
-# ══════════════════════════════════════════════════════════════════
-def compute_ks_score(row: pd.Series) -> dict:
-    ip = float(row.get("ip", 0))
-    gs = int(row.get("games_started", 0))
+def compute_hrrbi_score(row: pd.Series) -> float:
+    pa      = safe_float(row.get("pa", 0))
+    bbe_7d  = safe_float(row.get("bbe_7d", 0))
+    pa_14d  = safe_float(row.get("pa_14d", 0))
 
-    # ── Core K ability ────────────────────────────────────────────
-    s_k_pct         = score_k_pct_season(row.get("k_pct_season", 0), ip)
-    s_swstr         = score_swstr_pct(row.get("swstr_pct", 0), ip)
-    s_chase         = score_chase_rate(row.get("chase_rate", 0), ip)
-    s_k_per_9       = score_k_per_9(row.get("k_per_9", 0), ip)
-    s_k_minus_bb    = score_k_minus_bb(row.get("k_minus_bb", 0), ip)
+    # Batter quality
+    s_avg        = score_avg(safe_float(row.get("avg")), pa)
+    s_xwoba      = score_xwoba(safe_float(row.get("xwoba")), pa)
+    s_obp        = score_obp(safe_float(row.get("obp")), pa)
+    s_iso        = score_iso(safe_float(row.get("iso")), pa)
+    s_ld         = score_ld_pct(safe_float(row.get("ld_pct")), pa)
+    s_hh_s       = score_hard_hit_season(safe_float(row.get("hard_hit_pct_season")), pa)
 
-    # ── Stuff ─────────────────────────────────────────────────────
-    s_velo          = score_fastball_velo(row.get("fastball_velo", 0), ip)
-    s_stuff         = score_stuff_plus(row.get("stuff_plus", 0), ip)
+    # Recent form
+    s_ev_7d      = score_avg_ev_7d(safe_float(row.get("avg_ev_7d")), bbe_7d)
+    s_hh_7d      = score_hard_hit_7d(safe_float(row.get("hard_hit_pct_7d")), bbe_7d)
+    s_roll_avg   = score_rolling_avg(safe_float(row.get("avg_14d")), pa_14d)
 
-    # ── Recent form ───────────────────────────────────────────────
-    s_swstr_trend   = score_swstr_trend(row.get("swstr_trend", 0))
-    s_k_21d         = score_k_per_start_21d(row.get("k_per_start_21d", 0))
-    s_velo_trend    = score_velo_trend(row.get("velo_trend", 0))
+    # Context
+    s_bat_order  = score_bat_order(safe_float(row.get("avg_bat_order", 6)), pa)
+    s_speed      = score_speed(safe_float(row.get("speed_score")))
+    s_bb         = score_bb_pct(safe_float(row.get("bb_pct")), pa)
 
-    # ── Innings ───────────────────────────────────────────────────
-    s_ip            = score_avg_ip_per_start(row.get("avg_ip_per_start", 0), gs)
+    # Pitcher matchup
+    s_opp_whip   = score_opp_whip(safe_float(row.get("opp_whip", 1.20), 1.20))
+    s_opp_k      = score_opp_k_pct(safe_float(row.get("opp_k_pct_season", 22.0), 22.0))
+    s_opp_hh     = score_opp_hard_hit(safe_float(row.get("opp_hard_hit_pct", 38.0), 38.0))
 
-    # ── Opponent ──────────────────────────────────────────────────
-    s_opp_k         = score_opp_team_k_pct(row.get("opp_team_k_pct", LEAGUE_AVG_OPP_K_PCT))
-    s_opp_bb        = score_opp_team_bb_pct(row.get("opp_team_bb_pct", 8.5))
-
-    # ── Park & command ────────────────────────────────────────────
-    s_park          = score_park_k_factor(row.get("park_k_factor", 100))
-    s_fps           = score_first_pitch_strike(row.get("first_pitch_strike_pct", 0), ip)
-    s_bb_pitcher    = score_bb_pct_pitcher(row.get("bb_pct_season", 0), ip)
-
-    # ── Group totals ──────────────────────────────────────────────
-    core_k_score    = s_k_pct + s_swstr + s_chase + s_k_per_9 + s_k_minus_bb
-    stuff_score     = s_velo + s_stuff
-    form_score      = s_swstr_trend + s_k_21d + s_velo_trend
-    workload_score  = s_ip
-    matchup_score   = s_opp_k + s_opp_bb
-    env_score       = s_park + s_fps + s_bb_pitcher
+    # Park + weather
+    s_park       = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
+    s_weather    = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
 
     total = round(
-        core_k_score + stuff_score + form_score +
-        workload_score + matchup_score + env_score, 2
+        s_avg + s_xwoba + s_obp + s_iso + s_ld + s_hh_s +
+        s_ev_7d + s_hh_7d + s_roll_avg +
+        s_bat_order + s_speed + s_bb +
+        s_opp_whip + s_opp_k + s_opp_hh +
+        s_park + s_weather, 3
     )
+    return total
 
-    # ── Projected K range ─────────────────────────────────────────
-    # Simple projection: avg_ip_per_start * (k_per_9 / 9)
-    avg_ip = float(row.get("avg_ip_per_start", 5.0))
-    k_per_9 = float(row.get("k_per_9", LEAGUE_AVG_K_PER_9))
-    projected_k = round(avg_ip * (k_per_9 / 9), 1)
 
-    # ── Confidence tier ───────────────────────────────────────────
-    if total >= 16:
-        confidence = "Elite"
-    elif total >= 13:
-        confidence = "High"
-    elif total >= 10:
-        confidence = "Medium"
-    elif total >= 7:
-        confidence = "Low"
-    else:
-        confidence = "Fade"
+def assign_confidence(row: pd.Series) -> str:
+    pa      = safe_float(row.get("pa", 0))
+    bbe_7d  = safe_float(row.get("bbe_7d", 0))
+    opp_bbe = safe_float(row.get("opp_pitcher_bbe", 0))
 
-    # ── Prop signal — most K props are 4.5 or 5.5 ────────────────
-    if projected_k >= 7.0 and total >= 13:
-        prop_signal = "YES 6.5+"
-    elif projected_k >= 6.0 and total >= 10:
-        prop_signal = "YES 5.5"
-    elif projected_k >= 5.0 and total >= 8:
-        prop_signal = "YES 4.5"
-    elif total <= 5:
-        prop_signal = "NO / FADE"
-    else:
-        prop_signal = "LEAN"
+    pts = 0
+    if pa >= 150: pts += 2
+    elif pa >= 80: pts += 1
+    if bbe_7d >= 20: pts += 1
+    if opp_bbe >= 80: pts += 2
+    elif opp_bbe >= 40: pts += 1
 
-    return {
-        "score": total,
-        "confidence": confidence,
-        "prop_signal": prop_signal,
-        "projected_k": projected_k,
-        "core_k_score": round(core_k_score, 2),
-        "stuff_score": round(stuff_score, 2),
-        "form_score": round(form_score, 2),
-        "workload_score": round(workload_score, 2),
-        "matchup_score": round(matchup_score, 2),
-        "env_score": round(env_score, 2),
-        # component detail
-        "s_k_pct": s_k_pct, "s_swstr": s_swstr, "s_chase": s_chase,
-        "s_k_per_9": s_k_per_9, "s_velo": s_velo, "s_stuff": s_stuff,
-        "s_swstr_trend": s_swstr_trend, "s_k_21d": s_k_21d,
-        "s_ip": s_ip, "s_opp_k": s_opp_k, "s_park": s_park,
+    if pts >= 4: return "High"
+    if pts >= 2: return "Medium"
+    return "Low"
+
+
+def build_reason(row: pd.Series) -> str:
+    reasons = []
+    avg = safe_float(row.get("avg"))
+    if avg >= 0.300: reasons.append(f"🎯 .{int(avg*1000)} season avg")
+    roll = safe_float(row.get("avg_14d"))
+    pa14 = safe_float(row.get("pa_14d"))
+    if pa14 >= 20:
+        if roll >= 0.320: reasons.append(f"🔥 .{int(roll*1000)} avg last 14 days")
+        elif roll <= 0.200: reasons.append(f"❄️ .{int(roll*1000)} avg last 14 days — cold")
+    xwoba = safe_float(row.get("xwoba"))
+    if xwoba >= 0.360: reasons.append(f"⚡ xwOBA {xwoba:.3f}")
+    obp = safe_float(row.get("obp"))
+    if obp >= 0.370: reasons.append(f"👟 OBP {obp:.3f} — gets on base")
+    order = safe_float(row.get("avg_bat_order", 6))
+    if order <= 2.0: reasons.append("📋 Leadoff/2-hole — max run scoring spot")
+    elif order <= 5.0: reasons.append(f"📋 Bats {order:.1f} — prime RBI spot")
+    spd = safe_float(row.get("speed_score"))
+    if spd >= 6.0: reasons.append(f"💨 Speed score {spd:.1f} — legs hits + scoring")
+    ld = safe_float(row.get("ld_pct"))
+    if ld >= 24.0: reasons.append(f"📐 {ld:.1f}% LD% — elite contact quality")
+    whip = safe_float(row.get("opp_whip", 1.20), 1.20)
+    if whip >= 1.35: reasons.append(f"🎯 Opp pitcher WHIP {whip:.2f} — hittable")
+    opp_k = safe_float(row.get("opp_k_pct_season", 22.0), 22.0)
+    if opp_k <= 18.0: reasons.append(f"✅ Opp K% {opp_k:.1f}% — contact-friendly matchup")
+    elif opp_k >= 28.0: reasons.append(f"⚠️ Opp K% {opp_k:.1f}% — strikeout risk")
+    park = safe_float(row.get("park_hr_factor", 100), 100)
+    park_name = str(row.get("park_name", ""))
+    if park >= 110: reasons.append(f"🏟️ Hitter-friendly park ({park_name})")
+    if not reasons: reasons.append("Solid across multiple factors")
+    return " | ".join(reasons)
+
+
+def prepare_combined(
+    batters: pd.DataFrame,
+    pitchers: pd.DataFrame,
+    parks: pd.DataFrame,
+    weather: pd.DataFrame,
+    odds_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if batters.empty:
+        print("No HRRBI batter data.")
+        return pd.DataFrame()
+
+    batters = batters.copy()
+    batters.columns = [c.strip() for c in batters.columns]
+
+    # Normalize batter name
+    if "player_name" in batters.columns:
+        batters["player_name_norm"] = batters["player_name"].apply(normalize_name)
+    if "team" in batters.columns:
+        batters = batters.rename(columns={"team": "batter_team"})
+
+    # ── Pitcher matchup merge ──────────────────────────────────────
+    if not pitchers.empty:
+        pitchers = pitchers.copy()
+        pitchers.columns = [c.strip() for c in pitchers.columns]
+
+        pitcher_rename = {
+            "opposing_team":             "batter_team",
+            "pitcher_name":              "opp_pitcher_name",
+            "pitcher_hand":              "opp_pitcher_hand",
+            "season_bbe_allowed":        "opp_pitcher_bbe",
+            "hard_hit_pct_allowed":      "opp_hard_hit_pct",
+            "season_barrel_pct_allowed": "opp_barrel_pct",
+            "hr_per_fb_allowed":         "opp_hr_per_fb",
+        }
+        pitchers = pitchers.rename(columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns})
+
+        # K% from pitcher: use hard_hit as proxy if k_pct not available
+        if "opp_k_pct_season" not in pitchers.columns:
+            pitchers["opp_k_pct_season"] = 22.0
+        if "opp_whip" not in pitchers.columns:
+            pitchers["opp_whip"] = 1.20
+
+        pitcher_cols = [c for c in [
+            "batter_team", "opp_pitcher_name", "opp_pitcher_hand",
+            "opp_pitcher_bbe", "opp_hard_hit_pct", "opp_barrel_pct",
+            "opp_hr_per_fb", "opp_k_pct_season", "opp_whip",
+        ] if c in pitchers.columns]
+
+        if "batter_team" in pitchers.columns:
+            batters = batters.merge(pitchers[pitcher_cols], on="batter_team", how="left")
+
+    # ── Park merge ─────────────────────────────────────────────────
+    if not parks.empty:
+        parks = parks.copy()
+        parks.columns = [c.strip() for c in parks.columns]
+        park_cols = [c for c in ["team", "park_hr_factor", "park_name"] if c in parks.columns]
+        if park_cols:
+            batters = batters.merge(parks[park_cols], left_on="batter_team", right_on="team", how="left")
+
+    # ── Weather merge ──────────────────────────────────────────────
+    if not weather.empty:
+        weather = weather.copy()
+        weather.columns = [c.strip() for c in weather.columns]
+        weather_cols = [c for c in ["home_team", "hr_weather_boost", "wind_context", "temp_f"] if c in weather.columns]
+        if "home_team" in weather.columns:
+            batters = batters.merge(weather[weather_cols], left_on="batter_team", right_on="home_team", how="left")
+
+    # ── Defaults ───────────────────────────────────────────────────
+    defaults = {
+        "opp_whip": 1.20, "opp_k_pct_season": 22.0, "opp_hard_hit_pct": 38.0,
+        "park_hr_factor": 100.0, "hr_weather_boost": 0.0,
+        "avg_bat_order": 5.0, "speed_score": 4.0,
     }
+    for col, val in defaults.items():
+        if col not in batters.columns:
+            batters[col] = val
+        else:
+            batters[col] = batters[col].apply(lambda x: safe_float(x, val))
 
-# ══════════════════════════════════════════════════════════════════
-# DIVERSITY CAP
-# ══════════════════════════════════════════════════════════════════
-def apply_diversity_cap(df: pd.DataFrame, top_n: int = TOP_N) -> pd.DataFrame:
-    """
-    One pitcher per team (natural limit — each team has one starter per day).
-    Chalk cap: max MAX_CHALK_PICKS heavy favorites.
-    """
-    df = df.sort_values("score", ascending=False).reset_index(drop=True)
-    selected = []
+    # ── BA filter ──────────────────────────────────────────────────
+    if "avg" in batters.columns:
+        batters["avg"] = batters["avg"].apply(safe_float)
+        before  = len(batters)
+        batters = batters[batters["avg"] >= MIN_BATTING_AVG].copy()
+        print(f"BA filter: {before - len(batters)} removed, {len(batters)} remaining")
+
+    if batters.empty:
+        return pd.DataFrame()
+
+    # ── Score ──────────────────────────────────────────────────────
+    batters["hrrbi_score"] = batters.apply(compute_hrrbi_score, axis=1)
+    batters["confidence"]  = batters.apply(assign_confidence, axis=1)
+    batters["reason"]      = batters.apply(build_reason, axis=1)
+
+    # ── Odds merge ─────────────────────────────────────────────────
+    if not odds_df.empty and "player_name_norm" in odds_df.columns:
+        odds_slim = odds_df[["player_name_norm", "hrrbi_line", "over_odds", "under_odds"]].copy()
+        odds_slim = odds_slim.rename(columns={
+            "over_odds":  "hrrbi_over_odds",
+            "under_odds": "hrrbi_under_odds",
+        })
+        batters = batters.merge(odds_slim, on="player_name_norm", how="left")
+    else:
+        batters["hrrbi_line"]       = np.nan
+        batters["hrrbi_over_odds"]  = np.nan
+        batters["hrrbi_under_odds"] = np.nan
+
+    return batters
+
+
+def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.sort_values("hrrbi_score", ascending=False).reset_index(drop=True)
+    selected    = []
     team_counts = {}
     chalk_count = 0
+    no_odds     = []
 
     for _, row in df.iterrows():
-        if len(selected) >= top_n:
+        odds = row.get("hrrbi_over_odds")
+        try:
+            odds_val = float(odds)
+            has_odds = True
+        except (TypeError, ValueError):
+            has_odds = False
+            no_odds.append(row)
+            continue
+
+        if len(selected) >= TOP_N:
             break
-        team = row.get("team", "UNK")
+
+        team = str(row.get("batter_team", "UNK"))
         if team_counts.get(team, 0) >= MAX_PER_TEAM:
             continue
-        # Chalk = very short odds (heavy favorite)
-        try:
-            odds_val = float(row.get("ks_odds", 999))
-            is_chalk = odds_val <= -200
-        except (ValueError, TypeError):
-            is_chalk = False
+
+        is_chalk = has_odds and abs(odds_val) >= CHALK_ODDS_THRESHOLD and odds_val < 0
         if is_chalk and chalk_count >= MAX_CHALK_PICKS:
             continue
+
         selected.append(row)
         team_counts[team] = team_counts.get(team, 0) + 1
         if is_chalk:
             chalk_count += 1
 
-    return pd.DataFrame(selected).reset_index(drop=True)
+    for row in no_odds:
+        if len(selected) >= TOP_N:
+            break
+        team = str(row.get("batter_team", "UNK"))
+        if team_counts.get(team, 0) >= MAX_PER_TEAM:
+            continue
+        selected.append(row)
+        team_counts[team] = team_counts.get(team, 0) + 1
 
-# ══════════════════════════════════════════════════════════════════
-# DATA LOADING
-# ══════════════════════════════════════════════════════════════════
-def load_data(wb) -> pd.DataFrame:
-    print("Loading KS_Statcast data...")
-    try:
-        ws = wb.worksheet("KS_Statcast")
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        print(f"  Loaded {len(df)} pitchers from KS_Statcast")
-    except Exception as e:
-        print(f"  ERROR loading KS_Statcast: {e}")
+    if not selected:
         return pd.DataFrame()
 
-    # Load opposing team K rates from main batter data
+    result = pd.DataFrame(selected).reset_index(drop=True)
+    result["rank"] = range(1, len(result) + 1)
+    return result
+
+
+def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
+    sh = gc.open_by_key(sheet_id)
     try:
-        bws = wb.worksheet("HRRBI_Statcast")
-        bdata = bws.get_all_records()
-        batters = pd.DataFrame(bdata)
-        if not batters.empty and "team" in batters.columns and "k_pct" in batters.columns:
-            team_k = batters.groupby("team")["k_pct"].mean().reset_index()
-            team_k.columns = ["opp_team", "opp_team_k_pct"]
-            print(f"  Loaded team K rates for {len(team_k)} teams")
-        else:
-            team_k = pd.DataFrame()
-    except Exception:
-        team_k = pd.DataFrame()
-        print("  INFO: Team K rates not loaded — using league average")
-
-    # Load park K factors
-    try:
-        pkws = wb.worksheet("Park_Factors")
-        pkdata = pkws.get_all_records()
-        parks = pd.DataFrame(pkdata)
-        if "k_factor" in parks.columns:
-            parks = parks[["team", "k_factor"]].rename(columns={"k_factor": "park_k_factor"})
-        print(f"  Loaded park K factors")
-    except Exception:
-        parks = pd.DataFrame()
-        print("  INFO: Park K factors not loaded — using neutral 100")
-
-    # Add opponent/park columns if lineup data not available
-    # These will default to league averages — enriched when main.py provides today's matchups
-    for col, default in [
-        ("opp_team_k_pct", LEAGUE_AVG_OPP_K_PCT),
-        ("opp_team_bb_pct", 8.5),
-        ("park_k_factor", 100),
-        ("ks_odds", ""),
-        ("days_rest", 4),
-    ]:
-        if col not in df.columns:
-            df[col] = default
-
-    # Numeric coerce
-    numeric_cols = [
-        "ip", "games", "games_started", "k_per_9", "k_pct_season",
-        "bb_pct_season", "k_minus_bb", "whip", "era", "fip", "xfip",
-        "swstr_pct", "chase_rate", "zone_contact_pct", "first_pitch_strike_pct",
-        "barrel_pct_against", "hard_hit_pct_against", "gb_pct", "fb_pct",
-        "fastball_velo", "stuff_plus", "avg_ip_per_start", "opener_risk",
-        "k_last_3", "k_per_start_21d", "swstr_pct_21d", "avg_velo_21d",
-        "swstr_trend", "velo_trend", "projected_k_ceiling",
-        "opp_team_k_pct", "opp_team_bb_pct", "park_k_factor", "days_rest",
-    ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-    # Filter: must be a starter with meaningful sample
-    df = df[df["games_started"] >= MIN_GS] if "games_started" in df.columns else df
-    df = df[df["ip"] >= MIN_IP] if "ip" in df.columns else df
-
-    # Exclude openers (hard filter — opener_risk flag)
-    df = df[df.get("opener_risk", pd.Series(0)) == 0] if "opener_risk" in df.columns else df
-
-    return df.reset_index(drop=True)
-
-# ══════════════════════════════════════════════════════════════════
-# SHEET OUTPUT
-# ══════════════════════════════════════════════════════════════════
-def confidence_color(conf: str) -> dict:
-    colors = {
-        "Elite":  {"red": 0.13, "green": 0.55, "blue": 0.13},
-        "High":   {"red": 0.13, "green": 0.73, "blue": 0.37},
-        "Medium": {"red": 0.95, "green": 0.77, "blue": 0.06},
-        "Low":    {"red": 0.94, "green": 0.50, "blue": 0.13},
-        "Fade":   {"red": 0.80, "green": 0.20, "blue": 0.20},
-    }
-    return colors.get(conf, {"red": 1, "green": 1, "blue": 1})
-
-def write_picks(wb, picks: pd.DataFrame, ev_picks: pd.DataFrame):
-    print("Writing Top_KS_Picks sheet...")
-    try:
-        ws = wb.worksheet("Top_KS_Picks")
+        ws = sh.worksheet("Top_HRRBI_Picks")
         ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = wb.add_worksheet(title="Top_KS_Picks", rows=100, cols=30)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Top_HRRBI_Picks", rows=100, cols=40)
 
-    output_cols = [
-        "name", "team", "ip", "avg_ip_per_start",
-        "k_pct_season", "swstr_pct", "chase_rate", "k_per_9",
-        "fastball_velo", "stuff_plus",
-        "k_per_start_21d", "swstr_trend", "velo_trend",
-        "opp_team_k_pct", "park_k_factor",
-        "projected_k", "score", "confidence", "prop_signal",
-        "ks_odds", "bet_placed", "result",
-    ]
+    output_cols = {
+        "rank":             "Rank",
+        "player_name":      "Batter",
+        "batter_team":      "Team",
+        "avg_bat_order":    "Bat Order",
+        "opp_pitcher_name": "Opp Pitcher",
+        "opp_pitcher_hand": "P Throws",
+        "park_name":        "Park",
+        "hrrbi_score":      "H+R+RBI Score",
+        "confidence":       "Confidence",
+        "hrrbi_line":       "Line",
+        "hrrbi_over_odds":  "Over Odds",
+        "hrrbi_under_odds": "Under Odds",
+        "reason":           "Key Reasons",
+        "avg":              "AVG",
+        "obp":              "OBP",
+        "xwoba":            "xwOBA",
+        "iso":              "ISO",
+        "ld_pct":           "LD%",
+        "avg_ev_7d":        "Avg EV (7d)",
+        "avg_14d":          "AVG (14d)",
+        "pa_14d":           "PA (14d)",
+        "speed_score":      "Speed",
+        "bb_pct":           "BB%",
+        "opp_whip":         "Opp WHIP",
+        "opp_k_pct_season": "Opp K%",
+        "park_hr_factor":   "Park Factor",
+        "wind_context":     "Wind",
+        "temp_f":           "Temp (°F)",
+    }
 
-    for col in output_cols:
-        if col not in picks.columns:
-            picks[col] = ""
+    available = {k: v for k, v in output_cols.items() if k in picks.columns}
+    out_df    = picks[list(available.keys())].rename(columns=available)
 
-    rows_to_write = []
-    rows_to_write.append(["⚾ TOP PITCHER STRIKEOUT PICKS"] + [""] * (len(output_cols) - 1))
-    rows_to_write.append(output_cols)
-    for _, row in picks.iterrows():
-        rows_to_write.append([str(row.get(c, "")) for c in output_cols])
-
-    rows_to_write.append([""] * len(output_cols))
-
-    # EV subsection: high SwStr% but not in top picks (may be undervalued)
-    rows_to_write.append(["📊 K EV WATCH — High SwStr%, Not in Top Picks"] + [""] * (len(output_cols) - 1))
-    rows_to_write.append(output_cols)
-    for _, row in ev_picks.iterrows():
-        rows_to_write.append([str(row.get(c, "")) for c in output_cols])
-
-    ws.update(rows_to_write)
+    out_df = out_df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
+    values = [out_df.columns.tolist()] + out_df.astype(str).values.tolist()
+    ws.update(values)
 
     # Formatting
-    for title_row in [1, len(picks) + 4]:
-        ws.format(f"A{title_row}", {
-            "backgroundColor": {"red": 0.13, "green": 0.55, "blue": 0.34},
-            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                           "fontSize": 12},
-        })
+    ws_id = ws.id
+    reqs  = []
 
-    for header_row in [2, len(picks) + 5]:
-        ws.format(f"A{header_row}:Z{header_row}", {
-            "backgroundColor": {"red": 0.20, "green": 0.20, "blue": 0.20},
-            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-        })
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 1, "startColumnIndex": 0, "endColumnIndex": len(out_df.columns)},
+        "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG, "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10}, "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP"}},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+    }})
 
-    conf_col_idx = output_cols.index("confidence") + 1
-    conf_letter = chr(64 + conf_col_idx)
-    for i, (_, row) in enumerate(picks.iterrows()):
-        sheet_row = i + 3
-        color = confidence_color(str(row.get("confidence", "")))
-        ws.format(f"{conf_letter}{sheet_row}", {
-            "backgroundColor": color,
-            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-        })
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": len(out_df.columns)},
+        "cell": {"userEnteredFormat": {"backgroundColor": COLOR_HEADER, "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+    }})
 
-    print(f"  ✓ Top_KS_Picks written: {len(picks)} picks + {len(ev_picks)} EV")
+    for i in range(len(out_df)):
+        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": len(out_df.columns)},
+            "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+            "fields": "userEnteredFormat(backgroundColor)",
+        }})
 
-# ══════════════════════════════════════════════════════════════════
-# SCORECARD
-# ══════════════════════════════════════════════════════════════════
-def update_scorecard(wb):
-    print("Updating KS_Scorecard...")
-    try:
-        ws = wb.worksheet("Top_KS_Picks")
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-    except Exception as e:
-        print(f"  WARNING: could not load picks for scorecard: {e}")
-        return
-
-    if df.empty or "result" not in df.columns:
-        print("  INFO: No result data yet for scorecard")
-        return
-
-    df = df[df["result"].isin(["HIT", "MISS", "1", "0"])].copy()
-    if df.empty:
-        return
-
-    df["hit"] = df["result"].isin(["HIT", "1"]).astype(int)
-    df["score_num"] = pd.to_numeric(df.get("score", 0), errors="coerce").fillna(0)
-
-    tiers = [
-        ("16+",    df["score_num"] >= 16),
-        ("13+",    df["score_num"] >= 13),
-        ("10+",    df["score_num"] >= 10),
-        ("7+",     df["score_num"] >= 7),
-        ("Under 7", df["score_num"] < 7),
-    ]
+    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}, "tabColorStyle": {"rgbColor": COLOR_HEADER}}, "fields": "gridProperties.frozenRowCount,tabColorStyle"}})
 
     try:
-        sc_ws = wb.worksheet("KS_Scorecard")
+        sh.batch_update({"requests": reqs})
+    except APIError as e:
+        print(f"Formatting failed: {e}")
+
+    print(f"Written {len(out_df)} H+R+RBI picks to Top_HRRBI_Picks")
+
+
+def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
+    today_str = date.today().strftime("%Y-%m-%d")
+    sh        = gc.open_by_key(sheet_id)
+
+    try:
+        ws       = sh.worksheet("HRRBI_Picks_Log")
+        existing = pd.DataFrame(ws.get_all_records())
+    except gspread.WorksheetNotFound:
+        ws       = sh.add_worksheet(title="HRRBI_Picks_Log", rows=5000, cols=20)
+        existing = pd.DataFrame()
+
+    if not existing.empty and "date" in existing.columns:
+        existing = existing[existing["date"] != today_str].copy()
+
+    new_rows = []
+    for _, row in picks.iterrows():
+        new_rows.append({
+            "date":        today_str,
+            "rank":        str(row.get("rank", "")),
+            "player_name": str(row.get("player_name", "")),
+            "team":        str(row.get("batter_team", "")),
+            "hrrbi_score": str(row.get("hrrbi_score", "")),
+            "confidence":  str(row.get("confidence", "")),
+            "line":        str(row.get("hrrbi_line", "")),
+            "over_odds":   str(row.get("hrrbi_over_odds", "")),
+            "hit":         "Pending",
+            "bet_placed":  "",
+            "result":      "",
+        })
+
+    if not new_rows:
+        return
+
+    new_df       = pd.DataFrame(new_rows)
+    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined_log = combined_log.fillna("")
+
+    ws.clear()
+    ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist())
+    print(f"Logged {len(new_rows)} H+R+RBI picks to HRRBI_Picks_Log")
+
+
+def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
+    sh = gc.open_by_key(sheet_id)
+    try:
+        ws_log = sh.worksheet("HRRBI_Picks_Log")
+        log    = pd.DataFrame(ws_log.get_all_records())
+    except gspread.WorksheetNotFound:
+        print("HRRBI_Picks_Log not found — skipping scorecard")
+        return
+
+    if log.empty:
+        return
+
+    scored = log[log["hit"].isin(["Yes", "No"])].copy()
+    if scored.empty:
+        print("No scored H+R+RBI picks yet.")
+        return
+
+    scored["hit_bool"]   = scored["hit"] == "Yes"
+    scored["score_num"]  = pd.to_numeric(scored["hrrbi_score"], errors="coerce")
+
+    rows = []
+    def add_row(label, sub):
+        if sub.empty: return
+        total = len(sub)
+        hits  = int(sub["hit_bool"].sum())
+        rows.append([label, total, hits, f"{hits/total*100:.1f}%"])
+
+    add_row("All Picks", scored)
+    for tier, mask in [
+        ("Score 12+",    scored["score_num"] >= 12),
+        ("Score 10+",    scored["score_num"] >= 10),
+        ("Score 8+",     scored["score_num"] >= 8),
+        ("Score Under 8",scored["score_num"] <  8),
+    ]:
+        add_row(tier, scored[mask])
+
+    for conf in ["High", "Medium", "Low"]:
+        add_row(f"Confidence: {conf}", scored[scored["confidence"] == conf])
+
+    try:
+        sc_ws = sh.worksheet("HRRBI_Scorecard")
         sc_ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        sc_ws = wb.add_worksheet(title="KS_Scorecard", rows=50, cols=10)
+    except gspread.WorksheetNotFound:
+        sc_ws = sh.add_worksheet(title="HRRBI_Scorecard", rows=50, cols=6)
 
-    headers = ["Score Tier", "Picks", "Hits", "Hit Rate", "Notes"]
-    sc_rows = [["⚾ PITCHER K MODEL PERFORMANCE"] + [""] * 4, headers]
+    sc_ws.update([["Category", "Picks", "Hits", "Hit Rate"]] + rows)
+    print("HRRBI_Scorecard updated")
 
-    for label, mask in tiers:
-        subset = df[mask]
-        picks = len(subset)
-        hits = subset["hit"].sum()
-        rate = f"{hits/picks*100:.1f}%" if picks > 0 else "—"
-        note = "✅ Strong" if picks > 0 and hits/picks >= 0.50 else (
-               "⚠️ Weak" if picks > 0 and hits/picks < 0.30 else "")
-        sc_rows.append([label, picks, hits, rate, note])
 
-    sc_ws.update(sc_rows)
-    sc_ws.format("A1:E1", {
-        "backgroundColor": {"red": 0.13, "green": 0.55, "blue": 0.34},
-        "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-    })
-    print("  ✓ KS_Scorecard updated")
-
-# ══════════════════════════════════════════════════════════════════
-# TIMESTAMP
-# ══════════════════════════════════════════════════════════════════
-def write_timestamp(ws):
-    eastern = pytz.timezone("America/New_York")
-    ts = datetime.now(eastern).strftime("Last run: %B %d, %Y %I:%M %p ET")
+def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
+    et     = pytz.timezone("America/New_York")
+    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+    sh     = gc.open_by_key(sheet_id)
     try:
-        ws.insert_row([ts], index=1)
-    except Exception:
-        pass
+        ws = sh.worksheet("Top_HRRBI_Picks")
+        ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
+    except Exception as e:
+        print(f"Timestamp failed: {e}")
+    print(f"H+R+RBI timestamp written: {now_et}")
 
-# ══════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════
-def main():
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
-    if not sheet_id:
-        raise ValueError("GOOGLE_SHEET_ID environment variable not set")
 
-    wb = get_sheet(sheet_id)
-    df = load_data(wb)
+def main() -> None:
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    gc       = get_gspread_client()
 
-    if df.empty:
-        print("ERROR: No pitcher data loaded — aborting")
+    print("Reading HRRBI data from Google Sheets...")
+    batters  = read_sheet(gc, sheet_id, "HRRBI_Statcast")
+    pitchers = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
+    parks    = read_sheet(gc, sheet_id, "Park_Factors")
+    weather  = read_sheet(gc, sheet_id, "Weather")
+    odds_df  = read_sheet(gc, sheet_id, "HRRBI_Odds")
+
+    print(f"Batters: {len(batters)} rows")
+    print(f"Pitchers: {len(pitchers)} rows")
+    print(f"Parks: {len(parks)} rows")
+    print(f"Weather: {len(weather)} rows")
+    print(f"HRRBI Odds: {len(odds_df)} rows")
+
+    combined = prepare_combined(batters, pitchers, parks, weather, odds_df)
+
+    if combined.empty:
+        print("WARNING: No combined H+R+RBI data.")
         return
 
-    print(f"\nScoring {len(df)} pitchers...")
-    score_results = df.apply(compute_ks_score, axis=1)
-    score_df = pd.DataFrame(score_results.tolist())
-    df = pd.concat([df.reset_index(drop=True), score_df], axis=1)
+    picks = apply_diversity_cap(combined)
 
-    df = df.sort_values("score", ascending=False).reset_index(drop=True)
+    if picks.empty:
+        print("WARNING: No H+R+RBI picks generated.")
+        return
 
-    top_picks = apply_diversity_cap(df, TOP_N)
-    top_picks["section"] = "Main"
+    print(f"\nTop {len(picks)} H+R+RBI Picks:")
+    print(picks[["rank", "player_name", "batter_team", "hrrbi_score", "confidence"]].to_string(index=False))
 
-    # EV: high SwStr% pitchers not in top picks
-    top_names = set(top_picks.get("name", pd.Series()).tolist())
-    ev_candidates = df[~df.get("name", pd.Series()).isin(top_names)].copy()
-    ev_picks = ev_candidates[
-        (ev_candidates.get("swstr_pct", pd.Series(0)) >= 13.0) &
-        (ev_candidates.get("k_pct_season", pd.Series(0)) >= 24.0) &
-        (ev_candidates.get("avg_ip_per_start", pd.Series(0)) >= 5.0)
-    ].head(5).copy()
-    ev_picks["section"] = "EV"
+    write_picks_to_sheet(gc, sheet_id, picks)
+    log_picks(gc, sheet_id, picks)
+    update_scorecard(gc, sheet_id)
+    write_timestamp(gc, sheet_id)
 
-    print(f"\n{'='*55}")
-    print(f"Top {len(top_picks)} Pitcher K Picks:")
-    for _, row in top_picks.iterrows():
-        print(f"  {row.get('name','?'):22s}  score={row.get('score',0):5.2f}  "
-              f"proj_k={row.get('projected_k',0):4.1f}  "
-              f"{row.get('confidence','?'):8s}  {row.get('prop_signal','?')}")
-    print(f"{'='*55}\n")
-
-    write_picks(wb, top_picks, ev_picks)
-
-    ws = wb.worksheet("Top_KS_Picks")
-    write_timestamp(ws)
-
-    update_scorecard(wb)
-    print("✓ KS model complete")
 
 if __name__ == "__main__":
     main()
