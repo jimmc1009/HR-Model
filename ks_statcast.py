@@ -1,13 +1,13 @@
 """
 ks_statcast.py
-Pulls pitcher Statcast data for the Pitcher Strikeout model.
-Outputs to 'KS_Statcast' Google Sheet tab.
-Mirrors pitcher_statcast.py architecture from the HR model.
+Pulls pitcher data for the Pitcher Strikeout model.
+Uses Pitcher_Statcast_2026 already written by pitcher_statcast.py (avoids FanGraphs).
+Also pulls season-level FanGraphs pitching via pybaseball with retry/fallback.
 """
 
 import pandas as pd
 import numpy as np
-from pybaseball import pitching_stats, statcast_pitcher
+from pybaseball import statcast, pitching_stats
 from datetime import date, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -16,7 +16,6 @@ import json
 import warnings
 warnings.filterwarnings("ignore")
 
-# ── Google Sheets auth ──────────────────────────────────────────────────────
 def get_sheet(sheet_id: str):
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -28,219 +27,198 @@ def get_sheet(sheet_id: str):
     client = gspread.authorize(creds)
     return client.open_by_key(sheet_id)
 
-# ── Date helpers ────────────────────────────────────────────────────────────
-def days_ago(n: int) -> str:
+def days_ago(n):
     return (date.today() - timedelta(days=n)).strftime("%Y-%m-%d")
 
-def today_str() -> str:
+def today_str():
     return date.today().strftime("%Y-%m-%d")
 
-# ── Pull season FanGraphs pitching stats ────────────────────────────────────
-def pull_season_pitching() -> pd.DataFrame:
-    print("Pulling season pitching stats (FanGraphs)...")
+def pull_season_pitching():
+    print("Pulling season pitching stats (pybaseball)...")
     try:
         df = pitching_stats(2025, qual=20)
         cols = {
-            "IDfg": "fg_id",
-            "Name": "name",
-            "Team": "team",
-            "G": "games",
-            "GS": "games_started",
-            "IP": "ip",
-            "TBF": "batters_faced",
-            "SO": "strikeouts_season",
-            "K/9": "k_per_9",
-            "K%": "k_pct_season",
-            "BB%": "bb_pct_season",
-            "K-BB%": "k_minus_bb",
-            "WHIP": "whip",
-            "ERA": "era",
-            "FIP": "fip",
-            "xFIP": "xfip",
-            "SwStr%": "swstr_pct",
-            "O-Swing%": "chase_rate",
-            "Z-Contact%": "zone_contact_pct",
-            "F-Strike%": "first_pitch_strike_pct",
-            "Barrel%": "barrel_pct_against",
-            "Hard%": "hard_hit_pct_against",
-            "GB%": "gb_pct",
-            "FB%": "fb_pct",
-            "HR/FB": "hr_per_fb",
-            "vFA (pfx)": "fastball_velo",
-            "Stuff+": "stuff_plus",
-            "Location+": "location_plus",
-            "Pitching+": "pitching_plus",
+            "Name":       "name",
+            "Team":       "team",
+            "G":          "games",
+            "GS":         "games_started",
+            "IP":         "ip",
+            "SO":         "strikeouts_season",
+            "K/9":        "k_per_9",
+            "K%":         "k_pct_season",
+            "BB%":        "bb_pct_season",
+            "K-BB%":      "k_minus_bb",
+            "WHIP":       "whip",
+            "ERA":        "era",
+            "FIP":        "fip",
+            "SwStr%":     "swstr_pct",
+            "O-Swing%":   "chase_rate",
+            "F-Strike%":  "first_pitch_strike_pct",
+            "Hard%":      "hard_hit_pct_against",
+            "GB%":        "gb_pct",
+            "FB%":        "fb_pct",
+            "HR/FB":      "hr_per_fb",
+            "vFA (pfx)":  "fastball_velo",
+            "Stuff+":     "stuff_plus",
         }
         df = df.rename(columns={k: v for k, v in cols.items() if k in df.columns})
         keep = [v for v in cols.values() if v in df.columns]
 
-        # Avg innings per start
         if "ip" in df.columns and "games_started" in df.columns:
             df["avg_ip_per_start"] = (
                 df["ip"] / df["games_started"].replace(0, np.nan)
-            ).round(2)
+            ).round(2).fillna(0)
         else:
             df["avg_ip_per_start"] = 0.0
 
-        # Starter flag (avg IP < 4.0 = opener/bulk risk)
         df["opener_risk"] = (df.get("avg_ip_per_start", 5.0) < 4.0).astype(int)
-
-        keep += ["avg_ip_per_start", "opener_risk"]
+        keep += ["avg_ip_per_start","opener_risk"]
         keep = [c for c in keep if c in df.columns]
+        print(f"  Season pitching: {len(df)} pitchers")
         return df[keep].copy()
     except Exception as e:
         print(f"  WARNING: season pitching pull failed: {e}")
         return pd.DataFrame()
 
-# ── Pull last 3 starts stats ─────────────────────────────────────────────────
-def pull_recent_starts(season_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Pulls last 3 starts K totals and SwStr% trend from Statcast.
-    Uses pitcher mlb_id from season_df if available.
-    """
-    print("Pulling recent starts data...")
-    start = days_ago(21)  # ~3 starts worth
-    end = today_str()
-
+def pull_recent_starts():
+    print("Pulling recent 21-day pitcher Statcast data...")
     try:
-        from pybaseball import statcast
-        df = statcast(start_dt=start, end_dt=end)
+        df = statcast(start_dt=days_ago(21), end_dt=today_str())
         if df.empty:
-            print("  WARNING: no recent Statcast data")
             return pd.DataFrame()
 
-        # Swing and miss events
         df["swinging_strike"] = df["description"].isin(
-            ["swinging_strike", "swinging_strike_blocked", "foul_tip"]
+            ["swinging_strike","swinging_strike_blocked","foul_tip"]
         ).astype(int)
         df["pitch"] = 1
 
-        # Strikeout events (PA level)
-        ko_events = df[df["events"] == "strikeout"]
-        ko_agg = ko_events.groupby("pitcher").agg(
-            k_last_3=("events", "count")
+        # Strikeouts
+        ko = df[df["events"] == "strikeout"].groupby("pitcher").agg(
+            k_last_3=("events","count")
         ).reset_index()
 
-        # SwStr% over last 21 days
-        swstr_agg = df.groupby("pitcher").agg(
-            pitches_21d=("pitch", "sum"),
-            swstr_21d=("swinging_strike", "sum"),
+        # SwStr%
+        sw = df.groupby("pitcher").agg(
+            pitches_21d=("pitch","sum"),
+            swstr_21d=("swinging_strike","sum"),
         ).reset_index()
-        swstr_agg["swstr_pct_21d"] = (
-            swstr_agg["swstr_21d"] / swstr_agg["pitches_21d"] * 100
-        ).round(1)
+        sw["swstr_pct_21d"] = (sw["swstr_21d"] / sw["pitches_21d"] * 100).round(1)
 
-        # Velocity trend (last 21d avg fastball velo)
-        ff = df[df["pitch_type"].isin(["FF", "SI", "FC"])]
-        velo_agg = ff.groupby("pitcher").agg(
-            avg_velo_21d=("release_speed", "mean")
-        ).reset_index()
-        velo_agg["avg_velo_21d"] = velo_agg["avg_velo_21d"].round(1)
+        # Velo
+        ff = df[df["pitch_type"].isin(["FF","SI","FC"])]
+        vl = ff.groupby("pitcher").agg(avg_velo_21d=("release_speed","mean")).reset_index()
+        vl["avg_velo_21d"] = vl["avg_velo_21d"].round(1)
 
-        # K per start estimate
-        ko_agg["k_per_start_21d"] = (ko_agg["k_last_3"] / 3).round(1)
+        ko["k_per_start_21d"] = (ko["k_last_3"] / 3).round(1)
 
-        # Merge all recent
-        recent = ko_agg.merge(swstr_agg[["pitcher", "swstr_pct_21d"]], on="pitcher", how="outer")
-        recent = recent.merge(velo_agg, on="pitcher", how="outer")
-        recent = recent.rename(columns={"pitcher": "mlb_id"})
-
-        return recent[["mlb_id", "k_last_3", "k_per_start_21d",
-                        "swstr_pct_21d", "avg_velo_21d"]]
+        recent = ko.merge(sw[["pitcher","swstr_pct_21d"]], on="pitcher", how="outer")
+        recent = recent.merge(vl, on="pitcher", how="outer")
+        recent = recent.rename(columns={"pitcher":"mlb_id"})
+        print(f"  Recent starts: {len(recent)} pitchers")
+        return recent[["mlb_id","k_last_3","k_per_start_21d","swstr_pct_21d","avg_velo_21d"]]
     except Exception as e:
         print(f"  WARNING: recent starts pull failed: {e}")
         return pd.DataFrame()
 
-# ── Pull umpire zone tendency (if available via Statcast) ────────────────────
-def pull_umpire_tendencies() -> pd.DataFrame:
-    """
-    Approximates umpire zone generosity by called strike rate on pitches
-    just off the zone. Used as a game-day modifier in ks_picks.py.
-    Note: Umpire assignments not available in advance via free APIs.
-    Returns empty — flagged for manual enrichment or paid API.
-    """
-    print("  INFO: Umpire zone data not available via free API — skipping")
-    return pd.DataFrame()
-
-# ── Main assembly ────────────────────────────────────────────────────────────
 def build_ks_statcast(sheet_id: str):
     print("\n=== KS Statcast Pull ===")
+    wb = get_sheet(sheet_id)
 
+    # Load Pitcher_Statcast_2026 written by pitcher_statcast.py
+    print("Loading Pitcher_Statcast_2026 from Google Sheets...")
+    try:
+        ws = wb.worksheet("Pitcher_Statcast_2026")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        print(f"  Loaded {len(df)} pitchers from Pitcher_Statcast_2026")
+    except Exception as e:
+        print(f"  WARNING: could not load Pitcher_Statcast_2026: {e}")
+        df = pd.DataFrame()
+
+    # Supplement with FanGraphs season stats if available
     season = pull_season_pitching()
-    if season.empty:
-        print("ERROR: season pitching data empty — aborting")
+
+    if not season.empty and not df.empty and "name" in df.columns and "name" in season.columns:
+        # Merge FanGraphs columns not already in pitcher statcast sheet
+        new_cols = [c for c in season.columns if c not in df.columns and c != "name"]
+        if new_cols:
+            df = df.merge(season[["name"] + new_cols], on="name", how="left")
+            print(f"  Merged {len(new_cols)} FanGraphs columns into pitcher data")
+    elif not season.empty and df.empty:
+        df = season.copy()
+        print("  Using FanGraphs data as primary source")
+
+    if df.empty:
+        print("ERROR: No pitcher data available — aborting")
         return
 
-    recent = pull_recent_starts(season)
+    # Pull recent form
+    recent = pull_recent_starts()
 
-    df = season.copy()
+    # Merge recent on mlb_id
+    id_col = None
+    for c in ["mlb_id","pitcher_id","player_id"]:
+        if c in df.columns:
+            id_col = c
+            break
 
-    if not recent.empty and "mlb_id" in df.columns:
-        df = df.merge(recent, on="mlb_id", how="left")
-    elif not recent.empty:
-        # Merge on name as fallback if mlb_id not present
-        print("  INFO: mlb_id not in season df — recent starts merged by name if available")
+    if id_col and not recent.empty:
+        df = df.merge(recent.rename(columns={"mlb_id": id_col}), on=id_col, how="left")
 
-    # Fill missing recent columns
-    for col in ["k_last_3", "k_per_start_21d", "swstr_pct_21d", "avg_velo_21d"]:
+    # Fill missing columns
+    for col in ["k_last_3","k_per_start_21d","swstr_pct_21d","avg_velo_21d"]:
         if col not in df.columns:
             df[col] = 0.0
-        df[col] = df[col].fillna(0.0)
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # SwStr% delta: recent vs season (velocity/form trend)
+    # Derived trend columns
     if "swstr_pct" in df.columns and "swstr_pct_21d" in df.columns:
-        df["swstr_trend"] = (df["swstr_pct_21d"] - df["swstr_pct"]).round(1)
+        df["swstr_trend"] = (
+            pd.to_numeric(df["swstr_pct_21d"], errors="coerce") -
+            pd.to_numeric(df["swstr_pct"],     errors="coerce")
+        ).round(1).fillna(0.0)
     else:
         df["swstr_trend"] = 0.0
 
-    # Velo trend flag
     if "fastball_velo" in df.columns and "avg_velo_21d" in df.columns:
-        df["velo_trend"] = (df["avg_velo_21d"] - df["fastball_velo"]).round(1)
+        df["velo_trend"] = (
+            pd.to_numeric(df["avg_velo_21d"],    errors="coerce") -
+            pd.to_numeric(df["fastball_velo"],   errors="coerce")
+        ).round(1).fillna(0.0)
     else:
         df["velo_trend"] = 0.0
 
-    # K ceiling multiplier based on projected innings
-    # avg_ip_per_start * (k_per_9 / 9) = projected K ceiling
+    # Projected K ceiling
     if "avg_ip_per_start" in df.columns and "k_per_9" in df.columns:
         df["projected_k_ceiling"] = (
-            df["avg_ip_per_start"] * (df["k_per_9"] / 9)
+            pd.to_numeric(df["avg_ip_per_start"], errors="coerce").fillna(0) *
+            (pd.to_numeric(df["k_per_9"],         errors="coerce").fillna(0) / 9)
         ).round(1)
     else:
         df["projected_k_ceiling"] = 0.0
 
-    # Sort by k_pct_season descending
-    sort_col = "k_pct_season" if "k_pct_season" in df.columns else df.columns[0]
-    df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+    print(f"  Total pitchers in KS_Statcast: {len(df)}")
 
-    print(f"  Total pitchers: {len(df)}")
-
-    # ── Write to Google Sheets ───────────────────────────────────────────────
-    print("Writing to Google Sheets (KS_Statcast)...")
-    wb = get_sheet(sheet_id)
-
+    # Write to sheet
     try:
-        ws = wb.worksheet("KS_Statcast")
-        ws.clear()
+        out_ws = wb.worksheet("KS_Statcast")
+        out_ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = wb.add_worksheet(title="KS_Statcast", rows=400, cols=40)
+        out_ws = wb.add_worksheet(title="KS_Statcast", rows=400, cols=40)
 
     df = df.fillna("").replace([np.inf, -np.inf], "")
     headers = df.columns.tolist()
-    rows = df.values.tolist()
-    ws.update([headers] + rows)
+    rows    = df.values.tolist()
+    out_ws.update([headers] + rows)
 
-    # Header formatting
-    ws.format("A1:AZ1", {
+    out_ws.format("A1:AZ1", {
         "backgroundColor": {"red": 0.13, "green": 0.55, "blue": 0.34},
         "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
     })
-
     print(f"  ✓ KS_Statcast written: {len(df)} rows")
 
-
 if __name__ == "__main__":
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID","")
     if not sheet_id:
-        raise ValueError("GOOGLE_SHEET_ID environment variable not set")
+        raise ValueError("GOOGLE_SHEET_ID not set")
     build_ks_statcast(sheet_id)
-
