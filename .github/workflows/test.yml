@@ -9,6 +9,21 @@ on:
         default: "full"
         type: choice
         options:
+          - full
+          - full_hr
+          - full_hrrbi
+          - full_ks
+          - main
+          - pitcher_statcast
+          - park_factors
+          - weather
+          - odds
+          - hr_picks
+          - backtest
+          - hrrbi_statcast
+          - hrrbi_picks
+          - ks_statcast
+          - ks_picks
 
 jobs:
   test:
@@ -29,7 +44,6 @@ jobs:
         run: |
           pip install pybaseball pandas numpy gspread oauth2client pytz requests
 
-      # ── Shared prerequisites (always run for picks scripts) ───────────────
       - name: Run main.py
         if: >
           inputs.script == 'full' ||
@@ -41,7 +55,7 @@ jobs:
           inputs.script == 'hrrbi_picks' ||
           inputs.script == 'ks_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python main.py
 
@@ -52,7 +66,7 @@ jobs:
           inputs.script == 'pitcher_statcast' ||
           inputs.script == 'hr_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python pitcher_statcast.py
 
@@ -67,7 +81,7 @@ jobs:
           inputs.script == 'hrrbi_picks' ||
           inputs.script == 'ks_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python park_factors.py
 
@@ -78,7 +92,7 @@ jobs:
           inputs.script == 'weather' ||
           inputs.script == 'hr_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python weather.py
 
@@ -89,30 +103,28 @@ jobs:
           inputs.script == 'odds' ||
           inputs.script == 'hr_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python odds.py
 
-      # ── HR model ──────────────────────────────────────────────────────────
       - name: Run hr_picks.py
         if: >
           inputs.script == 'full' ||
           inputs.script == 'full_hr' ||
           inputs.script == 'hr_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks.py
 
       - name: Run backtest.py
         if: inputs.script == 'backtest'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python backtest.py
 
-      # ── HRRBI model ───────────────────────────────────────────────────────
       - name: Run hrrbi_statcast.py
         if: >
           inputs.script == 'full' ||
@@ -120,7 +132,7 @@ jobs:
           inputs.script == 'hrrbi_statcast' ||
           inputs.script == 'hrrbi_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hrrbi_statcast.py
 
@@ -130,11 +142,10 @@ jobs:
           inputs.script == 'full_hrrbi' ||
           inputs.script == 'hrrbi_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hrrbi_picks.py
 
-      # ── KS model ──────────────────────────────────────────────────────────
       - name: Run ks_statcast.py
         if: >
           inputs.script == 'full' ||
@@ -142,7 +153,7 @@ jobs:
           inputs.script == 'ks_statcast' ||
           inputs.script == 'ks_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_statcast.py
 
@@ -152,6 +163,6 @@ jobs:
           inputs.script == 'full_ks' ||
           inputs.script == 'ks_picks'
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_picks.py
