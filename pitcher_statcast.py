@@ -153,18 +153,17 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         teams.add(mlb_abbr)
         return teams
 
-    for days_ahead in (0,):
-        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        label = "today" if days_ahead == 0 else "tomorrow"
-        try:
-            print(f"Fetching probable pitchers from MLB API for {label}...")
-            pitchers = fetch_mlb_probables(date_str)
-            if pitchers:
-                print(f"MLB API found {len(pitchers)} probables for {label}.")
-                return pitchers
-            print(f"MLB API returned no probables for {label}.")
-        except Exception as e:
-            print(f"MLB API failed for {label}: {e}")
+    # Today only — never fall back to tomorrow
+    date_str = date.today().strftime("%Y-%m-%d")
+    try:
+        print(f"Fetching probable pitchers from MLB API for today...")
+        pitchers = fetch_mlb_probables(date_str)
+        if pitchers:
+            print(f"MLB API found {len(pitchers)} probables for today.")
+            return pitchers
+        print(f"MLB API returned no probables for today.")
+    except Exception as e:
+        print(f"MLB API failed for today: {e}")
 
     try:
         print("Trying ESPN API for probable pitchers...")
@@ -189,12 +188,10 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
 
     print("Trying MLB API for playing teams...")
     playing_teams: Set[str] = set()
-    for days_ahead in (0, 1):
-        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        try:
-            playing_teams |= fetch_playing_teams(date_str)
-        except Exception as e:
-            print(f"MLB API playing teams failed: {e}")
+    try:
+        playing_teams |= fetch_playing_teams(date_str)
+    except Exception as e:
+        print(f"MLB API playing teams failed: {e}")
 
     if playing_teams:
         print(f"MLB API playing teams found: {playing_teams}")
@@ -253,15 +250,14 @@ def get_today_matchups() -> Tuple[Dict[str, str], Set[str]]:
                             home_teams.add(home_abbr)
         return matchups, home_teams
 
-    for days_ahead in (0, 1):
-        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        try:
-            matchups, home_teams = fetch_mlb_matchups(date_str)
-            if matchups:
-                print(f"MLB API matchups: {len(matchups) // 2} games")
-                return matchups, home_teams
-        except Exception as e:
-            print(f"MLB API matchups failed: {e}")
+    date_str = date.today().strftime("%Y-%m-%d")
+    try:
+        matchups, home_teams = fetch_mlb_matchups(date_str)
+        if matchups:
+            print(f"MLB API matchups: {len(matchups) // 2} games")
+            return matchups, home_teams
+    except Exception as e:
+        print(f"MLB API matchups failed: {e}")
 
     try:
         matchups, home_teams = fetch_espn_matchups()
@@ -406,11 +402,6 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
-    """
-    Compute KS model metrics from raw Statcast and attach to pitcher output.
-    Avoids a separate full Statcast pull in ks_statcast.py.
-    Returns df keyed on pitcher ID.
-    """
     if df.empty or not probable_ids:
         return pd.DataFrame()
 
@@ -420,7 +411,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
 
     pitcher_df["game_date"] = pd.to_datetime(pitcher_df["game_date"])
 
-    # ── PA-level for K%, BB%, K/9, K-BB% ──────────────────────────
     pa_df = pitcher_df[pitcher_df["events"].astype("string").str.lower().isin(PA_EVENTS)].copy()
     pa_df = pa_df.drop_duplicates(
         subset=[c for c in ["game_pk", "at_bat_number", "pitcher"] if c in pa_df.columns]
@@ -445,7 +435,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     pa_agg["k_per_9"]         = (pa_agg["ks_k_season"] / pa_agg["ks_ip"].replace(0, np.nan) * 9).round(1)
     pa_agg["whip_proxy"]      = ((pa_agg["ks_hits_allowed"] + pa_agg["ks_bb_season"]) / pa_agg["ks_ip"].replace(0, np.nan)).round(2)
 
-    # ── Games started and avg IP per start ─────────────────────────
     outs_by_game = (
         pa_df[pa_df["is_out"] == 1]
         .groupby(["pitcher", "game_pk"])
@@ -469,7 +458,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     ).round(2)
     starts_agg["opener_risk"] = (starts_agg["avg_ip_per_start"] < 4.0).astype(int)
 
-    # Projected K baseline
     pa_agg = pa_agg.merge(starts_agg, on="pitcher", how="left")
     pa_agg["games_started"]    = pa_agg["games_started"].fillna(0)
     pa_agg["avg_ip_per_start"] = pa_agg["avg_ip_per_start"].fillna(0)
@@ -478,7 +466,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
         pa_agg["avg_ip_per_start"] * (pa_agg["k_per_9"] / 9)
     ).round(1)
 
-    # ── Pitch-level: SwStr%, Chase%, F-Strike%, Fastball Velo ─────
     pitch_df = pitcher_df.copy()
     pitch_df["is_swstr"]  = pitch_df["description"].astype("string").isin(
         ["swinging_strike", "swinging_strike_blocked", "foul_tip"]
@@ -498,7 +485,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
         pitch_df["is_out_zone"] = 0
 
     pitch_df["is_out_zone_swing"] = (pitch_df["is_out_zone"] & pitch_df["is_swing"]).astype(int)
-
     pitch_df["pitch_number"] = pd.to_numeric(pitch_df.get("pitch_number", 1), errors="coerce").fillna(1)
     first_pitch = pitch_df[pitch_df["pitch_number"] == 1].copy()
     first_pitch["is_first_strike"] = first_pitch["description"].astype("string").isin(
@@ -520,12 +506,10 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     ).reset_index()
     fps_agg["first_pitch_strike_pct"] = (fps_agg["first_pitch_strikes"] / fps_agg["first_pitch_total"].replace(0, np.nan) * 100).round(1)
 
-    # Fastball velo
     ff = pitcher_df[pitcher_df["pitch_type"].astype("string").isin(["FF", "SI", "FC"])].copy()
     velo_agg = ff.groupby("pitcher").agg(fastball_velo=("release_speed", "mean")).reset_index()
     velo_agg["fastball_velo"] = velo_agg["fastball_velo"].round(1)
 
-    # ── 21-day rolling ─────────────────────────────────────────────
     cutoff_21d = pd.Timestamp(date.today() - timedelta(days=21))
     pa_21d     = pa_df[pa_df["game_date"] >= cutoff_21d].copy()
     pitch_21d  = pitch_df[pitch_df["game_date"] >= cutoff_21d].copy()
@@ -540,7 +524,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     velo_21d = ff_21d.groupby("pitcher").agg(avg_velo_21d=("release_speed", "mean")).reset_index()
     velo_21d["avg_velo_21d"] = velo_21d["avg_velo_21d"].round(1)
 
-    # K per start last 3 starts
     ko_21d = pa_21d[pa_21d["is_k"] == 1].copy()
     ko_by_game = ko_21d.groupby(["pitcher", "game_pk"]).size().reset_index(name="ks_in_game")
     ko_last3 = (
@@ -552,7 +535,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     )
     ko_last3["k_per_start_21d"] = (ko_last3["k_last_3"] / ko_last3["starts_last_3"].replace(0, np.nan)).round(1)
 
-    # Avg IP last 3 starts
     outs_21d = pa_21d[pa_21d["is_out"] == 1].groupby(["pitcher", "game_pk"]).size().reset_index(name="outs_in_game")
     ip_last3 = (
         outs_21d.sort_values("game_pk", ascending=False)
@@ -563,7 +545,6 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     )
     ip_last3["avg_ip_last_3"] = (ip_last3["total_outs_last_3"] / 3 / ip_last3["starts_counted"].replace(0, np.nan)).round(2)
 
-    # ── Merge all KS features ──────────────────────────────────────
     result = pa_agg.copy()
     result = result.merge(pitch_agg[["pitcher", "swstr_pct", "chase_rate"]], on="pitcher", how="left")
     result = result.merge(fps_agg[["pitcher", "first_pitch_strike_pct"]], on="pitcher", how="left")
@@ -573,17 +554,16 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
     result = result.merge(ko_last3[["pitcher", "k_last_3", "k_per_start_21d"]], on="pitcher", how="left")
     result = result.merge(ip_last3[["pitcher", "avg_ip_last_3"]], on="pitcher", how="left")
 
-    # Trends
     result["swstr_trend"] = (result["swstr_pct_21d"].fillna(0) - result["swstr_pct"].fillna(0)).round(1)
     result["velo_trend"]  = (result["avg_velo_21d"].fillna(0) - result["fastball_velo"].fillna(0)).round(1)
 
-    # Drop intermediate columns
     drop_cols = ["ks_batters_faced", "ks_k_season", "ks_bb_season",
                  "ks_hits_allowed", "ks_outs", "total_pitches",
                  "total_swstr", "total_out_zone", "total_out_zone_swing"]
     result = result.drop(columns=[c for c in drop_cols if c in result.columns])
     result = result.fillna(0.0)
 
+    print(f"  KS extra: {len(result)} pitchers, cols: {result.columns.tolist()[:8]}")
     return result.rename(columns={"pitcher": "pitcher_id_ks"})
 
 
@@ -914,7 +894,6 @@ def build_pitcher_full(df, probable_pitchers, matchups, home_teams):
     pitch_mix         = build_pitch_mix(df, probable_ids)
     pitch_type_splits = build_pitch_type_splits_pitcher(bbe, probable_ids)
 
-    # ── KS extra features ──────────────────────────────────────────
     print("Building KS extra features...")
     ks_extra = build_ks_extra_features(df, probable_ids)
 
@@ -926,8 +905,13 @@ def build_pitcher_full(df, probable_pitchers, matchups, home_teams):
         .merge(pitch_type_splits, on="pitcher", how="left")
     )
 
-    # Merge KS extra
     if not ks_extra.empty:
+        print(f"KS extra columns: {ks_extra.columns.tolist()[:8]}")
+        print(f"KS extra pitcher_id_ks dtype: {ks_extra['pitcher_id_ks'].dtype}")
+        print(f"combined pitcher dtype: {combined['pitcher'].dtype}")
+        combined["pitcher"] = combined["pitcher"].astype(str)
+        ks_extra = ks_extra.copy()
+        ks_extra["pitcher_id_ks"] = ks_extra["pitcher_id_ks"].astype(str)
         combined = combined.merge(
             ks_extra.rename(columns={"pitcher_id_ks": "pitcher"}),
             on="pitcher",
@@ -938,10 +922,10 @@ def build_pitcher_full(df, probable_pitchers, matchups, home_teams):
     id_to_team = {v["id"]: v.get("team", "") for v in probable_pitchers.values()}
 
     combined["pitcher_name"] = combined["pitcher"].map(
-        lambda x: id_to_name.get(int(x), "") if pd.notna(x) else ""
+        lambda x: id_to_name.get(int(x), "") if pd.notna(x) and str(x).isdigit() else ""
     )
     combined["pitcher_team"] = combined["pitcher"].map(
-        lambda x: id_to_team.get(int(x), "") if pd.notna(x) else ""
+        lambda x: id_to_team.get(int(x), "") if pd.notna(x) and str(x).isdigit() else ""
     )
     combined["opposing_team"] = combined["pitcher_team"].map(lambda t: matchups.get(str(t), ""))
     combined["home_team"]     = combined.apply(
