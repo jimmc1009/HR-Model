@@ -124,6 +124,8 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
             pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
         ]
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
+        print(f"After dedup: {len(hr_clean)} rows")
+        print(hr_clean.iloc[:, :2].to_string())
         top10 = hr_clean.head(10)
 
         for i in range(len(top10)):
