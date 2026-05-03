@@ -1801,7 +1801,7 @@ def main() -> None:
 
     resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks, ev_section)
-    sleep.time(10)
+    time.sleep(10)
     update_scorecard(gc, sheet_id)
     write_last_run_timestamp(gc, sheet_id)
 
