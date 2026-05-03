@@ -906,17 +906,16 @@ def build_pitcher_full(df, probable_pitchers, matchups, home_teams):
     )
 
     if not ks_extra.empty:
-        print(f"KS extra columns: {ks_extra.columns.tolist()[:8]}")
-        print(f"KS extra pitcher_id_ks dtype: {ks_extra['pitcher_id_ks'].dtype}")
-        print(f"combined pitcher dtype: {combined['pitcher'].dtype}")
-        combined["pitcher"] = combined["pitcher"].astype(str)
-        ks_extra = ks_extra.copy()
-        ks_extra["pitcher_id_ks"] = ks_extra["pitcher_id_ks"].astype(str)
+        combined["pitcher"] = pd.to_numeric(combined["pitcher"], errors="coerce").astype("int64")
+        ks_extra["pitcher_id_ks"] = pd.to_numeric(ks_extra["pitcher_id_ks"], errors="coerce").astype("int64")
         combined = combined.merge(
             ks_extra.rename(columns={"pitcher_id_ks": "pitcher"}),
             on="pitcher",
             how="left",
         )
+        ks_cols_added = [c for c in ks_extra.columns if c != "pitcher_id_ks"]
+        found = [c for c in ks_cols_added if c in combined.columns and combined[c].notna().any()]
+        print(f"KS merge result: {len(found)} non-null KS columns added")
 
     id_to_name = {v["id"]: v["name"] for v in probable_pitchers.values()}
     id_to_team = {v["id"]: v.get("team", "") for v in probable_pitchers.values()}
