@@ -1,7 +1,8 @@
 """
 ks_picks.py
 Pitcher Strikeout model — absolute threshold scoring.
-Reads from KS_Statcast, Team_K_Rates, Park_Factors, KS_Odds sheets.
+Reads from KS_Statcast, Pitcher_Statcast_2026 (today's probables),
+Team_K_Rates, Park_Factors, KS_Odds sheets.
 Outputs Top_KS_Picks + KS_Picks_Log + KS_Scorecard.
 """
 
@@ -31,18 +32,18 @@ LEAGUE_AVG_CHASE     = 29.0
 LEAGUE_AVG_K_PER_9   = 8.8
 LEAGUE_AVG_OPP_K_PCT = 22.5
 
-MIN_IP        = 15
-MIN_GS        = 3
-MAX_PER_TEAM  = 1
+MIN_IP          = 15
+MIN_GS          = 3
+MAX_PER_TEAM    = 1
 MAX_CHALK_PICKS = 4
-TOP_N         = 10
+TOP_N           = 10
 
-COLOR_BG      = {"red": 0.086, "green": 0.086, "blue": 0.086}
-COLOR_BG_ALT  = {"red": 0.118, "green": 0.118, "blue": 0.118}
-COLOR_HEADER  = {"red": 0.075, "green": 0.376, "blue": 0.227}
-COLOR_WHITE   = {"red": 1.000, "green": 1.000, "blue": 1.000}
-COLOR_GREEN   = {"red": 0.180, "green": 0.800, "blue": 0.443}
-COLOR_RED     = {"red": 0.910, "green": 0.259, "blue": 0.259}
+COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
+COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
+COLOR_HEADER = {"red": 0.075, "green": 0.376, "blue": 0.227}
+COLOR_WHITE  = {"red": 1.000, "green": 1.000, "blue": 1.000}
+COLOR_GREEN  = {"red": 0.180, "green": 0.800, "blue": 0.443}
+COLOR_RED    = {"red": 0.910, "green": 0.259, "blue": 0.259}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -135,8 +136,8 @@ def filter_started_games(df: pd.DataFrame, game_times: dict, team_col: str = "te
             return False
         return now_utc >= gt
 
-    mask = ~df[team_col].apply(game_started)
-    df   = df[mask].copy()
+    mask    = ~df[team_col].apply(game_started)
+    df      = df[mask].copy()
     removed = before - len(df)
     if removed > 0:
         print(f"Game time filter: {removed} pitchers removed (game already started), {len(df)} remaining")
@@ -163,8 +164,8 @@ def score_swstr_pct(v: float, ip: float) -> float:
     if v >= 12.5: return 1.5
     if v >= 11.5: return 1.0
     if v >= 10.5: return 0.5
-    if v >= 9.5:  return 0.1
-    if v <= 8.0:  return -0.5
+    if v >=  9.5: return 0.1
+    if v <=  8.0: return -0.5
     return 0.0
 
 def score_chase_rate(v: float, ip: float) -> float:
@@ -182,10 +183,10 @@ def score_k_per_9(v: float, ip: float) -> float:
     if v >= 13.0: return 1.5
     if v >= 11.5: return 1.2
     if v >= 10.5: return 0.9
-    if v >= 9.5:  return 0.6
-    if v >= 8.5:  return 0.3
-    if v <= 6.5:  return -0.5
-    if v <= 7.5:  return -0.2
+    if v >=  9.5: return 0.6
+    if v >=  8.5: return 0.3
+    if v <=  6.5: return -0.5
+    if v <=  7.5: return -0.2
     return 0.0
 
 def score_k_minus_bb(v: float, ip: float) -> float:
@@ -194,7 +195,7 @@ def score_k_minus_bb(v: float, ip: float) -> float:
     if v >= 18.0: return 0.9
     if v >= 15.0: return 0.6
     if v >= 12.0: return 0.3
-    if v <= 8.0:  return -0.5
+    if v <=  8.0: return -0.5
     return 0.0
 
 def score_fastball_velo(v: float, ip: float) -> float:
@@ -217,7 +218,7 @@ def score_swstr_trend(v: float) -> float:
     return 0.0
 
 def score_k_per_start_21d(v: float) -> float:
-    if v <= 0: return 0.0
+    if v <= 0:   return 0.0
     if v >= 9.0: return 2.0
     if v >= 7.5: return 1.5
     if v >= 6.5: return 1.0
@@ -240,7 +241,7 @@ def score_avg_ip_per_start(v: float, gs: float) -> float:
     if v >= 6.0: return 1.0
     if v >= 5.5: return 0.5
     if v >= 5.0: return 0.1
-    if v < 4.0:  return -2.0
+    if v <  4.0: return -2.0
     return 0.0
 
 def score_opp_team_k_pct(v: float) -> float:
@@ -256,8 +257,8 @@ def score_opp_team_k_pct(v: float) -> float:
 def score_opp_team_bb_pct(v: float) -> float:
     if v >= 12.0: return -0.8
     if v >= 10.0: return -0.4
-    if v <= 7.0:  return 0.4
-    if v <= 8.0:  return 0.2
+    if v <=  7.0: return 0.4
+    if v <=  8.0: return 0.2
     return 0.0
 
 def score_first_pitch_strike(v: float, ip: float) -> float:
@@ -271,19 +272,19 @@ def score_first_pitch_strike(v: float, ip: float) -> float:
 
 def score_bb_pct_pitcher(v: float, ip: float) -> float:
     if ip < MIN_IP: return 0.0
-    if v <= 5.0:  return 0.8
-    if v <= 7.0:  return 0.4
+    if v <=  5.0: return 0.8
+    if v <=  7.0: return 0.4
     if v >= 12.0: return -0.8
     if v >= 10.0: return -0.4
     return 0.0
 
 def score_park_k(v: float) -> float:
     norm = v - 100
-    if norm >= 8:   return 0.5
-    if norm >= 4:   return 0.3
-    if norm >= 0:   return 0.0
+    if norm >=  8: return  0.5
+    if norm >=  4: return  0.3
+    if norm >=  0: return  0.0
     if norm <= -15: return -0.5
-    if norm <= -8:  return -0.2
+    if norm <=  -8: return -0.2
     return 0.0
 
 
@@ -392,7 +393,7 @@ def build_reason(row: pd.Series) -> str:
     ip = safe_float(row.get("avg_ip_per_start"))
     if ip >= 6.0:
         reasons.append(f"⏱️ {ip:.1f} avg IP/start — deep into games")
-    elif ip < 4.0:
+    elif 0 < ip < 4.0:
         reasons.append(f"⚠️ {ip:.1f} avg IP/start — opener risk")
 
     opp_k = safe_float(row.get("opp_team_k_pct", LEAGUE_AVG_OPP_K_PCT), LEAGUE_AVG_OPP_K_PCT)
@@ -438,8 +439,12 @@ def prepare_combined(
 
     # ── Filter starters ────────────────────────────────────────────
     before   = len(pitchers)
-    pitchers = pitchers[pitchers.get("games_started", pd.Series(0, index=pitchers.index)).apply(safe_float) >= MIN_GS].copy()
-    pitchers = pitchers[pitchers.get("ip", pd.Series(0, index=pitchers.index)).apply(safe_float) >= MIN_IP].copy()
+    pitchers = pitchers[
+        pitchers.get("games_started", pd.Series(0, index=pitchers.index)).apply(safe_float) >= MIN_GS
+    ].copy()
+    pitchers = pitchers[
+        pitchers.get("ip", pd.Series(0, index=pitchers.index)).apply(safe_float) >= MIN_IP
+    ].copy()
     if "opener_risk" in pitchers.columns:
         pitchers = pitchers[pitchers["opener_risk"].apply(safe_float) == 0].copy()
     print(f"Starter filter: {before - len(pitchers)} removed, {len(pitchers)} remaining")
@@ -448,7 +453,6 @@ def prepare_combined(
         return pd.DataFrame()
 
     # ── Game time filter ───────────────────────────────────────────
-    # Use pitching_team or team column
     team_col = "pitching_team" if "pitching_team" in pitchers.columns else "team"
     pitchers = filter_started_games(pitchers, game_times, team_col=team_col)
     if pitchers.empty:
@@ -496,14 +500,14 @@ def prepare_combined(
 
     # ── Defaults ───────────────────────────────────────────────────
     defaults = {
-        "opp_team_k_pct":  LEAGUE_AVG_OPP_K_PCT,
-        "opp_team_bb_pct": 8.5,
-        "park_hr_factor":  100.0,
-        "swstr_trend":     0.0,
-        "velo_trend":      0.0,
-        "k_per_start_21d": 0.0,
-        "avg_ip_last_3":   0.0,
-        "chase_rate":      LEAGUE_AVG_CHASE,
+        "opp_team_k_pct":         LEAGUE_AVG_OPP_K_PCT,
+        "opp_team_bb_pct":        8.5,
+        "park_hr_factor":         100.0,
+        "swstr_trend":            0.0,
+        "velo_trend":             0.0,
+        "k_per_start_21d":        0.0,
+        "avg_ip_last_3":          0.0,
+        "chase_rate":             LEAGUE_AVG_CHASE,
         "first_pitch_strike_pct": 62.0,
     }
     for col, val in defaults.items():
@@ -597,10 +601,14 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="Top_KS_Picks", rows=100, cols=30)
 
+    # Normalise team column
+    if "pitching_team" in picks.columns and "team" not in picks.columns:
+        picks = picks.copy()
+        picks["team"] = picks["pitching_team"]
+
     output_cols = {
         "rank":                   "Rank",
         "pitcher_name":           "Pitcher",
-        "pitching_team":          "Team",
         "team":                   "Team",
         "ip":                     "IP",
         "avg_ip_per_start":       "Avg IP/Start",
@@ -628,22 +636,9 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "k_minus_bb":             "K-BB%",
     }
 
-    # Use whichever team column exists
-    if "pitching_team" in picks.columns and "team" not in picks.columns:
-        picks = picks.copy()
-        picks["team"] = picks["pitching_team"]
-
     available = {k: v for k, v in output_cols.items() if k in picks.columns}
-    # Deduplicate renamed columns (team/pitching_team both map to Team)
-    seen_vals = {}
-    deduped   = {}
-    for k, v in available.items():
-        if v not in seen_vals:
-            deduped[k] = v
-            seen_vals[v] = k
-
-    out_df = picks[list(deduped.keys())].rename(columns=deduped)
-    out_df = out_df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
+    out_df    = picks[list(available.keys())].rename(columns=available)
+    out_df    = out_df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
 
     with_retry(lambda: ws.update([out_df.columns.tolist()] + out_df.astype(str).values.tolist()))
 
@@ -803,19 +798,52 @@ def main() -> None:
     gc       = get_gspread_client()
 
     print("Reading KS data from Google Sheets...")
-    pitchers = read_sheet(gc, sheet_id, "KS_Statcast")
+    pitchers  = read_sheet(gc, sheet_id, "KS_Statcast")
     time.sleep(3)
-    team_k   = read_sheet(gc, sheet_id, "Team_K_Rates")
+    probables = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
     time.sleep(3)
-    parks    = read_sheet(gc, sheet_id, "Park_Factors")
+    team_k    = read_sheet(gc, sheet_id, "Team_K_Rates")
     time.sleep(3)
-    odds_df  = read_sheet(gc, sheet_id, "KS_Odds")
+    parks     = read_sheet(gc, sheet_id, "Park_Factors")
+    time.sleep(3)
+    odds_df   = read_sheet(gc, sheet_id, "KS_Odds")
 
-    print(f"Pitchers: {len(pitchers)} rows")
+    print(f"KS_Statcast: {len(pitchers)} pitchers")
+    print(f"Today's probables: {len(probables)} pitchers")
     print(f"Team K Rates: {len(team_k)} rows")
     print(f"Parks: {len(parks)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
 
+    # ── Filter to today's probable starters only ───────────────────
+    if not probables.empty and "pitcher_name" in probables.columns and not pitchers.empty:
+        probable_norms = set(probables["pitcher_name"].apply(normalize_name).tolist())
+        before         = len(pitchers)
+        pitchers       = pitchers[
+            pitchers["pitcher_name"].apply(normalize_name).isin(probable_norms)
+        ].copy()
+        print(f"Probable starter filter: {before - len(pitchers)} removed, {len(pitchers)} today's starters")
+
+        # Pull opposing team from probables for K rate merge
+        if "opposing_team" in probables.columns and "opposing_team" not in pitchers.columns:
+            opp_map = dict(zip(
+                probables["pitcher_name"].apply(normalize_name),
+                probables["opposing_team"],
+            ))
+            pitchers["opposing_team"] = pitchers["pitcher_name"].apply(
+                lambda n: opp_map.get(normalize_name(n), "")
+            )
+
+        # Pull home team from probables for park merge
+        if "home_team" in probables.columns and "home_team" not in pitchers.columns:
+            home_map = dict(zip(
+                probables["pitcher_name"].apply(normalize_name),
+                probables["home_team"],
+            ))
+            pitchers["home_team"] = pitchers["pitcher_name"].apply(
+                lambda n: home_map.get(normalize_name(n), "")
+            )
+
+    # ── Game start times ───────────────────────────────────────────
     print("Fetching game start times...")
     game_times = get_todays_game_times()
     print(f"  Found {len(game_times)} game times")
@@ -833,7 +861,10 @@ def main() -> None:
         return
 
     print(f"\nTop {len(picks)} Pitcher K Picks:")
-    display_cols = [c for c in ["rank", "pitcher_name", "ks_score", "projected_k_calc", "k_line", "prop_signal", "confidence"] if c in picks.columns]
+    display_cols = [c for c in [
+        "rank", "pitcher_name", "ks_score",
+        "projected_k_calc", "k_line", "prop_signal", "confidence",
+    ] if c in picks.columns]
     print(picks[display_cols].to_string(index=False))
 
     write_picks_to_sheet(gc, sheet_id, picks)
