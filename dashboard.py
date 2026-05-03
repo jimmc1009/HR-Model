@@ -124,8 +124,6 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
             pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
         ]
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
-        print(f"After dedup: {len(hr_clean)} rows")
-        print(hr_clean.iloc[:, :2].to_string())
         top10 = hr_clean.head(10)
 
         for i in range(len(top10)):
@@ -192,7 +190,6 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
                 line      = safe_val(row, "Line")
                 over_odds = safe_val(row, "Over Odds")
                 signal    = safe_val(row, sig_col)
-                print(f"HRRBI play {i}: rank={rank} player={player} team={team} line={line} signal={signal}")
                 rows.append((pad([rank, player, team, line, over_odds, signal]), "data_hrrbi"))
 
     return rows
@@ -203,17 +200,18 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     try:
         ws = sh.worksheet(DASHBOARD_SHEET)
         with_retry(lambda: ws.clear())
-        # Unmerge all cells first to avoid conflicts with previous runs
-        reqs_pre = [{"unmergeCells": {
-            "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
-                  "startColumnIndex": 0, "endColumnIndex": 6}
-        }}]
-        try:
-            with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
-        except Exception:
-            pass
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
+
+    # Unmerge all cells first to avoid conflicts with previous runs
+    reqs_pre = [{"unmergeCells": {
+        "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
+                  "startColumnIndex": 0, "endColumnIndex": 6}
+    }}]
+    try:
+        with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
+    except Exception:
+        pass
 
     data = [row_data for row_data, _ in rows]
     with_retry(lambda: ws.update(data, value_input_option="RAW"))
@@ -236,9 +234,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fontFamily": "Roboto", "fontSize": 11, "bold": False,
             },
             "verticalAlignment": "MIDDLE",
+            "horizontalAlignment": "LEFT",
             "wrapStrategy": "CLIP",
         }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
     }})
 
     data_row_count = {"hr": 0, "ks": 0, "hrrbi": 0}
@@ -310,13 +309,14 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                         "foregroundColor": COLOR_WHITE,
                         "fontFamily": "Roboto Mono", "fontSize": 11,
                     },
+                    "horizontalAlignment": "LEFT",
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
                 }},
-                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-            # Rank col — centered, muted
+            # Rank col — centered, muted, applies to ALL data rows
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
@@ -326,8 +326,9 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                         "fontFamily": "Roboto", "fontSize": 11, "bold": True,
                     },
                     "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
                 }},
-                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
             }})
 
             # Signal col — colored for KS and HRRBI
@@ -368,10 +369,11 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                         "foregroundColor": COLOR_SUBTEXT, "italic": True,
                         "fontFamily": "Roboto", "fontSize": 11,
                     },
+                    "horizontalAlignment": "LEFT",
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
                 }},
-                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
     # Column widths
