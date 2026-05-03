@@ -87,10 +87,14 @@ def has_signal(signal: str) -> bool:
 
 def safe_val(row, col: str, default: str = "") -> str:
     try:
+        if col not in row.index:
+            return default
         val = row[col]
         if isinstance(val, pd.Series):
             val = val.iloc[0]
-        return str(val).strip() if pd.notna(val) else default
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return default
+        return str(val).strip()
     except Exception:
         return default
 
@@ -101,7 +105,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     def pad(row):
         return list(row) + [""] * (N - len(row))
 
-    E = pad([])
+    E    = pad([])
     rows = []
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
@@ -111,27 +115,30 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     if hr_df.empty:
         rows.append((pad(["—", "No picks available", ""]), "no_plays"))
     else:
-        # Filter out blank batter rows, take top 10
         hr_clean = hr_df.copy()
+        # Drop blank batter rows
         hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
-        hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains("Last Run|Batter", na=False)]
+        # Drop header-like or EV section rows
+        hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
+            "Last Run|Batter|High EV|Launch", na=False
+        )]
+        # Only keep rows where Rank is numeric 1-10
+        hr_clean = hr_clean[
+            pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
+        ]
         top10 = hr_clean.head(10)
 
         for i in range(len(top10)):
-            row  = top10.iloc[i]
-            rank = str(i + 1)
-            # Batter is column index 1
+            rank = str(int(pd.to_numeric(top10.iloc[i, 0], errors="coerce")))
             try:
                 batter = str(top10.iloc[i, 1]).strip()
             except Exception:
-                batter = safe_val(row, "Batter")
-            # Team is column index 3 to avoid duplicate team cols
+                batter = ""
             try:
                 team = str(top10.iloc[i, 3]).strip()
             except Exception:
-                team = safe_val(row, "Team")
-
-            if not batter or batter in ("nan", ""):
+                team = ""
+            if not batter or batter == "nan":
                 continue
             rows.append((pad([rank, batter, team]), "data_hr"))
 
@@ -144,7 +151,6 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     if ks_df.empty:
         rows.append((pad(["—", "No plays today"]), "no_plays"))
     else:
-        # Find signal column
         sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_df.columns), None)
         top5    = ks_df.head(5)
         plays   = top5[top5[sig_col].apply(has_signal)] if sig_col else pd.DataFrame()
@@ -181,7 +187,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
             for i in range(len(plays)):
                 row       = plays.iloc[i]
                 rank      = safe_val(row, "Rank", str(i + 1))
-                player    = safe_val(row, "Batter") or safe_val(row, "Player")
+                player    = safe_val(row, "Batter")
                 team      = safe_val(row, "Team")
                 line      = safe_val(row, "Line")
                 over_odds = safe_val(row, "Over Odds")
@@ -208,11 +214,17 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
 
     # Global base style
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(rows) + 5,
-                  "startColumnIndex": 0, "endColumnIndex": n_cols},
+        "range": {
+            "sheetId": ws_id, "startRowIndex": 0,
+            "endRowIndex": len(rows) + 5,
+            "startColumnIndex": 0, "endColumnIndex": n_cols,
+        },
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_BG,
-            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto", "fontSize": 11, "bold": False},
+            "textFormat": {
+                "foregroundColor": COLOR_WHITE,
+                "fontFamily": "Roboto", "fontSize": 11, "bold": False,
+            },
             "verticalAlignment": "MIDDLE",
             "wrapStrategy": "CLIP",
         }},
@@ -240,8 +252,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                           "startColumnIndex": 0, "endColumnIndex": n_cols},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": color,
-                    "textFormat": {"foregroundColor": text_color, "bold": True,
-                                   "fontFamily": "Roboto", "fontSize": 12},
+                    "textFormat": {
+                        "foregroundColor": text_color, "bold": True,
+                        "fontFamily": "Roboto", "fontSize": 12,
+                    },
                     "horizontalAlignment": "LEFT",
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
@@ -260,8 +274,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                           "startColumnIndex": 0, "endColumnIndex": n_cols},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COLOR_HEADER_BG,
-                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": True,
-                                   "fontFamily": "Roboto", "fontSize": 9},
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT, "bold": True,
+                        "fontFamily": "Roboto", "fontSize": 9,
+                    },
                     "horizontalAlignment": "LEFT",
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
@@ -280,7 +296,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                           "startColumnIndex": 0, "endColumnIndex": n_cols},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": bg,
-                    "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
+                    "textFormat": {
+                        "foregroundColor": COLOR_WHITE,
+                        "fontFamily": "Roboto Mono", "fontSize": 11,
+                    },
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
                 }},
@@ -292,8 +311,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
                 "cell": {"userEnteredFormat": {
-                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "fontFamily": "Roboto",
-                                   "fontSize": 11, "bold": True},
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT,
+                        "fontFamily": "Roboto", "fontSize": 11, "bold": True,
+                    },
                     "horizontalAlignment": "CENTER",
                 }},
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
@@ -317,8 +338,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                               "startColumnIndex": 5, "endColumnIndex": 6},
                     "cell": {"userEnteredFormat": {
                         "backgroundColor": sig_bg,
-                        "textFormat": {"foregroundColor": sig_text, "bold": True,
-                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "textFormat": {
+                            "foregroundColor": sig_text, "bold": True,
+                            "fontFamily": "Roboto", "fontSize": 11,
+                        },
                         "horizontalAlignment": "CENTER",
                         "verticalAlignment": "MIDDLE",
                     }},
@@ -331,8 +354,10 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                           "startColumnIndex": 0, "endColumnIndex": n_cols},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COLOR_BG_ALT,
-                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "italic": True,
-                                   "fontFamily": "Roboto", "fontSize": 11},
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT, "italic": True,
+                        "fontFamily": "Roboto", "fontSize": 11,
+                    },
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
                 }},
@@ -343,7 +368,8 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     col_widths = [55, 180, 70, 70, 95, 180]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": w},
             "fields": "pixelSize",
         }})
@@ -359,7 +385,8 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         else:
             h = 32
         reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": row_idx, "endIndex": row_idx + 1},
+            "range": {"sheetId": ws_id, "dimension": "ROWS",
+                      "startIndex": row_idx, "endIndex": row_idx + 1},
             "properties": {"pixelSize": h},
             "fields": "pixelSize",
         }})
@@ -397,15 +424,19 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
                           "startColumnIndex": 0, "endColumnIndex": 6},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COLOR_HEADER_BG,
-                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "fontFamily": "Roboto",
-                                   "fontSize": 9, "italic": True, "bold": False},
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT,
+                        "fontFamily": "Roboto", "fontSize": 9,
+                        "italic": True, "bold": False,
+                    },
                     "verticalAlignment": "MIDDLE",
                     "wrapStrategy": "CLIP",
                 }},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
             }},
             {"updateDimensionProperties": {
-                "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+                "range": {"sheetId": ws_id, "dimension": "ROWS",
+                          "startIndex": 0, "endIndex": 1},
                 "properties": {"pixelSize": 20},
                 "fields": "pixelSize",
             }},
@@ -431,13 +462,6 @@ def main() -> None:
     print(f"HR picks: {len(hr_df)} rows")
     print(f"KS picks: {len(ks_df)} rows")
     print(f"HRRBI picks: {len(hrrbi_df)} rows")
-
-    # DEBUG
-    print("HR columns:", hr_df.columns.tolist())
-    print("HR head:\n", hr_df.head(3).to_string())
-    print("KS columns:", ks_df.columns.tolist())
-    print("HRRBI columns:", hrrbi_df.columns.tolist())
-    print("HRRBI head:\n", hrrbi_df.head(3).to_string())
 
     rows = build_rows(hr_df, ks_df, hrrbi_df)
     write_dashboard(gc, sheet_id, rows)
