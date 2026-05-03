@@ -116,18 +116,14 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         rows.append((pad(["—", "No picks available", ""]), "no_plays"))
     else:
         hr_clean = hr_df.copy()
-        # Drop blank batter rows
         hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
-        # Drop header-like or EV section rows
         hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
             "Last Run|Batter|High EV|Launch", na=False
         )]
-        # Only keep rows where Rank is numeric 1-10
         hr_clean = hr_clean[
             pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
         ]
-        print(f"HR after rank filter: {len(hr_clean)} rows")
-        print(hr_clean.iloc[:, :2].to_string())
+        hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
         top10 = hr_clean.head(10)
 
         for i in range(len(top10)):
@@ -189,7 +185,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
             for i in range(len(plays)):
                 row       = plays.iloc[i]
                 rank      = safe_val(row, "Rank", str(i + 1))
-                player    = safe_val(row, "Batter")
+                player    = safe_val(row, "Batter") or safe_val(row, "Player", "")
                 team      = safe_val(row, "Team")
                 line      = safe_val(row, "Line")
                 over_odds = safe_val(row, "Over Odds")
