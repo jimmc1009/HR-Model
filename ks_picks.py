@@ -32,8 +32,8 @@ LEAGUE_AVG_CHASE     = 29.0
 LEAGUE_AVG_K_PER_9   = 8.8
 LEAGUE_AVG_OPP_K_PCT = 22.5
 
-MIN_IP          = 15
-MIN_GS          = 3
+MIN_IP          = 10
+MIN_GS          = 2
 MAX_PER_TEAM    = 1
 MAX_CHALK_PICKS = 4
 TOP_N           = 10
@@ -235,11 +235,12 @@ def score_velo_trend(v: float) -> float:
 
 def score_avg_ip_per_start(v: float, gs: float) -> float:
     if gs < MIN_GS: return 0.0
-    if v >= 6.5: return 1.5
-    if v >= 6.0: return 1.0
-    if v >= 5.5: return 0.5
-    if v >= 5.0: return 0.1
-    if v <  4.0: return -2.0
+    if v >= 6.0: return 1.5
+    if v >= 5.5: return 1.0
+    if v >= 5.0: return 0.5
+    if v >= 4.5: return 0.2
+    if v >= 4.0: return 0.0
+    if v <  4.0: return -1.5
     return 0.0
 
 def score_opp_team_k_pct(v: float) -> float:
@@ -350,9 +351,9 @@ def calc_prop_signal(row: pd.Series) -> str:
         return "—"
 
     edge = proj - line
-    if edge >= 1.5 and score >= 13:
+    if edge >= 1.5 and score >= 10:
         return f"OVER {line} ✅"
-    elif edge >= 0.5 and score >= 10:
+    elif edge >= 0.5 and score >= 7:
         return f"LEAN OVER {line}"
     elif edge <= -1.5:
         return f"UNDER {line} consideration"
@@ -392,7 +393,7 @@ def build_reason(row: pd.Series) -> str:
     if ip >= 6.0:
         reasons.append(f"⏱️ {ip:.1f} avg IP/start — deep into games")
     elif 0 < ip < 4.0:
-        reasons.append(f"⚠️ {ip:.1f} avg IP/start — opener risk risk")
+        reasons.append(f"⚠️ {ip:.1f} avg IP/start — opener risk")
 
     opp_k = safe_float(row.get("opp_team_k_pct", LEAGUE_AVG_OPP_K_PCT), LEAGUE_AVG_OPP_K_PCT)
     if opp_k >= 25.0:
@@ -530,7 +531,6 @@ def prepare_combined(
         })
         pitchers = pitchers.merge(odds_slim, on="pitcher_name_norm", how="left")
 
-        # Debug odds matching
         matched = pitchers["pitcher_name_norm"].isin(odds_df["pitcher_name_norm"])
         print(f"Odds matched: {matched.sum()}/{len(pitchers)} pitchers")
         unmatched = pitchers[~matched]["pitcher_name"].tolist()
@@ -700,7 +700,7 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     if not existing.empty and "date" in existing.columns:
         existing = existing[existing["date"] != today_str].copy()
 
-    team_col = "pitching_team" if "pitching_team" in picks.columns else "pitcher_team"
+    team_col = "pitching_team" if "pitching_temp" in picks.columns else "pitcher_team"
     if team_col not in picks.columns:
         team_col = "team"
 
@@ -830,7 +830,6 @@ def main() -> None:
     # ── Normalize odds names ───────────────────────────────────────
     if not odds_df.empty and "pitcher_name" in odds_df.columns:
         odds_df["pitcher_name_norm"] = odds_df["pitcher_name"].apply(normalize_name)
-        print(f"KS Odds names: {odds_df['pitcher_name_norm'].tolist()}")
 
     # ── Filter to today's probable starters only ───────────────────
     if not probables.empty and "pitcher_name" in probables.columns and not pitchers.empty:
@@ -858,10 +857,6 @@ def main() -> None:
             pitchers["home_team"] = pitchers["pitcher_name"].apply(
                 lambda n: home_map.get(normalize_name(n), "")
             )
-
-    # ── Debug name matching ────────────────────────────────────────
-    if not pitchers.empty and "pitcher_name" in pitchers.columns:
-        print(f"KS Statcast names: {pitchers['pitcher_name'].apply(normalize_name).tolist()}")
 
     # ── Game start times ───────────────────────────────────────────
     print("Fetching game start times...")
