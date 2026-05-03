@@ -26,7 +26,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# ── Constants ──────────────────────────────────────────────────────────────
 LEAGUE_AVG_BA        = 0.248
 LEAGUE_AVG_OBP       = 0.318
 LEAGUE_AVG_WOBA      = 0.318
@@ -108,21 +107,16 @@ def normalize_name(name: str) -> str:
 
 
 def get_todays_game_times() -> dict:
-    """
-    Returns dict of home_team -> game_start_utc (datetime).
-    Used to filter out games that have already started.
-    """
     game_times = {}
     try:
         today = date.today().strftime("%Y-%m-%d")
         url   = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=team"
         resp  = requests.get(url, timeout=15)
         resp.raise_for_status()
-        dates = resp.json().get("dates", [])
-        for d in dates:
+        for d in resp.json().get("dates", []):
             for game in d.get("games", []):
-                home_abbr  = game.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
-                game_time  = game.get("gameDate", "")
+                home_abbr = game.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
+                game_time = game.get("gameDate", "")
                 if home_abbr and game_time:
                     try:
                         gt = datetime.strptime(game_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
@@ -135,7 +129,6 @@ def get_todays_game_times() -> dict:
 
 
 def filter_started_games(df: pd.DataFrame, game_times: dict, team_col: str = "batter_team") -> pd.DataFrame:
-    """Remove players whose game has already started."""
     if not game_times or team_col not in df.columns:
         return df
 
@@ -148,15 +141,13 @@ def filter_started_games(df: pd.DataFrame, game_times: dict, team_col: str = "ba
             return False
         return now_utc >= gt
 
-    mask = ~df[team_col].apply(game_started)
-    df   = df[mask].copy()
+    mask    = ~df[team_col].apply(game_started)
+    df      = df[mask].copy()
     removed = before - len(df)
     if removed > 0:
         print(f"Game time filter: {removed} players removed (game already started), {len(df)} remaining")
     return df
 
-
-# ── Scoring functions ──────────────────────────────────────────────────────
 
 def score_avg(v: float, pa: float) -> float:
     if pa < MIN_PA: return 0.0
@@ -177,7 +168,6 @@ def score_xwoba(v: float, pa: float) -> float:
     return 0.0
 
 def score_woba(v: float, pa: float) -> float:
-    """Use woba as xwoba proxy when xwoba not available."""
     if pa < MIN_PA: return 0.0
     if v >= 0.380: return 2.0
     if v >= 0.350: return 1.5
@@ -306,7 +296,6 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     bbe_7d = safe_float(row.get("bbe_7d", 0))
     pa_14d = safe_float(row.get("pa_14d", 0))
 
-    # wOBA — use woba directly (Statcast-computed)
     woba_score = score_woba(safe_float(row.get("woba")), pa)
 
     s_avg      = score_avg(safe_float(row.get("avg")), pa)
@@ -350,6 +339,38 @@ def assign_confidence(row: pd.Series) -> str:
     if pts >= 4: return "High"
     if pts >= 2: return "Medium"
     return "Low"
+
+
+def calc_prop_signal(row: pd.Series) -> str:
+    """
+    Generate a betting signal based on the H+R+RBI line.
+    Ignores 0.5 lines — too easy, no edge.
+    Targets 1.5 as primary signal, 2.5 for elite scores only.
+    """
+    line  = safe_float(row.get("hrrbi_line", 0))
+    score = safe_float(row.get("hrrbi_score", 0))
+
+    if line <= 0:
+        return "—"
+
+    # Ignore 0.5 lines — no edge
+    if line < 1.0:
+        return "—"
+
+    if line >= 2.0:
+        # 2.5 line — only flag elite scores
+        if score >= 12.0:
+            return f"LEAN OVER {line}"
+        return "—"
+
+    # 1.5 line — primary target
+    if score >= 11.0:
+        return f"OVER {line} ✅"
+    if score >= 9.0:
+        return f"LEAN OVER {line}"
+    if score <= 5.0:
+        return f"LEAN UNDER {line}"
+    return "—"
 
 
 def build_reason(row: pd.Series) -> str:
@@ -426,12 +447,10 @@ def prepare_combined(
     if "team" in batters.columns:
         batters = batters.rename(columns={"team": "batter_team"})
 
-    # ── Game time filter ───────────────────────────────────────────
     batters = filter_started_games(batters, game_times, team_col="batter_team")
     if batters.empty:
         return pd.DataFrame()
 
-    # ── Pitcher matchup merge ──────────────────────────────────────
     if not pitchers.empty:
         pitchers = pitchers.copy()
         pitchers.columns = [c.strip() for c in pitchers.columns]
@@ -462,7 +481,6 @@ def prepare_combined(
         if "batter_team" in pitchers.columns:
             batters = batters.merge(pitchers[pitcher_cols], on="batter_team", how="left")
 
-    # ── Park merge ─────────────────────────────────────────────────
     if not parks.empty:
         parks = parks.copy()
         parks.columns = [c.strip() for c in parks.columns]
@@ -475,7 +493,6 @@ def prepare_combined(
                 how="left",
             )
 
-    # ── Weather merge ──────────────────────────────────────────────
     if not weather.empty:
         weather = weather.copy()
         weather.columns = [c.strip() for c in weather.columns]
@@ -488,7 +505,6 @@ def prepare_combined(
                 how="left",
             )
 
-    # ── Defaults ───────────────────────────────────────────────────
     defaults = {
         "opp_whip": 1.20,
         "opp_k_pct_season": 22.0,
@@ -506,7 +522,6 @@ def prepare_combined(
         else:
             batters[col] = batters[col].apply(lambda x: safe_float(x, val))
 
-    # ── BA filter ──────────────────────────────────────────────────
     if "avg" in batters.columns:
         batters["avg"] = batters["avg"].apply(safe_float)
         before  = len(batters)
@@ -516,12 +531,10 @@ def prepare_combined(
     if batters.empty:
         return pd.DataFrame()
 
-    # ── Score ──────────────────────────────────────────────────────
     batters["hrrbi_score"] = batters.apply(compute_hrrbi_score, axis=1)
     batters["confidence"]  = batters.apply(assign_confidence, axis=1)
     batters["reason"]      = batters.apply(build_reason, axis=1)
 
-    # ── Odds merge ─────────────────────────────────────────────────
     if not odds_df.empty and "player_name_norm" in odds_df.columns:
         odds_slim = odds_df[["player_name_norm", "hrrbi_line", "over_odds", "under_odds"]].copy()
         odds_slim = odds_slim.rename(columns={
@@ -533,6 +546,9 @@ def prepare_combined(
         batters["hrrbi_line"]       = np.nan
         batters["hrrbi_over_odds"]  = np.nan
         batters["hrrbi_under_odds"] = np.nan
+
+    # Generate prop signal after odds merge
+    batters["prop_signal"] = batters.apply(calc_prop_signal, axis=1)
 
     return batters
 
@@ -608,6 +624,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "hrrbi_line":       "Line",
         "hrrbi_over_odds":  "Over Odds",
         "hrrbi_under_odds": "Under Odds",
+        "prop_signal":      "Signal",
         "reason":           "Key Reasons",
         "avg":              "AVG",
         "obp":              "OBP",
@@ -689,6 +706,7 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
             "confidence":  str(row.get("confidence", "")),
             "line":        str(row.get("hrrbi_line", "")),
             "over_odds":   str(row.get("hrrbi_over_odds", "")),
+            "prop_signal": str(row.get("prop_signal", "")),
             "hit":         "Pending",
             "bet_placed":  "",
             "result":      "",
@@ -774,7 +792,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
 
 
 def main() -> None:
-    time.sleep(10)  # Let previous script writes settle
+    time.sleep(10)
 
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
@@ -796,7 +814,9 @@ def main() -> None:
     print(f"Weather: {len(weather)} rows")
     print(f"HRRBI Odds: {len(odds_df)} rows")
 
-    # Fetch game times for filter
+    if not odds_df.empty and "player_name" in odds_df.columns:
+        odds_df["player_name_norm"] = odds_df["player_name"].apply(normalize_name)
+
     print("Fetching game start times...")
     game_times = get_todays_game_times()
     print(f"  Found {len(game_times)} game times")
