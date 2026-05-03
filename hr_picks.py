@@ -59,6 +59,20 @@ COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
 COLOR_EV_HEADER = {"red": 0.100, "green": 0.100, "blue": 0.100}
 
 
+def with_retry(func, retries: int = 4, wait: int = 25):
+    for attempt in range(retries):
+        try:
+            return func()
+        except Exception as e:
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"  Rate limit hit — waiting {wait}s (attempt {attempt + 1}/{retries})...")
+                time.sleep(wait)
+            elif attempt < retries - 1:
+                time.sleep(wait)
+            else:
+                raise
+
+
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
     info     = json.loads(raw_json)
