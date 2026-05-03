@@ -370,8 +370,8 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
         df["pitch_group"] = "other"
 
     # Launch angle buckets for HRRBI
-    df["is_ld"] = df["launch_angle"].between(10, 25).astype(int) if "launch_angle" in df.columns else 0
-    df["is_gb"] = (df["launch_angle"] < 10).astype(int) if "launch_angle" in df.columns else 0
+    df["is_ld"] = df["launch_angle"].between(10, 25).fillna(False).astype(int) if "launch_angle" in df.columns else 0
+    df["is_gb"] = (df["launch_angle"] < 10).fillna(False).astype(int) if "launch_angle" in df.columns else 0
 
     return df
 
