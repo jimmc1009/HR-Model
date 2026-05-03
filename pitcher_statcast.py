@@ -153,7 +153,7 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         teams.add(mlb_abbr)
         return teams
 
-    for days_ahead in (0, 1):
+    for days_ahead in (0,):
         date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         label = "today" if days_ahead == 0 else "tomorrow"
         try:
