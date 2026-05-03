@@ -100,7 +100,6 @@ def normalize_name(name: str) -> str:
 
 
 def get_todays_game_times() -> dict:
-    """Returns dict of home_team -> game_start_utc."""
     game_times = {}
     try:
         today = date.today().strftime("%Y-%m-%d")
@@ -123,7 +122,6 @@ def get_todays_game_times() -> dict:
 
 
 def filter_started_games(df: pd.DataFrame, game_times: dict, team_col: str = "team") -> pd.DataFrame:
-    """Remove pitchers whose game has already started."""
     if not game_times or team_col not in df.columns:
         return df
 
@@ -394,7 +392,7 @@ def build_reason(row: pd.Series) -> str:
     if ip >= 6.0:
         reasons.append(f"⏱️ {ip:.1f} avg IP/start — deep into games")
     elif 0 < ip < 4.0:
-        reasons.append(f"⚠️ {ip:.1f} avg IP/start — opener risk")
+        reasons.append(f"⚠️ {ip:.1f} avg IP/start — opener risk risk")
 
     opp_k = safe_float(row.get("opp_team_k_pct", LEAGUE_AVG_OPP_K_PCT), LEAGUE_AVG_OPP_K_PCT)
     if opp_k >= 25.0:
@@ -453,7 +451,9 @@ def prepare_combined(
         return pd.DataFrame()
 
     # ── Game time filter ───────────────────────────────────────────
-    team_col = "pitching_team" if "pitching_team" in pitchers.columns else "team"
+    team_col = "pitching_team" if "pitching_team" in pitchers.columns else "pitcher_team"
+    if team_col not in pitchers.columns:
+        team_col = "team"
     pitchers = filter_started_games(pitchers, game_times, team_col=team_col)
     if pitchers.empty:
         return pd.DataFrame()
@@ -529,6 +529,13 @@ def prepare_combined(
             "under_odds": "ks_under_odds",
         })
         pitchers = pitchers.merge(odds_slim, on="pitcher_name_norm", how="left")
+
+        # Debug odds matching
+        matched = pitchers["pitcher_name_norm"].isin(odds_df["pitcher_name_norm"])
+        print(f"Odds matched: {matched.sum()}/{len(pitchers)} pitchers")
+        unmatched = pitchers[~matched]["pitcher_name"].tolist()
+        if unmatched:
+            print(f"Unmatched pitchers: {unmatched}")
     else:
         pitchers["k_line"]        = np.nan
         pitchers["ks_over_odds"]  = np.nan
@@ -548,7 +555,9 @@ def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
     chalk_count = 0
     no_odds     = []
 
-    team_col = "pitching_team" if "pitching_team" in df.columns else "team"
+    team_col = "pitching_team" if "pitching_team" in df.columns else "pitcher_team"
+    if team_col not in df.columns:
+        team_col = "team"
 
     for _, row in df.iterrows():
         odds = row.get("ks_over_odds")
@@ -601,10 +610,12 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="Top_KS_Picks", rows=100, cols=30)
 
-    # Normalise team column
     if "pitching_team" in picks.columns and "team" not in picks.columns:
         picks = picks.copy()
         picks["team"] = picks["pitching_team"]
+    elif "pitcher_team" in picks.columns and "team" not in picks.columns:
+        picks = picks.copy()
+        picks["team"] = picks["pitcher_team"]
 
     output_cols = {
         "rank":                   "Rank",
@@ -689,7 +700,9 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     if not existing.empty and "date" in existing.columns:
         existing = existing[existing["date"] != today_str].copy()
 
-    team_col = "pitching_team" if "pitching_team" in picks.columns else "team"
+    team_col = "pitching_team" if "pitching_team" in picks.columns else "pitcher_team"
+    if team_col not in picks.columns:
+        team_col = "team"
 
     new_rows = []
     for _, row in picks.iterrows():
@@ -792,7 +805,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
 
 
 def main() -> None:
-    time.sleep(10)  # Let previous script writes settle
+    time.sleep(10)
 
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
@@ -814,6 +827,11 @@ def main() -> None:
     print(f"Parks: {len(parks)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
 
+    # ── Normalize odds names ───────────────────────────────────────
+    if not odds_df.empty and "pitcher_name" in odds_df.columns:
+        odds_df["pitcher_name_norm"] = odds_df["pitcher_name"].apply(normalize_name)
+        print(f"KS Odds names: {odds_df['pitcher_name_norm'].tolist()}")
+
     # ── Filter to today's probable starters only ───────────────────
     if not probables.empty and "pitcher_name" in probables.columns and not pitchers.empty:
         probable_norms = set(probables["pitcher_name"].apply(normalize_name).tolist())
@@ -823,7 +841,6 @@ def main() -> None:
         ].copy()
         print(f"Probable starter filter: {before - len(pitchers)} removed, {len(pitchers)} today's starters")
 
-        # Pull opposing team from probables for K rate merge
         if "opposing_team" in probables.columns and "opposing_team" not in pitchers.columns:
             opp_map = dict(zip(
                 probables["pitcher_name"].apply(normalize_name),
@@ -833,7 +850,6 @@ def main() -> None:
                 lambda n: opp_map.get(normalize_name(n), "")
             )
 
-        # Pull home team from probables for park merge
         if "home_team" in probables.columns and "home_team" not in pitchers.columns:
             home_map = dict(zip(
                 probables["pitcher_name"].apply(normalize_name),
@@ -842,6 +858,10 @@ def main() -> None:
             pitchers["home_team"] = pitchers["pitcher_name"].apply(
                 lambda n: home_map.get(normalize_name(n), "")
             )
+
+    # ── Debug name matching ────────────────────────────────────────
+    if not pitchers.empty and "pitcher_name" in pitchers.columns:
+        print(f"KS Statcast names: {pitchers['pitcher_name'].apply(normalize_name).tolist()}")
 
     # ── Game start times ───────────────────────────────────────────
     print("Fetching game start times...")
