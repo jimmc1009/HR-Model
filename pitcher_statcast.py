@@ -48,7 +48,19 @@ OUT_EVENTS = {
     "strikeout_double_play",
 }
 
-MIN_BBE_PER_PITCH = 10  # minimum BBE against a pitch type before including in scoring
+PA_EVENTS = {
+    "single", "double", "triple", "home_run",
+    "field_out", "grounded_into_double_play", "double_play",
+    "triple_play", "field_error", "fielders_choice",
+    "fielders_choice_out", "force_out", "strikeout",
+    "strikeout_double_play", "other_out",
+    "walk", "hit_by_pitch", "sac_fly", "sac_fly_double_play",
+    "sac_bunt", "sac_bunt_double_play", "catcher_interf", "intent_walk",
+}
+
+HIT_EVENTS = {"single", "double", "triple", "home_run"}
+
+MIN_BBE_PER_PITCH = 10
 
 
 def get_gspread_client() -> gspread.Client:
@@ -141,18 +153,17 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         teams.add(mlb_abbr)
         return teams
 
-    for days_ahead in (0, 1):
-        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        label = "today" if days_ahead == 0 else "tomorrow"
-        try:
-            print(f"Fetching probable pitchers from MLB API for {label}...")
-            pitchers = fetch_mlb_probables(date_str)
-            if pitchers:
-                print(f"MLB API found {len(pitchers)} probables for {label}.")
-                return pitchers
-            print(f"MLB API returned no probables for {label}.")
-        except Exception as e:
-            print(f"MLB API failed for {label}: {e}")
+    # Today only — never fall back to tomorrow
+    date_str = date.today().strftime("%Y-%m-%d")
+    try:
+        print(f"Fetching probable pitchers from MLB API for today...")
+        pitchers = fetch_mlb_probables(date_str)
+        if pitchers:
+            print(f"MLB API found {len(pitchers)} probables for today.")
+            return pitchers
+        print(f"MLB API returned no probables for today.")
+    except Exception as e:
+        print(f"MLB API failed for today: {e}")
 
     try:
         print("Trying ESPN API for probable pitchers...")
@@ -177,12 +188,10 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
 
     print("Trying MLB API for playing teams...")
     playing_teams: Set[str] = set()
-    for days_ahead in (0, 1):
-        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        try:
-            playing_teams |= fetch_playing_teams(date_str)
-        except Exception as e:
-            print(f"MLB API playing teams failed: {e}")
+    try:
+        playing_teams |= fetch_playing_teams(date_str)
+    except Exception as e:
+        print(f"MLB API playing teams failed: {e}")
 
     if playing_teams:
         print(f"MLB API playing teams found: {playing_teams}")
@@ -224,12 +233,8 @@ def get_today_matchups() -> Tuple[Dict[str, str], Set[str]]:
             for comp in event.get("competitions", []):
                 competitors = comp.get("competitors", [])
                 if len(competitors) == 2:
-                    home = next(
-                        (c for c in competitors if c.get("homeAway") == "home"), None
-                    )
-                    away = next(
-                        (c for c in competitors if c.get("homeAway") == "away"), None
-                    )
+                    home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+                    away = next((c for c in competitors if c.get("homeAway") == "away"), None)
                     if home and away:
                         home_abbr = ESPN_TO_MLB.get(
                             home.get("team", {}).get("abbreviation", ""),
@@ -245,15 +250,14 @@ def get_today_matchups() -> Tuple[Dict[str, str], Set[str]]:
                             home_teams.add(home_abbr)
         return matchups, home_teams
 
-    for days_ahead in (0, 1):
-        date_str = (date.today() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        try:
-            matchups, home_teams = fetch_mlb_matchups(date_str)
-            if matchups:
-                print(f"MLB API matchups: {len(matchups) // 2} games")
-                return matchups, home_teams
-        except Exception as e:
-            print(f"MLB API matchups failed: {e}")
+    date_str = date.today().strftime("%Y-%m-%d")
+    try:
+        matchups, home_teams = fetch_mlb_matchups(date_str)
+        if matchups:
+            print(f"MLB API matchups: {len(matchups) // 2} games")
+            return matchups, home_teams
+    except Exception as e:
+        print(f"MLB API matchups failed: {e}")
 
     try:
         matchups, home_teams = fetch_espn_matchups()
@@ -291,10 +295,8 @@ def get_season_statcast() -> pd.DataFrame:
             chunk_end = date(chunk_start.year + 1, 1, 1) - timedelta(days=1)
         else:
             chunk_end = date(chunk_start.year, chunk_start.month + 1, 1) - timedelta(days=1)
-
         chunk_end = min(chunk_end, end_dt)
         print(f"Pulling {chunk_start} → {chunk_end}...")
-
         try:
             chunk_df = statcast(
                 start_dt=chunk_start.strftime("%Y-%m-%d"),
@@ -372,10 +374,7 @@ def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame
         df["launch_angle"].between(-90, 90)
     ].copy()
 
-    dedupe_cols = [
-        c for c in ["game_pk", "at_bat_number", "pitcher"]
-        if c in bbe.columns
-    ]
+    dedupe_cols = [c for c in ["game_pk", "at_bat_number", "pitcher"] if c in bbe.columns]
     if dedupe_cols:
         bbe = bbe.drop_duplicates(subset=dedupe_cols)
 
@@ -388,20 +387,184 @@ def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
     def is_barrel(row):
         ev = row["launch_speed"]
         la = row["launch_angle"]
-        if pd.isna(ev) or pd.isna(la):
-            return False
-        if ev < 98:
+        if pd.isna(ev) or pd.isna(la) or ev < 98:
             return False
         min_la = max(26 - (ev - 98), 8)
         max_la = min(30 + (ev - 98), 50)
         return min_la <= la <= max_la
 
-    df["is_barrel"] = df.apply(is_barrel, axis=1)
+    df["is_barrel"]   = df.apply(is_barrel, axis=1)
     df["is_hard_hit"] = df["launch_speed"] >= 95
-    df["is_hr"] = df["events"].astype("string").str.lower().eq("home_run")
+    df["is_hr"]       = df["events"].astype("string").str.lower().eq("home_run")
     df["is_fly_ball"] = df["launch_angle"].between(20, 50, inclusive="both")
 
     return df
+
+
+def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
+    if df.empty or not probable_ids:
+        return pd.DataFrame()
+
+    pitcher_df = df[df["pitcher"].isin(probable_ids)].copy()
+    if pitcher_df.empty:
+        return pd.DataFrame()
+
+    pitcher_df["game_date"] = pd.to_datetime(pitcher_df["game_date"])
+
+    pa_df = pitcher_df[pitcher_df["events"].astype("string").str.lower().isin(PA_EVENTS)].copy()
+    pa_df = pa_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "pitcher"] if c in pa_df.columns]
+    )
+    pa_df["is_k"]   = pa_df["events"].astype("string").str.lower().isin({"strikeout", "strikeout_double_play"}).astype(int)
+    pa_df["is_bb"]  = pa_df["events"].astype("string").str.lower().isin({"walk", "intent_walk"}).astype(int)
+    pa_df["is_hit"] = pa_df["events"].astype("string").str.lower().isin(HIT_EVENTS).astype(int)
+    pa_df["is_out"] = pa_df["events"].astype("string").str.lower().isin(OUT_EVENTS).astype(int)
+
+    pa_agg = pa_df.groupby("pitcher").agg(
+        ks_batters_faced=("is_k", "count"),
+        ks_k_season=("is_k", "sum"),
+        ks_bb_season=("is_bb", "sum"),
+        ks_hits_allowed=("is_hit", "sum"),
+        ks_outs=("is_out", "sum"),
+    ).reset_index()
+
+    pa_agg["ks_ip"]           = (pa_agg["ks_outs"] / 3).round(2)
+    pa_agg["k_pct_season"]    = (pa_agg["ks_k_season"] / pa_agg["ks_batters_faced"].replace(0, np.nan) * 100).round(1)
+    pa_agg["bb_pct_season"]   = (pa_agg["ks_bb_season"] / pa_agg["ks_batters_faced"].replace(0, np.nan) * 100).round(1)
+    pa_agg["k_minus_bb"]      = (pa_agg["k_pct_season"] - pa_agg["bb_pct_season"]).round(1)
+    pa_agg["k_per_9"]         = (pa_agg["ks_k_season"] / pa_agg["ks_ip"].replace(0, np.nan) * 9).round(1)
+    pa_agg["whip_proxy"]      = ((pa_agg["ks_hits_allowed"] + pa_agg["ks_bb_season"]) / pa_agg["ks_ip"].replace(0, np.nan)).round(2)
+
+    outs_by_game = (
+        pa_df[pa_df["is_out"] == 1]
+        .groupby(["pitcher", "game_pk"])
+        .agg(outs_in_game=("is_out", "sum"))
+        .reset_index()
+    )
+    game_starter = (
+        outs_by_game.sort_values("outs_in_game", ascending=False)
+        .drop_duplicates(subset=["game_pk"], keep="first")
+        .rename(columns={"pitcher": "starter_id"})
+    )
+    pitcher_starts = outs_by_game.merge(game_starter[["game_pk", "starter_id"]], on="game_pk")
+    pitcher_starts = pitcher_starts[pitcher_starts["pitcher"] == pitcher_starts["starter_id"]].copy()
+
+    starts_agg = pitcher_starts.groupby("pitcher").agg(
+        games_started=("game_pk", "count"),
+        total_outs_started=("outs_in_game", "sum"),
+    ).reset_index()
+    starts_agg["avg_ip_per_start"] = (
+        starts_agg["total_outs_started"] / 3 / starts_agg["games_started"].replace(0, np.nan)
+    ).round(2)
+    starts_agg["opener_risk"] = (starts_agg["avg_ip_per_start"] < 4.0).astype(int)
+
+    pa_agg = pa_agg.merge(starts_agg, on="pitcher", how="left")
+    pa_agg["games_started"]    = pa_agg["games_started"].fillna(0)
+    pa_agg["avg_ip_per_start"] = pa_agg["avg_ip_per_start"].fillna(0)
+    pa_agg["opener_risk"]      = pa_agg["opener_risk"].fillna(1).astype(int)
+    pa_agg["projected_k_baseline"] = (
+        pa_agg["avg_ip_per_start"] * (pa_agg["k_per_9"] / 9)
+    ).round(1)
+
+    pitch_df = pitcher_df.copy()
+    pitch_df["is_swstr"]  = pitch_df["description"].astype("string").isin(
+        ["swinging_strike", "swinging_strike_blocked", "foul_tip"]
+    ).astype(int)
+    pitch_df["is_pitch"]  = 1
+    pitch_df["is_swing"]  = pitch_df["description"].astype("string").isin([
+        "swinging_strike", "swinging_strike_blocked", "foul_tip",
+        "foul", "hit_into_play", "hit_into_play_no_out",
+        "hit_into_play_score", "missed_bunt", "foul_bunt",
+    ]).astype(int)
+
+    if "zone" in pitch_df.columns:
+        pitch_df["is_out_zone"] = pitch_df["zone"].apply(
+            lambda z: int(float(z) in [11, 12, 13, 14]) if pd.notna(z) and str(z).strip() not in ("", "nan") else 0
+        )
+    else:
+        pitch_df["is_out_zone"] = 0
+
+    pitch_df["is_out_zone_swing"] = (pitch_df["is_out_zone"] & pitch_df["is_swing"]).astype(int)
+    pitch_df["pitch_number"] = pd.to_numeric(pitch_df.get("pitch_number", 1), errors="coerce").fillna(1)
+    first_pitch = pitch_df[pitch_df["pitch_number"] == 1].copy()
+    first_pitch["is_first_strike"] = first_pitch["description"].astype("string").isin(
+        ["called_strike", "swinging_strike", "swinging_strike_blocked", "foul_tip"]
+    ).astype(int)
+
+    pitch_agg = pitch_df.groupby("pitcher").agg(
+        total_pitches=("is_pitch", "sum"),
+        total_swstr=("is_swstr", "sum"),
+        total_out_zone=("is_out_zone", "sum"),
+        total_out_zone_swing=("is_out_zone_swing", "sum"),
+    ).reset_index()
+    pitch_agg["swstr_pct"]  = (pitch_agg["total_swstr"] / pitch_agg["total_pitches"].replace(0, np.nan) * 100).round(1)
+    pitch_agg["chase_rate"] = (pitch_agg["total_out_zone_swing"] / pitch_agg["total_out_zone"].replace(0, np.nan) * 100).round(1)
+
+    fps_agg = first_pitch.groupby("pitcher").agg(
+        first_pitch_total=("is_pitch", "sum"),
+        first_pitch_strikes=("is_first_strike", "sum"),
+    ).reset_index()
+    fps_agg["first_pitch_strike_pct"] = (fps_agg["first_pitch_strikes"] / fps_agg["first_pitch_total"].replace(0, np.nan) * 100).round(1)
+
+    ff = pitcher_df[pitcher_df["pitch_type"].astype("string").isin(["FF", "SI", "FC"])].copy()
+    velo_agg = ff.groupby("pitcher").agg(fastball_velo=("release_speed", "mean")).reset_index()
+    velo_agg["fastball_velo"] = velo_agg["fastball_velo"].round(1)
+
+    cutoff_21d = pd.Timestamp(date.today() - timedelta(days=21))
+    pa_21d     = pa_df[pa_df["game_date"] >= cutoff_21d].copy()
+    pitch_21d  = pitch_df[pitch_df["game_date"] >= cutoff_21d].copy()
+    ff_21d     = ff[ff["game_date"] >= cutoff_21d].copy()
+
+    swstr_21d = pitch_21d.groupby("pitcher").agg(
+        pitches_21d=("is_pitch", "sum"),
+        swstr_21d=("is_swstr", "sum"),
+    ).reset_index()
+    swstr_21d["swstr_pct_21d"] = (swstr_21d["swstr_21d"] / swstr_21d["pitches_21d"].replace(0, np.nan) * 100).round(1)
+
+    velo_21d = ff_21d.groupby("pitcher").agg(avg_velo_21d=("release_speed", "mean")).reset_index()
+    velo_21d["avg_velo_21d"] = velo_21d["avg_velo_21d"].round(1)
+
+    ko_21d = pa_21d[pa_21d["is_k"] == 1].copy()
+    ko_by_game = ko_21d.groupby(["pitcher", "game_pk"]).size().reset_index(name="ks_in_game")
+    ko_last3 = (
+        ko_by_game.sort_values("game_pk", ascending=False)
+        .groupby("pitcher").head(3)
+        .groupby("pitcher")
+        .agg(k_last_3=("ks_in_game", "sum"), starts_last_3=("game_pk", "count"))
+        .reset_index()
+    )
+    ko_last3["k_per_start_21d"] = (ko_last3["k_last_3"] / ko_last3["starts_last_3"].replace(0, np.nan)).round(1)
+
+    outs_21d = pa_21d[pa_21d["is_out"] == 1].groupby(["pitcher", "game_pk"]).size().reset_index(name="outs_in_game")
+    ip_last3 = (
+        outs_21d.sort_values("game_pk", ascending=False)
+        .groupby("pitcher").head(3)
+        .groupby("pitcher")
+        .agg(total_outs_last_3=("outs_in_game", "sum"), starts_counted=("game_pk", "count"))
+        .reset_index()
+    )
+    ip_last3["avg_ip_last_3"] = (ip_last3["total_outs_last_3"] / 3 / ip_last3["starts_counted"].replace(0, np.nan)).round(2)
+
+    result = pa_agg.copy()
+    result = result.merge(pitch_agg[["pitcher", "swstr_pct", "chase_rate"]], on="pitcher", how="left")
+    result = result.merge(fps_agg[["pitcher", "first_pitch_strike_pct"]], on="pitcher", how="left")
+    result = result.merge(velo_agg, on="pitcher", how="left")
+    result = result.merge(swstr_21d[["pitcher", "swstr_pct_21d"]], on="pitcher", how="left")
+    result = result.merge(velo_21d, on="pitcher", how="left")
+    result = result.merge(ko_last3[["pitcher", "k_last_3", "k_per_start_21d"]], on="pitcher", how="left")
+    result = result.merge(ip_last3[["pitcher", "avg_ip_last_3"]], on="pitcher", how="left")
+
+    result["swstr_trend"] = (result["swstr_pct_21d"].fillna(0) - result["swstr_pct"].fillna(0)).round(1)
+    result["velo_trend"]  = (result["avg_velo_21d"].fillna(0) - result["fastball_velo"].fillna(0)).round(1)
+
+    drop_cols = ["ks_batters_faced", "ks_k_season", "ks_bb_season",
+                 "ks_hits_allowed", "ks_outs", "total_pitches",
+                 "total_swstr", "total_out_zone", "total_out_zone_swing"]
+    result = result.drop(columns=[c for c in drop_cols if c in result.columns])
+    result = result.fillna(0.0)
+
+    print(f"  KS extra: {len(result)} pitchers, cols: {result.columns.tolist()[:8]}")
+    return result.rename(columns={"pitcher": "pitcher_id_ks"})
 
 
 def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
@@ -414,34 +577,19 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     ].copy()
 
     pitch_df["pitch_type"] = pitch_df["pitch_type"].astype("string").str.upper().str.strip()
-    pitch_df = pitch_df[
-        ~pitch_df["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])
-    ]
+    pitch_df = pitch_df[~pitch_df["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])]
     pitch_df["pitch_group"] = pitch_df["pitch_type"].apply(
         lambda p: PITCH_GROUP_MAP.get(str(p), "other")
     )
 
-    total = (
-        pitch_df.groupby("pitcher")
-        .size()
-        .reset_index(name="total_pitches")
-    )
+    total = pitch_df.groupby("pitcher").size().reset_index(name="total_pitches")
 
-    group_counts = (
-        pitch_df.groupby(["pitcher", "pitch_group"])
-        .size()
-        .reset_index(name="count")
-    )
+    group_counts = pitch_df.groupby(["pitcher", "pitch_group"]).size().reset_index(name="count")
     group_counts = group_counts.merge(total, on="pitcher", how="left")
-    group_counts["pct"] = (
-        group_counts["count"] / group_counts["total_pitches"] * 100
-    ).round(2)
+    group_counts["pct"] = (group_counts["count"] / group_counts["total_pitches"] * 100).round(2)
 
     group_pivot = group_counts.pivot_table(
-        index="pitcher",
-        columns="pitch_group",
-        values="pct",
-        fill_value=0,
+        index="pitcher", columns="pitch_group", values="pct", fill_value=0,
     ).reset_index()
     group_pivot.columns.name = None
 
@@ -452,19 +600,10 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         else:
             group_pivot[col] = 0.0
 
-    individual_counts = (
-        pitch_df.groupby(["pitcher", "pitch_type"])
-        .size()
-        .reset_index(name="count")
-    )
+    individual_counts = pitch_df.groupby(["pitcher", "pitch_type"]).size().reset_index(name="count")
     individual_counts = individual_counts.merge(total, on="pitcher", how="left")
-    individual_counts["pct"] = (
-        individual_counts["count"] / individual_counts["total_pitches"] * 100
-    ).round(2)
-
-    individual_counts_sorted = individual_counts.sort_values(
-        ["pitcher", "pct"], ascending=[True, False]
-    )
+    individual_counts["pct"] = (individual_counts["count"] / individual_counts["total_pitches"] * 100).round(2)
+    individual_counts_sorted = individual_counts.sort_values(["pitcher", "pct"], ascending=[True, False])
 
     top3_records = []
     for pitcher_id, group in individual_counts_sorted.groupby("pitcher"):
@@ -481,15 +620,11 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     top3_df = pd.DataFrame(top3_records)
 
     individual_pivot = individual_counts.pivot_table(
-        index="pitcher",
-        columns="pitch_type",
-        values="pct",
-        fill_value=0,
+        index="pitcher", columns="pitch_type", values="pct", fill_value=0,
     ).reset_index()
     individual_pivot.columns.name = None
     individual_pivot.columns = [
-        f"pitch_pct_{c}" if c != "pitcher" else c
-        for c in individual_pivot.columns
+        f"pitch_pct_{c}" if c != "pitcher" else c for c in individual_pivot.columns
     ]
 
     result = group_pivot.merge(total, on="pitcher", how="left")
@@ -503,43 +638,21 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     return result
 
 
-def build_pitch_type_splits_pitcher(
-    bbe: pd.DataFrame,
-    probable_ids: Set[int],
-) -> pd.DataFrame:
-    """
-    Calculate ISO allowed, HR rate allowed, and barrel% allowed
-    per pitch type for each pitcher.
-    Only includes pitch types with >= MIN_BBE_PER_PITCH BBE to avoid noise.
-    Columns: pitcher, pitcher_iso_allowed_{PT}, pitcher_hr_rate_allowed_{PT},
-             pitcher_barrel_pct_allowed_{PT}
-    """
+def build_pitch_type_splits_pitcher(bbe: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
     if "pitch_type" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
-    pitch_bbe = bbe[
-        bbe["pitcher"].isin(probable_ids) &
-        bbe["pitch_type"].notna()
-    ].copy()
-
+    pitch_bbe = bbe[bbe["pitcher"].isin(probable_ids) & bbe["pitch_type"].notna()].copy()
     pitch_bbe["pitch_type"] = pitch_bbe["pitch_type"].astype("string").str.upper().str.strip()
-    pitch_bbe = pitch_bbe[
-        ~pitch_bbe["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])
-    ]
+    pitch_bbe = pitch_bbe[~pitch_bbe["pitch_type"].isin(["", "NAN", "NONE", "PO", "UN", "EP"])]
 
     if pitch_bbe.empty:
         return pd.DataFrame(columns=["pitcher"])
 
-    # Need total bases and hits for ISO calculation
     tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
-    pitch_bbe["total_bases"] = (
-        pitch_bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
-    )
-    pitch_bbe["is_hit"] = pitch_bbe["events"].astype("string").str.lower().isin(
-        {"single", "double", "triple", "home_run"}
-    )
+    pitch_bbe["total_bases"] = pitch_bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+    pitch_bbe["is_hit"]      = pitch_bbe["events"].astype("string").str.lower().isin(HIT_EVENTS)
 
-    # AB denominator for ISO — excludes walks, HBP, sac flies
     ab_events = {
         "single", "double", "triple", "home_run",
         "field_out", "grounded_into_double_play", "double_play",
@@ -561,27 +674,14 @@ def build_pitch_type_splits_pitcher(
         )
         .reset_index()
     )
-
-    # Apply minimum BBE threshold per pitch type
     grp = grp[grp["bbe_count"] >= MIN_BBE_PER_PITCH].copy()
-
     if grp.empty:
         return pd.DataFrame(columns=["pitcher"])
 
-    grp["pitcher_iso_allowed"] = (
-        (grp["total_bases"] - grp["hits"]) /
-        grp["ab_count"].replace(0, np.nan)
-    ).round(3)
+    grp["pitcher_iso_allowed"]        = ((grp["total_bases"] - grp["hits"]) / grp["ab_count"].replace(0, np.nan)).round(3)
+    grp["pitcher_hr_rate_allowed"]    = (grp["hr_count"] / grp["bbe_count"] * 100).round(2)
+    grp["pitcher_barrel_pct_allowed"] = (grp["barrel_count"] / grp["bbe_count"] * 100).round(2)
 
-    grp["pitcher_hr_rate_allowed"] = (
-        grp["hr_count"] / grp["bbe_count"] * 100
-    ).round(2)
-
-    grp["pitcher_barrel_pct_allowed"] = (
-        grp["barrel_count"] / grp["bbe_count"] * 100
-    ).round(2)
-
-    # Pivot so each pitch type becomes its own columns
     result_rows = []
     for pitcher_id, pdata in grp.groupby("pitcher"):
         record = {"pitcher": pitcher_id}
@@ -595,17 +695,13 @@ def build_pitch_type_splits_pitcher(
     return pd.DataFrame(result_rows)
 
 
-def build_season_stats_pitcher(
-    bbe: pd.DataFrame,
-    full_df: pd.DataFrame,
-    probable_ids: Set[int],
-) -> pd.DataFrame:
+def build_season_stats_pitcher(bbe, full_df, probable_ids):
     bf_df = full_df[
-        full_df["pitcher"].isin(probable_ids) &
-        full_df["events"].notna()
+        full_df["pitcher"].isin(probable_ids) & full_df["events"].notna()
     ].copy()
-    bf_dedupe = [c for c in ["game_pk", "at_bat_number", "pitcher"] if c in bf_df.columns]
-    bf_df = bf_df.drop_duplicates(subset=bf_dedupe)
+    bf_df = bf_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "pitcher"] if c in bf_df.columns]
+    )
     bf_counts = bf_df.groupby("pitcher").size().reset_index(name="bf")
 
     ip_df = full_df[
@@ -626,37 +722,20 @@ def build_season_stats_pitcher(
     if "p_throws" in bbe.columns:
         agg_dict["pitcher_hand"] = ("p_throws", "first")
 
-    season = (
-        bbe.groupby("pitcher", dropna=False)
-        .agg(**agg_dict)
-        .reset_index()
-    )
-
+    season = bbe.groupby("pitcher", dropna=False).agg(**agg_dict).reset_index()
     season = season.merge(bf_counts, on="pitcher", how="left")
     season = season.merge(ip_counts[["pitcher", "ip"]], on="pitcher", how="left")
 
     season["bf"] = season["bf"].fillna(0)
     season["ip"] = season["ip"].fillna(0)
 
-    season["hr_per_bf"] = (
-        season["season_hr_allowed"] / season["bf"].replace(0, pd.NA) * 100
-    ).round(2)
-    season["hr9"] = (
-        season["season_hr_allowed"] / season["ip"].replace(0, pd.NA) * 9
-    ).round(2)
-    season["hr_per_fb_allowed"] = (
-        season["season_hr_allowed"] / season["season_fb_allowed"].replace(0, pd.NA) * 100
-    ).round(2)
-    season["fb_rate_allowed"] = (
-        season["season_fb_allowed"] / season["season_bbe_allowed"] * 100
-    ).round(2)
-    season["season_barrel_pct_allowed"] = (
-        season["season_barrel_allowed"] / season["season_bbe_allowed"] * 100
-    ).round(2)
-    season["hard_hit_pct_allowed"] = (
-        season["season_hard_hit_allowed"] / season["season_bbe_allowed"] * 100
-    ).round(2)
-    season["avg_ev_allowed"] = season["avg_ev_allowed"].round(2)
+    season["hr_per_bf"]                 = (season["season_hr_allowed"] / season["bf"].replace(0, pd.NA) * 100).round(2)
+    season["hr9"]                       = (season["season_hr_allowed"] / season["ip"].replace(0, pd.NA) * 9).round(2)
+    season["hr_per_fb_allowed"]         = (season["season_hr_allowed"] / season["season_fb_allowed"].replace(0, pd.NA) * 100).round(2)
+    season["fb_rate_allowed"]           = (season["season_fb_allowed"] / season["season_bbe_allowed"] * 100).round(2)
+    season["season_barrel_pct_allowed"] = (season["season_barrel_allowed"] / season["season_bbe_allowed"] * 100).round(2)
+    season["hard_hit_pct_allowed"]      = (season["season_hard_hit_allowed"] / season["season_bbe_allowed"] * 100).round(2)
+    season["avg_ev_allowed"]            = season["avg_ev_allowed"].round(2)
 
     if "pitcher_hand" not in season.columns:
         season["pitcher_hand"] = ""
@@ -664,111 +743,79 @@ def build_season_stats_pitcher(
     return season
 
 
-def build_platoon_splits_pitcher(
-    bbe: pd.DataFrame,
-    full_df: pd.DataFrame,
-) -> pd.DataFrame:
+def build_platoon_splits_pitcher(bbe, full_df):
     if "stand" not in bbe.columns:
         return pd.DataFrame(columns=["pitcher"])
 
     pitcher_ids = bbe["pitcher"].unique()
-
     splits = []
     for hand, label in [("L", "vs_lhh"), ("R", "vs_rhh")]:
-        sub_bbe = bbe[bbe["stand"] == hand].copy()
-
+        sub_bbe  = bbe[bbe["stand"] == hand].copy()
         sub_full = full_df[
             full_df["pitcher"].isin(pitcher_ids) &
             (full_df["stand"] == hand) &
             full_df["events"].astype("string").str.lower().isin(OUT_EVENTS)
         ].copy()
-
-        ip_grp = (
-            sub_full.groupby("pitcher")
-            .size()
-            .reset_index(name="outs")
-        )
+        ip_grp = sub_full.groupby("pitcher").size().reset_index(name="outs")
         ip_grp[f"{label}_ip"] = (ip_grp["outs"] / 3).round(2)
 
         grp = (
             sub_bbe.groupby("pitcher", dropna=False)
-            .agg(
-                **{
-                    f"{label}_bbe":        ("launch_speed", "size"),
-                    f"{label}_hr":         ("is_hr", "sum"),
-                    f"{label}_barrel_pct": ("is_barrel", "mean"),
-                }
-            )
+            .agg(**{
+                f"{label}_bbe":        ("launch_speed", "size"),
+                f"{label}_hr":         ("is_hr", "sum"),
+                f"{label}_barrel_pct": ("is_barrel", "mean"),
+            })
             .reset_index()
         )
-
         grp = grp.merge(ip_grp[["pitcher", f"{label}_ip"]], on="pitcher", how="left")
-        grp[f"{label}_ip"] = grp[f"{label}_ip"].fillna(0)
+        grp[f"{label}_ip"]         = grp[f"{label}_ip"].fillna(0)
         grp[f"{label}_barrel_pct"] = (grp[f"{label}_barrel_pct"] * 100).round(2)
-        grp[f"{label}_hr_rate"] = (
-            grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100
-        ).round(2)
-        grp[f"{label}_hr9"] = (
-            grp[f"{label}_hr"] / grp[f"{label}_ip"].replace(0, pd.NA) * 9
-        ).round(2)
-
+        grp[f"{label}_hr_rate"]    = (grp[f"{label}_hr"] / grp[f"{label}_bbe"] * 100).round(2)
+        grp[f"{label}_hr9"]        = (grp[f"{label}_hr"] / grp[f"{label}_ip"].replace(0, pd.NA) * 9).round(2)
         splits.append(grp)
 
     return splits[0].merge(splits[1], on="pitcher", how="outer")
 
 
-def build_rolling_stats_pitcher(
-    bbe: pd.DataFrame,
-    windows: List[int] = [7, 14, 30],
-) -> pd.DataFrame:
-    today = date.today()
+def build_rolling_stats_pitcher(bbe, windows=[7, 14, 30]):
+    today   = date.today()
     results = []
-
     for days in windows:
-        cutoff = today - timedelta(days=days)
+        cutoff    = today - timedelta(days=days)
         window_df = bbe[bbe["game_date"] >= pd.Timestamp(cutoff)].copy()
-
         grp = (
             window_df.groupby("pitcher", dropna=False)
-            .agg(
-                **{
-                    f"bbe_{days}d": ("launch_speed", "size"),
-                    f"avg_ev_{days}d": ("launch_speed", "mean"),
-                    f"barrel_pct_{days}d": ("is_barrel", "mean"),
-                    f"hard_hit_pct_{days}d": ("is_hard_hit", "mean"),
-                    f"hr_{days}d": ("is_hr", "sum"),
-                }
-            )
+            .agg(**{
+                f"bbe_{days}d":          ("launch_speed", "size"),
+                f"avg_ev_{days}d":       ("launch_speed", "mean"),
+                f"barrel_pct_{days}d":   ("is_barrel", "mean"),
+                f"hard_hit_pct_{days}d": ("is_hard_hit", "mean"),
+                f"hr_{days}d":           ("is_hr", "sum"),
+            })
             .reset_index()
         )
-
         pct_cols = [f"barrel_pct_{days}d", f"hard_hit_pct_{days}d"]
-        grp[pct_cols] = (grp[pct_cols] * 100).round(2)
-        grp[f"avg_ev_{days}d"] = grp[f"avg_ev_{days}d"].round(2)
+        grp[pct_cols]           = (grp[pct_cols] * 100).round(2)
+        grp[f"avg_ev_{days}d"]  = grp[f"avg_ev_{days}d"].round(2)
         results.append(grp)
 
     rolling = results[0]
     for r in results[1:]:
         rolling = rolling.merge(r, on="pitcher", how="outer")
-
     return rolling
 
 
-def build_pitcher_full(
-    df: pd.DataFrame,
-    probable_pitchers: Dict[str, dict],
-    matchups: Dict[str, str],
-    home_teams: Set[str],
-) -> pd.DataFrame:
+def build_pitcher_full(df, probable_pitchers, matchups, home_teams):
     if df.empty or not probable_pitchers:
         return pd.DataFrame()
 
     df = df.copy()
-    df["game_date"] = pd.to_datetime(df["game_date"])
+    df["game_date"]     = pd.to_datetime(df["game_date"])
     df["pitching_team"] = infer_pitching_team(df)
 
     is_fallback = probable_pitchers.get("_fallback", False)
-    is_espn = probable_pitchers.get("_espn", False)
+    is_espn     = probable_pitchers.get("_espn", False)
 
     if is_fallback:
         playing_teams = probable_pitchers.get("_teams", "ALL")
@@ -777,12 +824,11 @@ def build_pitcher_full(
             probable_ids = set(df["pitcher"].dropna().astype(int).unique())
         else:
             print(f"Fallback mode — using pitchers from teams: {playing_teams}")
-            team_df = df[df["pitching_team"].isin(playing_teams)].copy()
+            team_df      = df[df["pitching_team"].isin(playing_teams)].copy()
             probable_ids = set(team_df["pitcher"].dropna().astype(int).unique())
 
         print(f"Found {len(probable_ids)} pitchers — looking up names...")
         name_map = lookup_player_names(list(probable_ids))
-
         team_lookup = (
             df[df["pitcher"].isin(probable_ids)]
             .sort_values("game_date")
@@ -790,15 +836,9 @@ def build_pitcher_full(
             .set_index("pitcher")["pitching_team"]
             .to_dict()
         )
-
         probable_pitchers = {
-            str(pid): {
-                "name": name_map.get(pid, ""),
-                "id": pid,
-                "team": str(team_lookup.get(pid, "")),
-            }
-            for pid in probable_ids
-            if name_map.get(pid)
+            str(pid): {"name": name_map.get(pid, ""), "id": pid, "team": str(team_lookup.get(pid, ""))}
+            for pid in probable_ids if name_map.get(pid)
         }
         print(f"Resolved {len(probable_pitchers)} pitcher names")
         probable_ids = {v["id"] for v in probable_pitchers.values()}
@@ -812,34 +852,27 @@ def build_pitcher_full(
         import unicodedata
 
         def normalize_name(name: str) -> str:
-            """Strip accents and lowercase for fuzzy name matching."""
             return "".join(
                 c for c in unicodedata.normalize("NFD", name.lower().strip())
                 if unicodedata.category(c) != "Mn"
             )
 
-        name_to_statcast_id = {
-            normalize_name(v): k for k, v in name_map.items()
-        }
+        name_to_statcast_id = {normalize_name(v): k for k, v in name_map.items()}
 
         resolved = {}
         for team_abbr, info in probable_pitchers.items():
             if str(team_abbr).startswith("_"):
                 continue
-            espn_name = normalize_name(info.get("name", ""))
+            espn_name   = normalize_name(info.get("name", ""))
             statcast_id = name_to_statcast_id.get(espn_name)
             if statcast_id:
-                resolved[team_abbr] = {
-                    "name": info["name"],
-                    "id": statcast_id,
-                    "team": info.get("team", team_abbr),
-                }
+                resolved[team_abbr] = {"name": info["name"], "id": statcast_id, "team": info.get("team", team_abbr)}
             else:
                 print(f"  Could not resolve: {info['name']} ({team_abbr})")
 
         print(f"Resolved {len(resolved)}/{len([k for k in probable_pitchers if not str(k).startswith('_')])} pitchers by name")
         probable_pitchers = resolved
-        probable_ids = {v["id"] for v in probable_pitchers.values()}
+        probable_ids      = {v["id"] for v in probable_pitchers.values()}
 
     else:
         probable_ids = {v["id"] for v in probable_pitchers.values()}
@@ -855,49 +888,57 @@ def build_pitcher_full(
 
     bbe = add_pitcher_flags(bbe)
 
-    season_stats = build_season_stats_pitcher(bbe, df, probable_ids)
-    platoon_splits = build_platoon_splits_pitcher(bbe, df)
-    rolling_stats = build_rolling_stats_pitcher(bbe)
-    pitch_mix = build_pitch_mix(df, probable_ids)
+    season_stats      = build_season_stats_pitcher(bbe, df, probable_ids)
+    platoon_splits    = build_platoon_splits_pitcher(bbe, df)
+    rolling_stats     = build_rolling_stats_pitcher(bbe)
+    pitch_mix         = build_pitch_mix(df, probable_ids)
     pitch_type_splits = build_pitch_type_splits_pitcher(bbe, probable_ids)
+
+    print("Building KS extra features...")
+    ks_extra = build_ks_extra_features(df, probable_ids)
 
     combined = (
         season_stats
-        .merge(platoon_splits, on="pitcher", how="left")
-        .merge(rolling_stats, on="pitcher", how="left")
-        .merge(pitch_mix, on="pitcher", how="left")
+        .merge(platoon_splits,    on="pitcher", how="left")
+        .merge(rolling_stats,     on="pitcher", how="left")
+        .merge(pitch_mix,         on="pitcher", how="left")
         .merge(pitch_type_splits, on="pitcher", how="left")
     )
+
+    if not ks_extra.empty:
+        combined["pitcher"] = pd.to_numeric(combined["pitcher"], errors="coerce").astype("int64")
+        ks_extra["pitcher_id_ks"] = pd.to_numeric(ks_extra["pitcher_id_ks"], errors="coerce").astype("int64")
+        combined = combined.merge(
+            ks_extra.rename(columns={"pitcher_id_ks": "pitcher"}),
+            on="pitcher",
+            how="left",
+        )
+        ks_cols_added = [c for c in ks_extra.columns if c != "pitcher_id_ks"]
+        found = [c for c in ks_cols_added if c in combined.columns and combined[c].notna().any()]
+        print(f"KS merge result: {len(found)} non-null KS columns added")
 
     id_to_name = {v["id"]: v["name"] for v in probable_pitchers.values()}
     id_to_team = {v["id"]: v.get("team", "") for v in probable_pitchers.values()}
 
     combined["pitcher_name"] = combined["pitcher"].map(
-        lambda x: id_to_name.get(int(x), "") if pd.notna(x) else ""
+        lambda x: id_to_name.get(int(x), "") if pd.notna(x) and str(x).isdigit() else ""
     )
     combined["pitcher_team"] = combined["pitcher"].map(
-        lambda x: id_to_team.get(int(x), "") if pd.notna(x) else ""
+        lambda x: id_to_team.get(int(x), "") if pd.notna(x) and str(x).isdigit() else ""
     )
-    combined["opposing_team"] = combined["pitcher_team"].map(
-        lambda t: matchups.get(str(t), "")
-    )
-    combined["home_team"] = combined.apply(
-        lambda r: r["pitcher_team"] if str(r["pitcher_team"]) in home_teams
-        else r["opposing_team"],
+    combined["opposing_team"] = combined["pitcher_team"].map(lambda t: matchups.get(str(t), ""))
+    combined["home_team"]     = combined.apply(
+        lambda r: r["pitcher_team"] if str(r["pitcher_team"]) in home_teams else r["opposing_team"],
         axis=1,
     )
 
     combined = combined[combined["pitcher_name"] != ""].copy()
     combined = combined.rename(columns={"pitcher": "pitcher_id"})
 
-    id_cols = [
-        "pitcher_name", "pitcher_id", "pitcher_team",
-        "opposing_team", "home_team", "pitcher_hand",
-    ]
+    id_cols    = ["pitcher_name", "pitcher_id", "pitcher_team", "opposing_team", "home_team", "pitcher_hand"]
     other_cols = [c for c in combined.columns if c not in id_cols]
-    combined = combined[id_cols + other_cols]
-
-    combined = combined.sort_values(
+    combined   = combined[id_cols + other_cols]
+    combined   = combined.sort_values(
         by=["hr_per_fb_allowed", "season_barrel_pct_allowed", "avg_ev_allowed"],
         ascending=[False, False, False],
         na_position="last",
@@ -907,23 +948,15 @@ def build_pitcher_full(
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.copy().replace([np.inf, -np.inf], np.nan)
     for col in df.columns:
         df[col] = df[col].apply(
-            lambda x: "" if (isinstance(x, float) and (np.isnan(x) or np.isinf(x)))
-            else x
+            lambda x: "" if (isinstance(x, float) and (np.isnan(x) or np.isinf(x))) else x
         )
-    df = df.fillna("")
-    return df
+    return df.fillna("")
 
 
-def write_dataframe_to_sheet(
-    gc: gspread.Client,
-    sheet_id: str,
-    worksheet_name: str,
-    df: pd.DataFrame,
-) -> None:
+def write_dataframe_to_sheet(gc, sheet_id, worksheet_name, df):
     sh = gc.open_by_key(sheet_id)
     try:
         ws = sh.worksheet(worksheet_name)
@@ -931,21 +964,21 @@ def write_dataframe_to_sheet(
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet_name, rows=2000, cols=100)
 
-    df = clean_for_sheets(df)
+    df     = clean_for_sheets(df)
     values = [df.columns.tolist()] + df.astype(str).values.tolist()
     ws.update(values)
 
 
 def main() -> None:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    gc = get_gspread_client()
+    gc       = get_gspread_client()
 
     probable_pitchers = get_today_probable_pitchers()
     print(f"Probable pitchers result: {list(probable_pitchers.keys())[:5]}")
 
     matchups, home_teams = get_today_matchups()
     print(f"Matchups found: {len(matchups)}")
-    print(f"Home teams today: {home_teams}")
+    print(f"Home teams today: ***{home_teams}***")
 
     raw_df = get_season_statcast()
     print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")

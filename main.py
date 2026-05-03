@@ -56,6 +56,18 @@ OUT_EVENTS = {
     "strikeout_double_play",
 }
 
+PA_EVENTS = AB_EVENTS | {
+    "walk", "hit_by_pitch", "sac_fly", "sac_fly_double_play",
+    "sac_bunt", "sac_bunt_double_play", "catcher_interf", "intent_walk",
+}
+
+HIT_EVENTS = {"single", "double", "triple", "home_run"}
+
+WOBA_WEIGHTS = {
+    "walk": 0.690, "hit_by_pitch": 0.722, "intent_walk": 0.690,
+    "single": 0.882, "double": 1.242, "triple": 1.569, "home_run": 2.065,
+}
+
 MIN_BBE_VS_PITCHER = 5
 
 MLB_TEAM_IDS = [
@@ -226,10 +238,8 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
                                 player_ids.add(int(pid))
                         if player_ids:
                             lineups[abbr] = player_ids
-                            print(f"  ✓ Got lineup for {abbr} from game feed ({len(player_ids)} batters)")
 
             except Exception as e:
-                print(f"  Game feed failed for gamePk {game_pk}: {e}")
                 continue
 
         if lineups:
@@ -359,6 +369,10 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["pitch_group"] = "other"
 
+    # Launch angle buckets for HRRBI
+    df["is_ld"] = df["launch_angle"].between(10, 25).fillna(False).astype(int) if "launch_angle" in df.columns else 0
+    df["is_gb"] = (df["launch_angle"] < 10).fillna(False).astype(int) if "launch_angle" in df.columns else 0
+
     return df
 
 
@@ -385,18 +399,9 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculate how often each batter starts when their team faces LHP vs RHP.
-    Denominator is team games vs that handedness, not total batter games.
-    This gives a true platoon usage rate independent of schedule distribution.
-    """
-    if df.empty:
+    if df.empty or "p_throws" not in df.columns:
         return pd.DataFrame()
 
-    if "p_throws" not in df.columns:
-        return pd.DataFrame()
-
-    # Need batting team — derive if not present
     if "batting_team" not in df.columns:
         if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
             df = df.copy()
@@ -408,37 +413,29 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame()
 
-    # One row per batter per game (deduplicate)
     pa_df = df[df["events"].notna()].copy()
     pa_df = pa_df.drop_duplicates(
         subset=[c for c in ["game_pk", "batter"] if c in pa_df.columns]
     )
 
-    # ── Team games vs each handedness ─────────────────────────────────────
-    # How many games did each team play vs LHP / RHP
     team_vs_lhp = (
         pa_df[pa_df["p_throws"] == "L"]
         .groupby("batting_team")["game_pk"]
         .nunique()
         .reset_index(name="team_games_vs_lhp")
     )
-
     team_vs_rhp = (
         pa_df[pa_df["p_throws"] == "R"]
         .groupby("batting_team")["game_pk"]
         .nunique()
         .reset_index(name="team_games_vs_rhp")
     )
-
-    # ── Batter games vs each handedness ───────────────────────────────────
-    # How many of those games did each batter actually appear in
     batter_vs_lhp = (
         pa_df[pa_df["p_throws"] == "L"]
         .groupby(["batter", "batting_team"])["game_pk"]
         .nunique()
         .reset_index(name="batter_games_vs_lhp")
     )
-
     batter_vs_rhp = (
         pa_df[pa_df["p_throws"] == "R"]
         .groupby(["batter", "batting_team"])["game_pk"]
@@ -446,35 +443,130 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(name="batter_games_vs_rhp")
     )
 
-    # ── Merge and calculate true start rates ──────────────────────────────
     starts = batter_vs_lhp.merge(batter_vs_rhp, on=["batter", "batting_team"], how="outer").fillna(0)
     starts = starts.merge(team_vs_lhp, on="batting_team", how="left")
     starts = starts.merge(team_vs_rhp, on="batting_team", how="left")
     starts["team_games_vs_lhp"] = starts["team_games_vs_lhp"].fillna(0)
     starts["team_games_vs_rhp"] = starts["team_games_vs_rhp"].fillna(0)
 
-    # True start rate = batter appearances / team games vs that hand
     starts["lhp_start_rate"] = (
         starts["batter_games_vs_lhp"] /
         starts["team_games_vs_lhp"].replace(0, np.nan)
-    ).round(3)
+    ).round(3).fillna(0.5)
 
     starts["rhp_start_rate"] = (
         starts["batter_games_vs_rhp"] /
         starts["team_games_vs_rhp"].replace(0, np.nan)
-    ).round(3)
-
-    # Fill missing with 0.5 (neutral — not enough data)
-    starts["lhp_start_rate"] = starts["lhp_start_rate"].fillna(0.5)
-    starts["rhp_start_rate"] = starts["rhp_start_rate"].fillna(0.5)
+    ).round(3).fillna(0.5)
 
     starts = starts.rename(columns={"batter": "batter_id"})
-
     print(f"Built handedness start rates for {len(starts)} batters")
     return starts[["batter_id", "batting_team", "batter_games_vs_lhp", "batter_games_vs_rhp",
                     "team_games_vs_lhp", "team_games_vs_rhp",
                     "lhp_start_rate", "rhp_start_rate"]]
 
+
+def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute additional batter metrics needed by the HRRBI model.
+    These are added to Batter_Statcast_2026 to avoid a separate Statcast pull.
+    Returns a df keyed on batter ID with extra columns.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    # ── PA-level data ──────────────────────────────────────────────
+    pa_df = df[df["events"].astype("string").str.lower().isin(PA_EVENTS)].copy()
+    pa_df = pa_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
+    )
+
+    ab_df = df[df["events"].astype("string").str.lower().isin(AB_EVENTS)].copy()
+    ab_df = ab_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in ab_df.columns]
+    )
+
+    pa_df["is_hit"]  = pa_df["events"].astype("string").str.lower().isin(HIT_EVENTS).astype(int)
+    pa_df["is_bb"]   = pa_df["events"].astype("string").str.lower().isin({"walk", "intent_walk"}).astype(int)
+    pa_df["is_k"]    = pa_df["events"].astype("string").str.lower().isin({"strikeout", "strikeout_double_play"}).astype(int)
+    pa_df["is_hbp"]  = pa_df["events"].astype("string").str.lower().eq("hit_by_pitch").astype(int)
+
+    TB_MAP = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+    pa_df["tb"]       = pa_df["events"].astype("string").str.lower().map(TB_MAP).fillna(0)
+    pa_df["woba_val"] = pa_df["events"].astype("string").str.lower().map(WOBA_WEIGHTS).fillna(0)
+
+    # ── Season PA agg ──────────────────────────────────────────────
+    pa_counts = pa_df.groupby("batter").agg(
+        hrrbi_pa=("is_hit", "count"),
+        hrrbi_hits=("is_hit", "sum"),
+        hrrbi_bb=("is_bb", "sum"),
+        hrrbi_k=("is_k", "sum"),
+        woba_num=("woba_val", "sum"),
+    ).reset_index()
+
+    ab_counts = ab_df.groupby("batter").size().reset_index(name="hrrbi_ab")
+    tb_counts = pa_df.groupby("batter")["tb"].sum().reset_index(name="hrrbi_tb")
+
+    result = pa_counts.merge(ab_counts, on="batter", how="left")
+    result = result.merge(tb_counts, on="batter", how="left")
+    result["hrrbi_ab"] = result["hrrbi_ab"].fillna(0)
+    result["hrrbi_tb"] = result["hrrbi_tb"].fillna(0)
+
+    result["woba"]   = (result["woba_num"] / result["hrrbi_pa"].replace(0, np.nan)).round(3)
+    result["obp"]    = ((result["hrrbi_hits"] + result["hrrbi_bb"]) / result["hrrbi_pa"].replace(0, np.nan)).round(3)
+    result["bb_pct"] = (result["hrrbi_bb"] / result["hrrbi_pa"].replace(0, np.nan) * 100).round(1)
+    result["k_pct"]  = (result["hrrbi_k"]  / result["hrrbi_pa"].replace(0, np.nan) * 100).round(1)
+
+    # ── LD%, GB%, FB% from BBE ─────────────────────────────────────
+    bbe = filter_bbe(df)
+    if not bbe.empty:
+        bbe = add_flags(bbe)
+        bbe_agg = bbe.groupby("batter").agg(
+            ld_pct=("is_ld", "mean"),
+            gb_pct=("is_gb", "mean"),
+            fb_pct=("is_fly_ball", "mean"),
+        ).reset_index()
+        bbe_agg["ld_pct"] = (bbe_agg["ld_pct"] * 100).round(1)
+        bbe_agg["gb_pct"] = (bbe_agg["gb_pct"] * 100).round(1)
+        bbe_agg["fb_pct"] = (bbe_agg["fb_pct"] * 100).round(1)
+        result = result.merge(bbe_agg, on="batter", how="left")
+    else:
+        result["ld_pct"] = 0.0
+        result["gb_pct"] = 0.0
+        result["fb_pct"] = 0.0
+
+    # ── Batting order ──────────────────────────────────────────────
+    if "bat_order" in pa_df.columns:
+        bat_order = (
+            pa_df.groupby("batter")["bat_order"]
+            .apply(lambda x: pd.to_numeric(x, errors="coerce").mean())
+            .reset_index(name="avg_bat_order")
+        )
+        bat_order["avg_bat_order"] = bat_order["avg_bat_order"].round(1)
+        result = result.merge(bat_order, on="batter", how="left")
+    else:
+        result["avg_bat_order"] = 5.0
+
+    # ── 14-day rolling avg ─────────────────────────────────────────
+    cutoff_14d = pd.Timestamp(date.today() - timedelta(days=14))
+    pa_14d     = pa_df[pa_df["game_date"] >= cutoff_14d].copy()
+    pa_14d_agg = pa_14d.groupby("batter").agg(
+        pa_14d=("is_hit", "count"),
+        hits_14d=("is_hit", "sum"),
+    ).reset_index()
+    pa_14d_agg["avg_14d"] = (pa_14d_agg["hits_14d"] / pa_14d_agg["pa_14d"].replace(0, np.nan)).round(3)
+    result = result.merge(pa_14d_agg, on="batter", how="left")
+
+    # ── Hot/cold flags ─────────────────────────────────────────────
+    result["hot_streak"]  = ((result.get("avg_14d", 0) >= 0.320) & (result.get("pa_14d", 0) >= 20)).astype(int)
+    result["cold_streak"] = ((result.get("avg_14d", 0) <= 0.180) & (result.get("pa_14d", 0) >= 20)).astype(int)
+
+    # Drop intermediate columns
+    drop_cols = ["hrrbi_pa", "hrrbi_hits", "hrrbi_bb", "hrrbi_k", "hrrbi_ab", "hrrbi_tb", "woba_num"]
+    result = result.drop(columns=[c for c in drop_cols if c in result.columns])
+
+    result = result.rename(columns={"batter": "batter_id_hrrbi"})
+    return result
 
 
 def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -508,7 +600,6 @@ def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
         .size()
         .reset_index(name="bvp_pa")
     )
-
     ab_counts = (
         ab_df.groupby(["batter", "pitcher"])
         .size()
@@ -531,31 +622,17 @@ def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
     bvp = bvp.merge(ab_counts, on=["batter", "pitcher"], how="left")
     bvp["bvp_pa"] = bvp["bvp_pa"].fillna(0)
     bvp["bvp_ab"] = bvp["bvp_ab"].fillna(0)
-
     bvp = bvp[bvp["bvp_pa"] >= MIN_BBE_VS_PITCHER].copy()
 
     if bvp.empty:
         return pd.DataFrame()
 
-    bvp["bvp_iso"] = (
-        (bvp["bvp_tb"] - bvp["bvp_hits"]) /
-        bvp["bvp_ab"].replace(0, np.nan)
-    ).round(3)
-
-    bvp["bvp_barrel_pct"] = (
-        bvp["bvp_barrel"] / bvp["bvp_bbe"].replace(0, np.nan) * 100
-    ).round(2)
-
-    bvp["bvp_hr_rate"] = (
-        bvp["bvp_hr"] / bvp["bvp_pa"].replace(0, np.nan) * 100
-    ).round(2)
-
+    bvp["bvp_iso"]        = ((bvp["bvp_tb"] - bvp["bvp_hits"]) / bvp["bvp_ab"].replace(0, np.nan)).round(3)
+    bvp["bvp_barrel_pct"] = (bvp["bvp_barrel"] / bvp["bvp_bbe"].replace(0, np.nan) * 100).round(2)
+    bvp["bvp_hr_rate"]    = (bvp["bvp_hr"] / bvp["bvp_pa"].replace(0, np.nan) * 100).round(2)
     bvp = bvp.rename(columns={"pitcher": "pitcher_id"})
 
-    return bvp[[
-        "batter", "pitcher_id",
-        "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate"
-    ]]
+    return bvp[["batter", "pitcher_id", "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate"]]
 
 
 def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
@@ -632,6 +709,7 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     season["batting_avg"]       = (season["hits"] / season["ab"].replace(0, np.nan)).round(3)
     season["pull_rate"]         = (season["pull_count"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
     season["avg_launch_angle"]  = season["avg_launch_angle"].round(2)
+    season["hard_hit_pct_season"] = (season["season_hard_hit"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
 
     today = date.today()
 
@@ -914,7 +992,7 @@ def main() -> None:
     raw_df["game_date"] = pd.to_datetime(raw_df["game_date"])
     print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
 
-    # Build batter features
+    # ── Build batter features ──────────────────────────────────────
     batter_df = build_batter_features(raw_df, today_teams)
     print(f"Built {len(batter_df)} batter rows")
 
@@ -927,7 +1005,7 @@ def main() -> None:
         batter_df = batter_df[batter_df["player_name"] != ""].copy()
         batter_df = batter_df.rename(columns={"batter": "batter_id"})
 
-        # Build and merge handedness start rates
+        # ── Handedness start rates ─────────────────────────────────
         print("Building handedness start rates...")
         start_rates = build_handedness_start_rates(raw_df)
         if not start_rates.empty:
@@ -936,10 +1014,21 @@ def main() -> None:
             batter_df["rhp_start_rate"] = batter_df["rhp_start_rate"].fillna(0.5)
             print(f"Handedness start rates added for {len(start_rates)} batters")
 
+        # ── HRRBI extra features ───────────────────────────────────
+        print("Building HRRBI extra features...")
+        hrrbi_extra = build_hrrbi_extra_features(raw_df)
+        if not hrrbi_extra.empty:
+            batter_df = batter_df.merge(
+                hrrbi_extra.rename(columns={"batter_id_hrrbi": "batter_id"}),
+                on="batter_id",
+                how="left",
+            )
+            print(f"HRRBI extra features added for {len(hrrbi_extra)} batters")
+
         write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_2026", batter_df)
         print("Written to Batter_Statcast_2026")
 
-    # Build BvP history
+    # ── Build BvP history ──────────────────────────────────────────
     print("Building batter vs pitcher history...")
     bvp_df = build_vs_pitcher_stats(raw_df)
     if not bvp_df.empty:
@@ -954,7 +1043,7 @@ def main() -> None:
     else:
         print("No BvP data to write.")
 
-    # Fetch active rosters for IL check
+    # ── Active rosters ─────────────────────────────────────────────
     print("Fetching active rosters...")
     active_roster_ids = get_active_roster_ids()
     if active_roster_ids:
@@ -964,7 +1053,7 @@ def main() -> None:
     else:
         print("No active roster data to write.")
 
-    # Fetch confirmed lineups
+    # ── Confirmed lineups ──────────────────────────────────────────
     print("Fetching confirmed lineups...")
     lineups = get_today_confirmed_lineups()
     if lineups:

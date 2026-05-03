@@ -2,6 +2,7 @@ import os
 import json
 from datetime import date, timedelta, datetime
 from typing import Dict, Set
+import time
 import unicodedata
 import pytz
 
@@ -56,6 +57,20 @@ COLOR_BRONZE    = {"red": 0.804, "green": 0.498, "blue": 0.196}
 COLOR_GREEN     = {"red": 0.180, "green": 0.800, "blue": 0.443}
 COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
 COLOR_EV_HEADER = {"red": 0.100, "green": 0.100, "blue": 0.100}
+
+
+def with_retry(func, retries: int = 4, wait: int = 25):
+    for attempt in range(retries):
+        try:
+            return func()
+        except Exception as e:
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"  Rate limit hit — waiting {wait}s (attempt {attempt + 1}/{retries})...")
+                time.sleep(wait)
+            elif attempt < retries - 1:
+                time.sleep(wait)
+            else:
+                raise
 
 
 def get_gspread_client() -> gspread.Client:
@@ -1321,7 +1336,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
 
 
 def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
-    sh = gc.open_by_key(sheet_id)
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
 
     try:
         ws_log    = sh.worksheet("Picks_Log")
@@ -1801,6 +1816,7 @@ def main() -> None:
 
     resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks, ev_section)
+    time.sleep(10)
     update_scorecard(gc, sheet_id)
     write_last_run_timestamp(gc, sheet_id)
 
