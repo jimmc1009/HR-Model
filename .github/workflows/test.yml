@@ -20,6 +20,7 @@ on:
           - hrrbi_picks.py
           - ks_picks.py
           - backtest.py
+          - dashboard.py
 jobs:
   test:
     runs-on: ubuntu-latest
