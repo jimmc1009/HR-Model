@@ -68,10 +68,20 @@ def with_retry(func, retries: int = 4, wait: int = 25):
 
 def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
     try:
-        sh   = with_retry(lambda: gc.open_by_key(sheet_id))
-        ws   = sh.worksheet(name)
-        data = with_retry(lambda: ws.get_all_records())
-        return pd.DataFrame(data)
+        sh  = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws  = sh.worksheet(name)
+        all_values = with_retry(lambda: ws.get_all_values())
+        if not all_values:
+            return pd.DataFrame()
+        # Skip timestamp row if present
+        start = 0
+        if all_values and "Last Run" in str(all_values[0]):
+            start = 1
+        if start >= len(all_values):
+            return pd.DataFrame()
+        headers = all_values[start]
+        rows    = all_values[start + 1:]
+        return pd.DataFrame(rows, columns=headers)
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
         return pd.DataFrame()
