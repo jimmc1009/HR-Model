@@ -479,7 +479,7 @@ def build_ks_extra_features(df: pd.DataFrame, probable_ids: Set[int]) -> pd.Data
 
     if "zone" in pitch_df.columns:
         pitch_df["is_out_zone"] = pitch_df["zone"].apply(
-            lambda z: int(str(z).strip() in ["11", "12", "13", "14"]) if pd.notna(z) else 0
+            lambda z: int(float(z) in [11, 12, 13, 14]) if pd.notna(z) and str(z).strip() not in ("", "nan") else 0
         )
     else:
         pitch_df["is_out_zone"] = 0
