@@ -126,6 +126,8 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         hr_clean = hr_clean[
             pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
         ]
+        print(f"HR after rank filter: {len(hr_clean)} rows")
+        print(hr_clean.iloc[:, :2].to_string())
         top10 = hr_clean.head(10)
 
         for i in range(len(top10)):
