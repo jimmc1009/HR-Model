@@ -203,6 +203,15 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     try:
         ws = sh.worksheet(DASHBOARD_SHEET)
         with_retry(lambda: ws.clear())
+        # Unmerge all cells first to avoid conflicts with previous runs
+        reqs_pre = [{"unmergeCells": {
+            "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
+                  "startColumnIndex": 0, "endColumnIndex": 6}
+        }}]
+        try:
+            with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
+        except Exception:
+            pass
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
 
