@@ -1321,7 +1321,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
 
 
 def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
-    sh = gc.open_by_key(sheet_id)
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
 
     try:
         ws_log    = sh.worksheet("Picks_Log")
