@@ -19,7 +19,7 @@ SCOPES = [
 ]
 
 HRRBI_COLS = [
-    "batter_id", "player_name", "team", "batter_hand",
+    "batter_id", "player_name", "team", "batter_hand", "pa",
     "batting_avg", "obp", "iso", "woba", "bb_pct", "k_pct",
     "hard_hit_pct_season", "season_barrel_pct",
     "ld_pct", "gb_pct", "fb_pct",
