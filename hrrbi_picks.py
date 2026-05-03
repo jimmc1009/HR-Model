@@ -609,37 +609,19 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         ws = sh.worksheet("Top_HRRBI_Picks")
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Top_HRRBI_Picks", rows=100, cols=40)
+        ws = sh.add_worksheet(title="Top_HRRBI_Picks", rows=100, cols=15)
 
     output_cols = {
         "rank":             "Rank",
         "player_name":      "Batter",
         "batter_team":      "Team",
-        "avg_bat_order":    "Bat Order",
         "opp_pitcher_name": "Opp Pitcher",
-        "opp_pitcher_hand": "P Throws",
-        "park_name":        "Park",
-        "hrrbi_score":      "H+R+RBI Score",
-        "confidence":       "Confidence",
         "hrrbi_line":       "Line",
         "hrrbi_over_odds":  "Over Odds",
         "hrrbi_under_odds": "Under Odds",
         "prop_signal":      "Signal",
         "reason":           "Key Reasons",
-        "avg":              "AVG",
-        "obp":              "OBP",
-        "woba":             "wOBA",
-        "iso":              "ISO",
-        "ld_pct":           "LD%",
-        "avg_ev_7d":        "Avg EV (7d)",
-        "avg_14d":          "AVG (14d)",
-        "pa_14d":           "PA (14d)",
-        "bb_pct":           "BB%",
-        "opp_whip":         "Opp WHIP",
-        "opp_k_pct_season": "Opp K%",
-        "park_hr_factor":   "Park Factor",
-        "wind_context":     "Wind",
-        "temp_f":           "Temp (°F)",
+        "confidence":       "Confidence",
     }
 
     available = {k: v for k, v in output_cols.items() if k in picks.columns}
@@ -648,26 +630,61 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
 
     with_retry(lambda: ws.update([out_df.columns.tolist()] + out_df.astype(str).values.tolist()))
 
-    ws_id = ws.id
-    reqs  = []
+    ws_id  = ws.id
+    n_cols = len(out_df.columns)
+    reqs   = []
 
+    # Base formatting — no wrap, clip
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 2, "startColumnIndex": 0, "endColumnIndex": len(out_df.columns)},
-        "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG, "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10}, "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP"}},
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 2, "startColumnIndex": 0, "endColumnIndex": n_cols},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_BG,
+            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
+            "verticalAlignment": "MIDDLE",
+            "wrapStrategy": "CLIP",
+        }},
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
+
+    # Header row
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": len(out_df.columns)},
-        "cell": {"userEnteredFormat": {"backgroundColor": COLOR_HEADER, "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": n_cols},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_HEADER,
+            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True, "fontFamily": "Roboto", "fontSize": 11},
+            "horizontalAlignment": "CENTER",
+            "verticalAlignment": "MIDDLE",
+            "wrapStrategy": "CLIP",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
     }})
+
+    # Alternating row colors
     for i in range(len(out_df)):
         bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
         reqs.append({"repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": len(out_df.columns)},
+            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": n_cols},
             "cell": {"userEnteredFormat": {"backgroundColor": bg}},
             "fields": "userEnteredFormat(backgroundColor)",
         }})
+
+    # Column widths: Rank, Batter, Team, Opp Pitcher, Line, Over Odds, Under Odds, Signal, Key Reasons, Confidence
+    col_widths = [45, 160, 55, 160, 55, 80, 85, 150, 320, 90]
+    for i, w in enumerate(col_widths[:n_cols]):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w},
+            "fields": "pixelSize",
+        }})
+
+    # Row height — compact
+    for i in range(len(out_df) + 1):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": 32},
+            "fields": "pixelSize",
+        }})
+
     reqs.append({"updateSheetProperties": {
         "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}, "tabColorStyle": {"rgbColor": COLOR_HEADER}},
         "fields": "gridProperties.frozenRowCount,tabColorStyle",
@@ -679,7 +696,6 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         print(f"HRRBI formatting failed: {e}")
 
     print(f"Written {len(out_df)} H+R+RBI picks to Top_HRRBI_Picks")
-
 
 def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
