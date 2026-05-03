@@ -24,6 +24,7 @@ on:
           - hrrbi_picks
           - ks_statcast
           - ks_picks
+          - dashbaord
 
 jobs:
   test:
