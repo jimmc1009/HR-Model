@@ -24,7 +24,7 @@ on:
           - hrrbi_picks
           - ks_statcast
           - ks_picks
-          - dashbaord
+          - dashboard
 
 jobs:
   test:
@@ -167,3 +167,12 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_picks.py
+
+      - name: Run dashboard.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'dashboard'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python dashboard.py
