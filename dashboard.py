@@ -192,6 +192,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
                 line      = safe_val(row, "Line")
                 over_odds = safe_val(row, "Over Odds")
                 signal    = safe_val(row, sig_col)
+                print(f"HRRBI play {i}: rank={rank} player={player} team={team} line={line} signal={signal}")
                 rows.append((pad([rank, player, team, line, over_odds, signal]), "data_hrrbi"))
 
     return rows
