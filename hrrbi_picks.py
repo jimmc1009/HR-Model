@@ -40,7 +40,7 @@ MIN_BBE_7D           = 5
 MIN_BATTING_AVG      = 0.190
 MAX_PER_TEAM         = 2
 MAX_CHALK_PICKS      = 3
-CHALK_ODDS_THRESHOLD = 140
+CHALK_ODDS_THRESHOLD = 165
 TOP_N                = 10
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
