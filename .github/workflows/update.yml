@@ -27,3 +27,4 @@ jobs:
           python hr_picks.py
           python hrrbi_picks.py
           python ks_picks.py
+          python dashboard.py
