@@ -432,6 +432,13 @@ def main() -> None:
     print(f"KS picks: {len(ks_df)} rows")
     print(f"HRRBI picks: {len(hrrbi_df)} rows")
 
+    # DEBUG
+    print("HR columns:", hr_df.columns.tolist())
+    print("HR head:\n", hr_df.head(3).to_string())
+    print("KS columns:", ks_df.columns.tolist())
+    print("HRRBI columns:", hrrbi_df.columns.tolist())
+    print("HRRBI head:\n", hrrbi_df.head(3).to_string())
+
     rows = build_rows(hr_df, ks_df, hrrbi_df)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
