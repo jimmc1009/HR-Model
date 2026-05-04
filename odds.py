@@ -142,7 +142,12 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-    df = df.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
+    df = (
+        df.sort_values("num_books", ascending=False)
+        .drop_duplicates(subset=["player_name_norm"], keep="first")
+        .sort_values("implied_prob_pct", ascending=False)
+        .reset_index(drop=True)
+    )
 
     print(f"\nBuilt HR odds table: {len(df)} players across {df['num_books'].max() if not df.empty else 0} bookmakers")
     top20 = df.head(20)[["player_name", "consensus_odds", "implied_prob_pct", "num_books"]]
