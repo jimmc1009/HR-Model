@@ -84,7 +84,13 @@ def fetch_props_for_event(
 
 def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     print(f"\nFetching HR prop odds for {len(events)} games...")
-    all_rows = []
+    
+    # Collect per-player, per-book odds across all games
+    # Key: player_name_norm, Value: dict of book_key -> best odds
+    player_book_odds: Dict[str, Dict[str, int]] = {}
+    player_display_names: Dict[str, str] = {}
+    player_home_teams: Dict[str, str] = {}
+    player_away_teams: Dict[str, str] = {}
 
     for event in events:
         event_id  = event["id"]
@@ -99,7 +105,7 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
             continue
 
         book_keys  = [b["key"] for b in bookmakers if b["key"] not in EXCLUDED_BOOKS]
-        player_odds: Dict[str, List[int]] = {}
+        found_players = set()
 
         for book in bookmakers:
             if book["key"] in EXCLUDED_BOOKS:
@@ -117,29 +123,47 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                             price_int = int(float(price))
                             if price_int > 0:
                                 price_int = min(price_int, 3000)
-                                player_odds.setdefault(player, []).append(price_int)
+                                norm = normalize_name(player)
+                                # Only store one odds entry per book per player
+                                if norm not in player_book_odds:
+                                    player_book_odds[norm]     = {}
+                                    player_display_names[norm] = player
+                                    player_home_teams[norm]    = home_team
+                                    player_away_teams[norm]    = away_team
+                                # Only add this book if not already seen for this player
+                                if book["key"] not in player_book_odds[norm]:
+                                    # Cap at 1000 — anything higher is likely a 2+ HR market
+                                    if price_int <= 1000:
+                                        player_book_odds[norm][book["key"]] = price_int
+                                found_players.add(norm)
                         except (ValueError, TypeError):
                             pass
 
-        if player_odds:
-            print(f"  ✓ {label}: {len(player_odds)} players, {len(book_keys)} books: {book_keys}")
-            for player, odds_list in player_odds.items():
-                consensus = int(np.median(odds_list))
-                implied   = round(100 / (consensus + 100) * 100, 2)
-                all_rows.append({
-                    "player_name":       player,
-                    "player_name_norm":  normalize_name(player),
-                    "home_team":         home_team,
-                    "away_team":         away_team,
-                    "consensus_odds":    consensus,
-                    "implied_prob_pct":  implied,
-                    "num_books":         len(odds_list),
-                })
+        if found_players:
+            print(f"  ✓ {label}: {len(found_players)} players, {len(book_keys)} books: {book_keys}")
         else:
             print(f"  ✗ {label}: no props found")
 
-    if not all_rows:
+    if not player_book_odds:
         return pd.DataFrame()
+
+    all_rows = []
+    for norm, book_odds in player_book_odds.items():
+        odds_list = list(book_odds.values())
+        if not odds_list:
+            continue
+        consensus = int(np.median(odds_list))
+        implied   = round(100 / (consensus + 100) * 100, 2)
+        all_rows.append({
+            "player_name":       player_display_names[norm],
+            "player_name_norm":  norm,
+            "home_team":         player_home_teams[norm],
+            "away_team":         player_away_teams[norm],
+            "consensus_odds":    consensus,
+            "implied_prob_pct":  implied,
+            "num_books":         len(odds_list),
+            "book_detail":       str(book_odds),  # shows each book and its odds
+        })
 
     df = pd.DataFrame(all_rows)
     df = df.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
