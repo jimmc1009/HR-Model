@@ -132,7 +132,9 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                                     player_away_teams[norm]    = away_team
                                 # Only add this book if not already seen for this player
                                 if book["key"] not in player_book_odds[norm]:
-                                    player_book_odds[norm][book["key"]] = price_int
+                                    # Cap at 1000 — anything higher is likely a 2+ HR market
+                                    if price_int <= 1000:
+                                        player_book_odds[norm][book["key"]] = price_int
                                 found_players.add(norm)
                         except (ValueError, TypeError):
                             pass
