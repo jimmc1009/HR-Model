@@ -158,6 +158,7 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
             "consensus_odds":    consensus,
             "implied_prob_pct":  implied,
             "num_books":         len(odds_list),
+            "book_detail":       str(book_odds),  # shows each book and its odds
         })
 
     df = pd.DataFrame(all_rows)
