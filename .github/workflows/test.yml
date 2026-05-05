@@ -25,6 +25,7 @@ on:
           - ks_statcast
           - ks_picks
           - dashboard
+          -resolve_picks
 
 jobs:
   test:
@@ -176,3 +177,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python dashboard.py
+
+      - name: Run resolve_picks.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'resolve'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python resolve_picks.py
+
