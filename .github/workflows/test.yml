@@ -25,7 +25,7 @@ on:
           - ks_statcast
           - ks_picks
           - dashboard
-          -resolve_picks
+          - resolve_picks
 
 jobs:
   test:
