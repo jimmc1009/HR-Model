@@ -254,7 +254,7 @@ def calc_prop_signal(row: pd.Series) -> str:
         return f"OVER {line}"
     if score >= 7 and edge >= 0.5:
         return f"LEAN OVER {line}"
-    if score <= 3 and edge <= -1.0:
+    if score <= 5 and edge <= -0.75:
         return f"LEAN UNDER {line}"
     return "—"
 
