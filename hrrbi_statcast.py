@@ -1,15 +1,14 @@
 """
 hrrbi_statcast.py
-Reads from Batter_Statcast_2026 (already populated by main.py)
-and writes HRRBI_Statcast with the columns needed by hrrbi_picks.py.
-No Statcast pull — saves ~30 seconds per pipeline run.
+Lightweight reader — copies batter data from Batter_Statcast_2026
+into HRRBI_Statcast with all columns needed for momentum scoring.
 """
 
 import os
 import json
+import time
 
 import pandas as pd
-import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -19,16 +18,56 @@ SCOPES = [
 ]
 
 HRRBI_COLS = [
-    "batter_id", "player_name", "team", "batter_hand", "pa",
-    "batting_avg", "obp", "iso", "woba", "bb_pct", "k_pct",
-    "hard_hit_pct_season", "season_barrel_pct",
-    "ld_pct", "gb_pct", "fb_pct",
-    "hr_per_pa", "hr_per_fb", "season_hr",
+    "batter_id",
+    "player_name",
+    "team",
+    "batter_hand",
+    "pa",
+    "avg",
+    "obp",
+    "iso",
+    "woba",
+    "bb_pct",
+    "k_pct",
+    "hard_hit_pct_season",
+    "season_barrel_pct",
+    "ld_pct",
+    "gb_pct",
+    "fb_pct",
+    "hr_per_pa",
+    "hr_per_fb",
+    "season_hr",
     "avg_bat_order",
-    "bbe_7d", "avg_ev_7d", "avg_la_7d", "hard_hit_pct_7d", "barrel_pct_7d", "hr_7d",
-    "pa_14d", "hits_14d", "avg_14d",
-    "hot_streak", "cold_streak",
-    "lhp_start_rate", "rhp_start_rate",
+    # 7d metrics
+    "bbe_7d",
+    "avg_ev_7d",
+    "avg_la_7d",
+    "hard_hit_pct_7d",
+    "barrel_pct_7d",
+    "hr_7d",
+    # 14d metrics
+    "bbe_14d",
+    "avg_ev_14d",
+    "avg_la_14d",
+    "hard_hit_pct_14d",
+    "barrel_pct_14d",
+    "hr_14d",
+    "pa_14d",
+    "hits_14d",
+    "avg_14d",
+    # 30d metrics
+    "bbe_30d",
+    "avg_ev_30d",
+    "hard_hit_pct_30d",
+    "barrel_pct_30d",
+    # hot/cold
+    "hot_streak",
+    "cold_streak",
+    # start rates
+    "lhp_start_rate",
+    "rhp_start_rate",
+    # speed proxy
+    "speed_score",
 ]
 
 
@@ -39,67 +78,81 @@ def get_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
-def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
-    sh = gc.open_by_key(sheet_id)
-    try:
-        ws   = sh.worksheet(name)
-        data = ws.get_all_records()
-        return pd.DataFrame(data)
-    except gspread.WorksheetNotFound:
-        print(f"WARNING: Sheet '{name}' not found.")
-        return pd.DataFrame()
-
-
-def write_sheet(gc: gspread.Client, sheet_id: str, name: str, df: pd.DataFrame) -> None:
-    sh = gc.open_by_key(sheet_id)
-    try:
-        ws = sh.worksheet(name)
-        ws.clear()
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=name, rows=1000, cols=60)
-
-    df = df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
-    ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
+def with_retry(func, retries: int = 4, wait: int = 25):
+    for attempt in range(retries):
+        try:
+            return func()
+        except gspread.exceptions.APIError as e:
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"  Rate limit hit — waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(wait)
+            else:
+                raise
 
 
 def main() -> None:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
 
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+
+    # Read Batter_Statcast_2026
     print("Reading Batter_Statcast_2026...")
-    batters = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
-
-    if batters.empty:
-        print("ERROR: Batter_Statcast_2026 is empty — aborting")
-        return
-
+    ws      = sh.worksheet("Batter_Statcast_2026")
+    data    = with_retry(lambda: ws.get_all_records())
+    batters = pd.DataFrame(data)
     print(f"  {len(batters)} batters loaded")
 
-    keep    = [c for c in HRRBI_COLS if c in batters.columns]
-    missing = [c for c in HRRBI_COLS if c not in batters.columns]
+    # Keep only columns that exist
+    available = [c for c in HRRBI_COLS if c in batters.columns]
+    missing   = [c for c in HRRBI_COLS if c not in batters.columns]
     if missing:
-        print(f"  WARNING: Missing columns: {missing}")
+        print(f"  Missing columns (will be skipped): {missing}")
 
-    hrrbi_df = batters[keep].copy()
+    out = batters[available].copy()
 
-    # Rename batting_avg → avg for consistency with hrrbi_picks.py
-    if "batting_avg" in hrrbi_df.columns:
-        hrrbi_df = hrrbi_df.rename(columns={"batting_avg": "avg"})
+    # Write to HRRBI_Statcast
+    try:
+        ws_out = sh.worksheet("HRRBI_Statcast")
+        with_retry(lambda: ws_out.clear())
+    except gspread.WorksheetNotFound:
+        ws_out = sh.add_worksheet(title="HRRBI_Statcast", rows=500, cols=len(available) + 5)
 
-    # Numeric coerce
-    str_cols = ["batter_id", "player_name", "team", "batter_hand"]
-    for col in hrrbi_df.columns:
-        if col not in str_cols:
-            hrrbi_df[col] = pd.to_numeric(hrrbi_df[col], errors="coerce")
-
-    if "woba" in hrrbi_df.columns:
-        hrrbi_df = hrrbi_df.sort_values("woba", ascending=False)
-
-    hrrbi_df = hrrbi_df.reset_index(drop=True)
-    print(f"HRRBI_Statcast: {len(hrrbi_df)} batters")
-
-    write_sheet(gc, sheet_id, "HRRBI_Statcast", hrrbi_df)
+    values = [out.columns.tolist()] + out.fillna("").astype(str).values.tolist()
+    with_retry(lambda: ws_out.update(values))
+    print(f"HRRBI_Statcast: {len(out)} batters")
     print("Written to HRRBI_Statcast")
+
+    # Also read team K rates for ks_statcast
+    time.sleep(2)
+    print("Reading HRRBI_Statcast for team K rates...")
+    ws_hrrbi = sh.worksheet("HRRBI_Statcast")
+    hrrbi_df = pd.DataFrame(with_retry(lambda: ws_hrrbi.get_all_records()))
+
+    if not hrrbi_df.empty and "team" in hrrbi_df.columns and "k_pct" in hrrbi_df.columns:
+        team_k = hrrbi_df.groupby("team")["k_pct"].mean().reset_index()
+        team_k.columns = ["team", "k_pct"]
+    elif not hrrbi_df.empty and "team" in hrrbi_df.columns and "k_pct_season" in hrrbi_df.columns:
+        team_k = hrrbi_df.groupby("team")["k_pct_season"].mean().reset_index()
+        team_k.columns = ["team", "k_pct"]
+    else:
+        print("  Could not compute team K rates — column missing")
+        team_k = pd.DataFrame()
+
+    if not team_k.empty:
+        try:
+            ws_k = sh.worksheet("Team_K_Rates")
+            with_retry(lambda: ws_k.clear())
+        except gspread.WorksheetNotFound:
+            ws_k = sh.add_worksheet(title="Team_K_Rates", rows=35, cols=5)
+        with_retry(lambda: ws_k.update([team_k.columns.tolist()] + team_k.astype(str).values.tolist()))
+        print(f"  Team K rates: {len(team_k)} teams")
+        print("Written to Team_K_Rates")
 
 
 if __name__ == "__main__":
