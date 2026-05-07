@@ -1,6 +1,6 @@
 """
 hrrbi_picks.py
-H+R+RBI model — absolute threshold scoring.
+H+R+RBI model — absolute threshold scoring with momentum.
 Reads from HRRBI_Statcast, Pitcher_Statcast_2026, Park_Factors,
 Weather, HRRBI_Odds sheets.
 Outputs Top_HRRBI_Picks + HRRBI_Picks_Log + HRRBI_Scorecard.
@@ -37,7 +37,7 @@ LEAGUE_AVG_BARREL_7D = 11.0
 
 MIN_PA               = 80
 MIN_BBE_7D           = 5
-MIN_BATTING_AVG      = 0.190
+MIN_BATTING_AVG      = 0.220
 MAX_PER_TEAM         = 2
 MAX_CHALK_PICKS      = 3
 CHALK_ODDS_THRESHOLD = 165
@@ -131,7 +131,6 @@ def get_todays_game_times() -> dict:
 def filter_started_games(df: pd.DataFrame, game_times: dict, team_col: str = "batter_team") -> pd.DataFrame:
     if not game_times or team_col not in df.columns:
         return df
-
     now_utc = datetime.now(pytz.utc)
     before  = len(df)
 
@@ -148,6 +147,8 @@ def filter_started_games(df: pd.DataFrame, game_times: dict, team_col: str = "ba
         print(f"Game time filter: {removed} players removed (game already started), {len(df)} remaining")
     return df
 
+
+# ── Base scoring functions ────────────────────────────────────────────────
 
 def score_avg(v: float, pa: float) -> float:
     if pa < MIN_PA: return 0.0
@@ -198,6 +199,16 @@ def score_ld_pct(v: float, pa: float) -> float:
     if v >= 24.0: return 0.8
     if v >= 21.0: return 0.4
     if v >= 18.0: return 0.1
+    return 0.0
+
+def score_gb_pct(v: float, pa: float) -> float:
+    """High GB% hurts HRRBI — ground balls don't score runs."""
+    if pa < MIN_PA: return 0.0
+    if v >= 55.0: return -1.0
+    if v >= 50.0: return -0.6
+    if v >= 45.0: return -0.3
+    if v <= 35.0: return  0.3
+    if v <= 30.0: return  0.5
     return 0.0
 
 def score_hard_hit_season(v: float, pa: float) -> float:
@@ -291,6 +302,88 @@ def score_weather_hits(boost: float) -> float:
     return 0.0
 
 
+# ── Momentum scoring ──────────────────────────────────────────────────────
+
+def compute_momentum_score(row: pd.Series) -> tuple:
+    """
+    Computes a momentum score based on directional trends.
+    Returns (score, description).
+    Positive = trending up, negative = trending down.
+    """
+    score = 0.0
+    parts = []
+
+    pa       = safe_float(row.get("pa", 0))
+    bbe_7d   = safe_float(row.get("bbe_7d", 0))
+    bbe_14d  = safe_float(row.get("bbe_14d", 0))
+    pa_14d   = safe_float(row.get("pa_14d", 0))
+
+    # ── AVG trend: 14d vs season ──────────────────────────────────────────
+    avg_season = safe_float(row.get("avg", 0))
+    avg_14d    = safe_float(row.get("avg_14d", 0))
+    if pa >= MIN_PA and pa_14d >= 20 and avg_season > 0:
+        avg_delta = avg_14d - avg_season
+        if avg_delta >= 0.060:
+            score += 1.5
+            parts.append(f"🔥 AVG trending up (.{int(avg_season*1000)} season → .{int(avg_14d*1000)} last 14d)")
+        elif avg_delta >= 0.030:
+            score += 0.8
+            parts.append(f"📈 AVG trending up (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
+        elif avg_delta <= -0.060:
+            score -= 1.5
+            parts.append(f"❄️ AVG trending down (.{int(avg_season*1000)} season → .{int(avg_14d*1000)} last 14d)")
+        elif avg_delta <= -0.030:
+            score -= 0.8
+            parts.append(f"📉 AVG trending down (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
+
+    # ── EV trend: 7d vs 14d ───────────────────────────────────────────────
+    ev_7d  = safe_float(row.get("avg_ev_7d", 0))
+    ev_14d = safe_float(row.get("avg_ev_14d", 0))
+    if bbe_7d >= MIN_BBE_7D and bbe_14d >= MIN_BBE_7D and ev_7d > 0 and ev_14d > 0:
+        ev_delta = ev_7d - ev_14d
+        if ev_delta >= 3.0:
+            score += 1.0
+            parts.append(f"💥 EV trending up ({ev_14d:.1f}→{ev_7d:.1f} mph last 7d)")
+        elif ev_delta >= 1.5:
+            score += 0.5
+            parts.append(f"📈 EV trending up ({ev_14d:.1f}→{ev_7d:.1f} mph)")
+        elif ev_delta <= -3.0:
+            score -= 1.0
+            parts.append(f"📉 EV trending down ({ev_14d:.1f}→{ev_7d:.1f} mph last 7d)")
+        elif ev_delta <= -1.5:
+            score -= 0.5
+
+    # ── Hard hit trend: 7d vs 14d ─────────────────────────────────────────
+    hh_7d  = safe_float(row.get("hard_hit_pct_7d", 0))
+    hh_14d = safe_float(row.get("hard_hit_pct_14d", 0))
+    if bbe_7d >= MIN_BBE_7D and bbe_14d >= MIN_BBE_7D and hh_7d > 0 and hh_14d > 0:
+        hh_delta = hh_7d - hh_14d
+        if hh_delta >= 12.0:
+            score += 0.8
+            parts.append(f"💪 Hard hit% surging ({hh_14d:.1f}→{hh_7d:.1f}% last 7d)")
+        elif hh_delta >= 6.0:
+            score += 0.4
+        elif hh_delta <= -12.0:
+            score -= 0.8
+            parts.append(f"📉 Hard hit% dropping ({hh_14d:.1f}→{hh_7d:.1f}% last 7d)")
+        elif hh_delta <= -6.0:
+            score -= 0.4
+
+    # ── Hot/cold streak flags ─────────────────────────────────────────────
+    hot   = str(row.get("hot_streak", "")).strip().lower()
+    cold  = str(row.get("cold_streak", "")).strip().lower()
+    if hot in ("1", "true", "yes"):
+        score += 0.5
+        if not any("trending up" in p or "surging" in p for p in parts):
+            parts.append("🔥 On a hot streak")
+    elif cold in ("1", "true", "yes"):
+        score -= 0.5
+        if not any("trending down" in p or "dropping" in p for p in parts):
+            parts.append("❄️ On a cold streak")
+
+    return round(score, 3), " | ".join(parts)
+
+
 def compute_hrrbi_score(row: pd.Series) -> float:
     pa     = safe_float(row.get("pa", 0))
     bbe_7d = safe_float(row.get("bbe_7d", 0))
@@ -302,6 +395,7 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_obp      = score_obp(safe_float(row.get("obp")), pa)
     s_iso      = score_iso(safe_float(row.get("iso")), pa)
     s_ld       = score_ld_pct(safe_float(row.get("ld_pct")), pa)
+    s_gb       = score_gb_pct(safe_float(row.get("gb_pct")), pa)
     s_hh_s     = score_hard_hit_season(safe_float(row.get("hard_hit_pct_season")), pa)
     s_ev_7d    = score_avg_ev_7d(safe_float(row.get("avg_ev_7d")), bbe_7d)
     s_hh_7d    = score_hard_hit_7d(safe_float(row.get("hard_hit_pct_7d")), bbe_7d)
@@ -315,12 +409,16 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_park     = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
     s_weather  = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
 
+    # Momentum component
+    momentum_score, _ = compute_momentum_score(row)
+    momentum_capped   = max(-2.0, min(2.0, momentum_score))
+
     return round(
-        s_avg + woba_score + s_obp + s_iso + s_ld + s_hh_s +
+        s_avg + woba_score + s_obp + s_iso + s_ld + s_gb + s_hh_s +
         s_ev_7d + s_hh_7d + s_roll_avg +
         s_bat_ord + s_speed + s_bb +
         s_opp_whip + s_opp_k + s_opp_hh +
-        s_park + s_weather, 3
+        s_park + s_weather + momentum_capped, 3
     )
 
 
@@ -342,28 +440,19 @@ def assign_confidence(row: pd.Series) -> str:
 
 
 def calc_prop_signal(row: pd.Series) -> str:
-    """
-    Generate a betting signal based on the H+R+RBI line.
-    Ignores 0.5 lines — too easy, no edge.
-    Targets 1.5 as primary signal, 2.5 for elite scores only.
-    """
     line  = safe_float(row.get("hrrbi_line", 0))
     score = safe_float(row.get("hrrbi_score", 0))
 
     if line <= 0:
         return "—"
-
-    # Ignore 0.5 lines — no edge
     if line < 1.0:
         return "—"
 
     if line >= 2.0:
-        # 2.5 line — only flag elite scores
         if score >= 12.0:
             return f"LEAN OVER {line}"
         return "—"
 
-    # 1.5 line — primary target
     if score >= 11.0:
         return f"OVER {line} ✅"
     if score >= 9.0:
@@ -388,6 +477,11 @@ def build_reason(row: pd.Series) -> str:
         elif roll <= 0.200:
             reasons.append(f"❄️ .{int(roll * 1000)} avg last 14 days — cold")
 
+    # Momentum
+    momentum_score, momentum_desc = compute_momentum_score(row)
+    if momentum_desc:
+        reasons.append(momentum_desc)
+
     woba = safe_float(row.get("woba"))
     if woba >= 0.360:
         reasons.append(f"⚡ wOBA {woba:.3f}")
@@ -405,6 +499,15 @@ def build_reason(row: pd.Series) -> str:
     ld = safe_float(row.get("ld_pct"))
     if ld >= 24.0:
         reasons.append(f"📐 {ld:.1f}% LD% — elite contact quality")
+
+    gb = safe_float(row.get("gb_pct"))
+    if gb >= 50.0:
+        reasons.append(f"⚠️ {gb:.1f}% GB% — ground ball heavy, limits runs")
+
+    ev_7d = safe_float(row.get("avg_ev_7d"))
+    bbe_7d = safe_float(row.get("bbe_7d"))
+    if bbe_7d >= MIN_BBE_7D and ev_7d >= 94:
+        reasons.append(f"💥 {ev_7d:.1f} mph avg EV last 7 days")
 
     whip = safe_float(row.get("opp_whip", 1.20), 1.20)
     if whip >= 1.35:
@@ -514,7 +617,12 @@ def prepare_combined(
         "avg_bat_order": 5.0,
         "speed_score": 4.0,
         "ld_pct": 0.0,
+        "gb_pct": 42.0,
         "bb_pct": 0.0,
+        "avg_ev_14d": 0.0,
+        "hard_hit_pct_14d": 0.0,
+        "barrel_pct_14d": 0.0,
+        "bbe_14d": 0.0,
     }
     for col, val in defaults.items():
         if col not in batters.columns:
@@ -535,6 +643,11 @@ def prepare_combined(
     batters["confidence"]  = batters.apply(assign_confidence, axis=1)
     batters["reason"]      = batters.apply(build_reason, axis=1)
 
+    # Add momentum desc as separate column for logging
+    momentum_results = batters.apply(compute_momentum_score, axis=1)
+    batters["momentum_score"] = momentum_results.apply(lambda x: x[0])
+    batters["momentum_desc"]  = momentum_results.apply(lambda x: x[1])
+
     if not odds_df.empty and "player_name_norm" in odds_df.columns:
         odds_slim = odds_df[["player_name_norm", "hrrbi_line", "over_odds", "under_odds"]].copy()
         odds_slim = odds_slim.rename(columns={
@@ -547,7 +660,6 @@ def prepare_combined(
         batters["hrrbi_over_odds"]  = np.nan
         batters["hrrbi_under_odds"] = np.nan
 
-    # Generate prop signal after odds merge
     batters["prop_signal"] = batters.apply(calc_prop_signal, axis=1)
 
     return batters
@@ -634,9 +746,9 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
     n_cols = len(out_df.columns)
     reqs   = []
 
-    # Base formatting — no wrap, clip
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 2, "startColumnIndex": 0, "endColumnIndex": n_cols},
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 2,
+                  "startColumnIndex": 0, "endColumnIndex": n_cols},
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_BG,
             "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
@@ -646,12 +758,13 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
 
-    # Header row
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": n_cols},
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                  "startColumnIndex": 0, "endColumnIndex": n_cols},
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_HEADER,
-            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True, "fontFamily": "Roboto", "fontSize": 11},
+            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True,
+                           "fontFamily": "Roboto", "fontSize": 11},
             "horizontalAlignment": "CENTER",
             "verticalAlignment": "MIDDLE",
             "wrapStrategy": "CLIP",
@@ -659,34 +772,35 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
     }})
 
-    # Alternating row colors
     for i in range(len(out_df)):
         bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
         reqs.append({"repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": n_cols},
+            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2,
+                      "startColumnIndex": 0, "endColumnIndex": n_cols},
             "cell": {"userEnteredFormat": {"backgroundColor": bg}},
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-    # Column widths: Rank, Batter, Team, Opp Pitcher, Line, Over Odds, Under Odds, Signal, Key Reasons, Confidence
     col_widths = [45, 160, 55, 160, 55, 80, 85, 150, 320, 90]
     for i, w in enumerate(col_widths[:n_cols]):
         reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": w},
             "fields": "pixelSize",
         }})
 
-    # Row height — compact
     for i in range(len(out_df) + 1):
         reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": i, "endIndex": i + 1},
+            "range": {"sheetId": ws_id, "dimension": "ROWS",
+                      "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": 32},
             "fields": "pixelSize",
         }})
 
     reqs.append({"updateSheetProperties": {
-        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}, "tabColorStyle": {"rgbColor": COLOR_HEADER}},
+        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1},
+                       "tabColorStyle": {"rgbColor": COLOR_HEADER}},
         "fields": "gridProperties.frozenRowCount,tabColorStyle",
     }})
 
@@ -696,6 +810,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         print(f"HRRBI formatting failed: {e}")
 
     print(f"Written {len(out_df)} H+R+RBI picks to Top_HRRBI_Picks")
+
 
 def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
@@ -714,18 +829,25 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     new_rows = []
     for _, row in picks.iterrows():
         new_rows.append({
-            "date":        today_str,
-            "rank":        str(row.get("rank", "")),
-            "player_name": str(row.get("player_name", "")),
-            "team":        str(row.get("batter_team", "")),
-            "hrrbi_score": str(row.get("hrrbi_score", "")),
-            "confidence":  str(row.get("confidence", "")),
-            "line":        str(row.get("hrrbi_line", "")),
-            "over_odds":   str(row.get("hrrbi_over_odds", "")),
-            "prop_signal": str(row.get("prop_signal", "")),
-            "hit":         "Pending",
-            "bet_placed":  "",
-            "result":      "",
+            "date":          today_str,
+            "rank":          str(row.get("rank", "")),
+            "player_name":   str(row.get("player_name", "")),
+            "team":          str(row.get("batter_team", "")),
+            "hrrbi_score":   str(row.get("hrrbi_score", "")),
+            "confidence":    str(row.get("confidence", "")),
+            "line":          str(row.get("hrrbi_line", "")),
+            "over_odds":     str(row.get("hrrbi_over_odds", "")),
+            "under_odds":    str(row.get("hrrbi_under_odds", "")),
+            "prop_signal":   str(row.get("prop_signal", "")),
+            "momentum":      str(row.get("momentum_desc", "")),
+            "avg_14d":       str(row.get("avg_14d", "")),
+            "avg_bat_order": str(row.get("avg_bat_order", "")),
+            "opp_pitcher":   str(row.get("opp_pitcher_name", "")),
+            "odds":          "",
+            "hit":           "Pending",
+            "actual_hrrbi":  "",
+            "bet_placed":    "",
+            "result":        "",
         })
 
     if not new_rows:
@@ -742,7 +864,6 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
 
 
 def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
-    time.sleep(15)
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
 
     try:
@@ -801,6 +922,9 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     sh     = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
         ws = sh.worksheet("Top_HRRBI_Picks")
+        first_row = ws.row_values(1)
+        if first_row and "Last Run" in str(first_row[0]):
+            ws.delete_rows(1)
         with_retry(lambda: ws.insert_row([f"⏱  Last Run: {now_et}"], index=1))
     except Exception as e:
         print(f"HRRBI timestamp failed: {e}")
@@ -850,7 +974,7 @@ def main() -> None:
         return
 
     print(f"\nTop {len(picks)} H+R+RBI Picks:")
-    print(picks[["rank", "player_name", "batter_team", "hrrbi_score", "confidence"]].to_string(index=False))
+    print(picks[["rank", "player_name", "batter_team", "hrrbi_score", "confidence", "momentum_score"]].to_string(index=False))
 
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
