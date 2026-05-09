@@ -781,8 +781,11 @@ def prepare_combined(
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "hr_7d", "season_hr", "season_fb", "season_hard_hit",
-        "lhp_start_rate", "rhp_start_rate",
-    ]
+        "lhp_start_rate", "rhp_start_rate","hard_hit_pct_5d", "hard_hit_pct_10d",
+        "avg_la_5d", "avg_la_10d",
+        "avg_14d", "pa_14d",
+        "hot_streak", "cold_streak",
+        ]
 
     dynamic_cols = [c for c in combined.columns if c.startswith("pitcher_iso_allowed_") or c.startswith("pitcher_hr_rate_allowed_") or c.startswith("pitcher_barrel_pct_allowed_")]
     score_cols  += dynamic_cols
