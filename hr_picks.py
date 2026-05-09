@@ -244,12 +244,21 @@ def normalize(series: pd.Series) -> pd.Series:
 
 
 def compute_momentum_score(row: pd.Series) -> tuple:
-    ev_5d   = safe_float(row.get("avg_ev_5d",      0))
-    ev_10d  = safe_float(row.get("avg_ev_10d",     0))
-    bar_5d  = safe_float(row.get("barrel_pct_5d",  0))
-    bar_10d = safe_float(row.get("barrel_pct_10d", 0))
-    bbe_5d  = safe_float(row.get("bbe_5d",         0))
-    bbe_10d = safe_float(row.get("bbe_10d",        0))
+    ev_5d      = safe_float(row.get("avg_ev_5d",          0))
+    ev_10d     = safe_float(row.get("avg_ev_10d",         0))
+    bar_5d     = safe_float(row.get("barrel_pct_5d",      0))
+    bar_10d    = safe_float(row.get("barrel_pct_10d",     0))
+    hh_5d      = safe_float(row.get("hard_hit_pct_5d",    0))
+    hh_10d     = safe_float(row.get("hard_hit_pct_10d",   0))
+    la_5d      = safe_float(row.get("avg_la_5d",          0))
+    la_10d     = safe_float(row.get("avg_la_10d",         0))
+    bbe_5d     = safe_float(row.get("bbe_5d",             0))
+    bbe_10d    = safe_float(row.get("bbe_10d",            0))
+    pa_14d     = safe_float(row.get("pa_14d",             0))
+    avg_14d    = safe_float(row.get("avg_14d",            0))
+    avg_season = safe_float(row.get("batting_avg",        0))
+    hot        = str(row.get("hot_streak",  "")).strip().lower()
+    cold       = str(row.get("cold_streak", "")).strip().lower()
 
     if bbe_5d < 3 or bbe_10d < 5:
         return 0.0, ""
@@ -257,23 +266,75 @@ def compute_momentum_score(row: pd.Series) -> tuple:
     score = 0.0
     parts = []
 
+    # ── EV trend: 5d vs 10d ──────────────────────────────────────────────
     if ev_5d > 0 and ev_10d > 0:
-        ev_delta  = ev_5d - ev_10d
-        score    += ev_delta / 3.0
+        ev_delta = ev_5d - ev_10d
+        score   += ev_delta / 3.0
         if ev_delta >= 2.0:
             parts.append(f"📈 EV trending up ({ev_10d:.1f}→{ev_5d:.1f} mph)")
         elif ev_delta <= -2.0:
             parts.append(f"📉 EV trending down ({ev_10d:.1f}→{ev_5d:.1f} mph)")
 
+    # ── Barrel % trend: 5d vs 10d ────────────────────────────────────────
     if bar_5d >= 0 and bar_10d >= 0:
-        barrel_delta  = bar_5d - bar_10d
-        score        += barrel_delta / 8.0
+        barrel_delta = bar_5d - bar_10d
+        score       += barrel_delta / 8.0
         if barrel_delta >= 8.0:
             parts.append(f"📈 Barrel% trending up ({bar_10d:.1f}→{bar_5d:.1f}%)")
         elif barrel_delta <= -8.0:
             parts.append(f"📉 Barrel% trending down ({bar_10d:.1f}→{bar_5d:.1f}%)")
 
+    # ── Hard hit % trend: 5d vs 10d ──────────────────────────────────────
+    if hh_5d > 0 and hh_10d > 0:
+        hh_delta = hh_5d - hh_10d
+        score   += hh_delta / 15.0
+        if hh_delta >= 12.0:
+            parts.append(f"💪 Hard hit% surging ({hh_10d:.1f}→{hh_5d:.1f}% last 5d)")
+        elif hh_delta <= -12.0:
+            parts.append(f"📉 Hard hit% dropping ({hh_10d:.1f}→{hh_5d:.1f}% last 5d)")
+
+    # ── Launch angle trend: 5d vs 10d ────────────────────────────────────
+    # Optimal HR launch angle is 25-35 degrees
+    # Reward movement toward that range, penalize movement away
+    if la_5d != 0 and la_10d != 0:
+        optimal_la = 28.0
+        dist_5d    = abs(la_5d  - optimal_la)
+        dist_10d   = abs(la_10d - optimal_la)
+        la_delta   = dist_10d - dist_5d  # positive = moving toward optimal
+        score     += la_delta / 15.0
+        if la_delta >= 8.0:
+            parts.append(f"📐 Launch angle moving toward optimal ({la_10d:.1f}→{la_5d:.1f}°)")
+        elif la_delta <= -8.0:
+            parts.append(f"📐 Launch angle moving away from optimal ({la_10d:.1f}→{la_5d:.1f}°)")
+
+    # ── AVG trend: 14d vs season ─────────────────────────────────────────
+    if pa_14d >= 20 and avg_season > 0 and avg_14d > 0:
+        avg_delta = avg_14d - avg_season
+        if avg_delta >= 0.060:
+            score += 0.8
+            parts.append(f"🔥 AVG trending up (.{int(avg_season*1000)} season → .{int(avg_14d*1000)} last 14d)")
+        elif avg_delta >= 0.030:
+            score += 0.4
+            parts.append(f"📈 AVG trending up (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
+        elif avg_delta <= -0.060:
+            score -= 0.8
+            parts.append(f"❄️ AVG trending down (.{int(avg_season*1000)} season → .{int(avg_14d*1000)} last 14d)")
+        elif avg_delta <= -0.030:
+            score -= 0.4
+            parts.append(f"📉 AVG trending down (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
+
+    # ── Hot/cold streak flags ─────────────────────────────────────────────
+    if hot in ("1", "true", "yes"):
+        score += 0.3
+        if not any("trending up" in p or "surging" in p for p in parts):
+            parts.append("🔥 On a hot streak")
+    elif cold in ("1", "true", "yes"):
+        score -= 0.3
+        if not any("trending down" in p or "dropping" in p for p in parts):
+            parts.append("❄️ On a cold streak")
+
     return round(score, 3), " | ".join(parts)
+
 
 
 def compute_bvp_score(row: pd.Series) -> tuple:
@@ -720,8 +781,11 @@ def prepare_combined(
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "hr_7d", "season_hr", "season_fb", "season_hard_hit",
-        "lhp_start_rate", "rhp_start_rate",
-    ]
+        "lhp_start_rate", "rhp_start_rate","hard_hit_pct_5d", "hard_hit_pct_10d",
+        "avg_la_5d", "avg_la_10d",
+        "avg_14d", "pa_14d",
+        "hot_streak", "cold_streak",
+        ]
 
     dynamic_cols = [c for c in combined.columns if c.startswith("pitcher_iso_allowed_") or c.startswith("pitcher_hr_rate_allowed_") or c.startswith("pitcher_barrel_pct_allowed_")]
     score_cols  += dynamic_cols
