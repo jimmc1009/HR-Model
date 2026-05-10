@@ -1105,7 +1105,7 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
     }
 
     available = {k: v for k, v in output_cols.items() if k in top10.columns}
-    return top10[list(available.keys())].rename(columns=available)
+    return top10[list(available.keys())].rename(columns=available), odds_lookup
 
 
 def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str], odds_lookup: dict = None) -> pd.DataFrame:
@@ -1864,7 +1864,7 @@ def main() -> None:
         print("WARNING: No combined data — check all sheets have data.")
         return
 
-    picks = build_main_picks(combined, odds_df)
+    picks, odds_lookup = build_main_picks(combined, odds_df) 
 
     exclude_from_ev: Set[str] = set()
     if not picks.empty and "Batter" in picks.columns:
