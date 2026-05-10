@@ -33,6 +33,7 @@ COLOR_DARK_RED   = {"red": 0.550, "green": 0.050, "blue": 0.050}
 COLOR_HEADER_BG  = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT    = {"red": 0.500, "green": 0.500, "blue": 0.500}
 COLOR_BLACK      = {"red": 0.050, "green": 0.050, "blue": 0.050}
+COLOR_ORANGE     = {"red": 0.980, "green": 0.502, "blue": 0.059}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -118,13 +119,13 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         hr_clean = hr_df.copy()
         hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
         hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
-            "Last Run|Batter|High EV|Launch", na=False
+            "Last Run|Batter|High EV|Launch|⚡|Breakout", na=False
         )]
         hr_clean = hr_clean[
             pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
         ]
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
-        top10 = hr_clean.head(10)
+        top10    = hr_clean.head(10)
 
         for i in range(len(top10)):
             rank = str(int(pd.to_numeric(top10.iloc[i, 0], errors="coerce")))
@@ -139,6 +140,67 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
             if not batter or batter == "nan":
                 continue
             rows.append((pad([rank, batter, team]), "data_hr"))
+
+    rows.append((E[:], "spacer"))
+
+    # ── BREAKOUT CANDIDATES ───────────────────────────────────────────────
+    rows.append((pad(["⚡  BREAKOUT CANDIDATES"]), "section_header_ev"))
+    rows.append((pad(["Rank", "Batter", "Team", "EV (7d)", "LA Trend", ""]), "col_header_ev"))
+
+    if hr_df.empty:
+        rows.append((pad(["—", "No candidates today"]), "no_plays"))
+    else:
+        # Get top 10 batter names to exclude
+        main_clean = hr_df.copy()
+        main_clean = main_clean[main_clean.iloc[:, 1].astype(str).str.strip() != ""]
+        main_clean = main_clean[~main_clean.iloc[:, 1].astype(str).str.contains(
+            "Last Run|Batter|High EV|Launch|⚡|Breakout", na=False
+        )]
+        main_clean = main_clean[
+            pd.to_numeric(main_clean.iloc[:, 0], errors="coerce").between(1, 10)
+        ]
+        main_clean    = main_clean.drop_duplicates(subset=[main_clean.columns[0]], keep="first")
+        top10_names   = set(main_clean.iloc[:, 1].astype(str).str.strip().tolist())
+
+        # EV section rows — ranks 1-3 not in top 10
+        ev_clean = hr_df.copy()
+        ev_clean = ev_clean[ev_clean.iloc[:, 1].astype(str).str.strip() != ""]
+        ev_clean = ev_clean[~ev_clean.iloc[:, 1].astype(str).str.contains(
+            "Last Run|Batter|High EV|Launch|⚡|Breakout", na=False
+        )]
+        ev_clean = ev_clean[~ev_clean.iloc[:, 1].astype(str).str.strip().isin(top10_names)]
+        ev_clean = ev_clean[
+            pd.to_numeric(ev_clean.iloc[:, 0], errors="coerce").between(1, 3)
+        ]
+        ev_clean = ev_clean.drop_duplicates(subset=[ev_clean.columns[0]], keep="first")
+
+        if ev_clean.empty:
+            rows.append((pad(["—", "No candidates today"]), "no_plays"))
+        else:
+            cols = ev_clean.columns.tolist()
+            for i in range(len(ev_clean)):
+                rank = str(int(pd.to_numeric(ev_clean.iloc[i, 0], errors="coerce")))
+                try:
+                    batter = str(ev_clean.iloc[i, 1]).strip()
+                except Exception:
+                    batter = ""
+                try:
+                    team = str(ev_clean.iloc[i, 3]).strip()
+                except Exception:
+                    team = ""
+                try:
+                    ev_val = str(ev_clean.iloc[i, cols.index("Avg EV (7d)")]).strip() if "Avg EV (7d)" in cols else ""
+                except Exception:
+                    ev_val = ""
+                try:
+                    la_5  = str(ev_clean.iloc[i, cols.index("LA (5d)")]).strip() if "LA (5d)" in cols else ""
+                    la_10 = str(ev_clean.iloc[i, cols.index("LA (10d)")]).strip() if "LA (10d)" in cols else ""
+                    la_trend = f"{la_10}→{la_5}°" if la_5 and la_10 else ""
+                except Exception:
+                    la_trend = ""
+                if not batter or batter == "nan":
+                    continue
+                rows.append((pad([rank, batter, team, ev_val, la_trend, "⬆️"]), "data_ev"))
 
     rows.append((E[:], "spacer"))
 
@@ -203,7 +265,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
 
-    # Unmerge all cells first to avoid conflicts with previous runs
+    # Unmerge all cells first
     reqs_pre = [{"unmergeCells": {
         "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
                   "startColumnIndex": 0, "endColumnIndex": 6}
@@ -240,14 +302,17 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
     }})
 
-    data_row_count = {"hr": 0, "ks": 0, "hrrbi": 0}
+    data_row_count = {"hr": 0, "ks": 0, "hrrbi": 0, "ev": 0}
 
     for row_idx, (row_data, row_type) in enumerate(rows):
         r = row_idx
 
         if row_type.startswith("section_header"):
-            if "hr" in row_type:
+            if "hr" in row_type and "hrrbi" not in row_type:
                 color      = COLOR_GOLD
+                text_color = COLOR_BLACK
+            elif "ev" in row_type:
+                color      = COLOR_ORANGE
                 text_color = COLOR_BLACK
             elif "ks" in row_type:
                 color      = COLOR_TEAL
@@ -296,9 +361,9 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
 
         elif row_type.startswith("data"):
             section = row_type.split("_")[1]
-            count   = data_row_count[section]
+            count   = data_row_count.get(section, 0)
             bg      = COLOR_BG if count % 2 == 0 else COLOR_BG_ALT
-            data_row_count[section] += 1
+            data_row_count[section] = count + 1
 
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -316,7 +381,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-            # Rank col — centered, muted, applies to ALL data rows
+            # Rank col — centered, muted
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
@@ -359,6 +424,22 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                 }})
 
+            # EV section — orange tint on last col
+            if row_type == "data_ev":
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 5, "endColumnIndex": 6},
+                    "cell": {"userEnteredFormat": {
+                        "textFormat": {
+                            "foregroundColor": COLOR_ORANGE, "bold": True,
+                            "fontFamily": "Roboto", "fontSize": 11,
+                        },
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
+                }})
+
         elif row_type == "no_plays":
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -377,7 +458,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
             }})
 
     # Column widths
-    col_widths = [55, 180, 70, 70, 95, 180]
+    col_widths = [55, 180, 70, 90, 110, 120]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
