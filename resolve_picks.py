@@ -102,11 +102,9 @@ def american_odds_to_profit(odds: float) -> float:
     return 0.0
 
 
-
 # ── MLB Stats API helpers ─────────────────────────────────────────────────
 
 def get_games_for_date(game_date: str) -> list:
-    """Returns list of game PKs for a given date (YYYY-MM-DD)."""
     try:
         url  = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date}"
         resp = requests.get(url, timeout=15)
@@ -122,9 +120,6 @@ def get_games_for_date(game_date: str) -> list:
 
 
 def get_pitcher_ks_for_game(game_pk: int) -> dict:
-    """
-    Returns dict of {normalized_pitcher_name: actual_ks} for a game.
-    """
     result = {}
     try:
         url  = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
@@ -139,8 +134,8 @@ def get_pitcher_ks_for_game(game_pk: int) -> dict:
                 player_key  = f"ID{pid}"
                 player_data = players.get(player_key, {})
                 full_name   = player_data.get("person", {}).get("fullName", "")
-                stats        = player_data.get("stats", {}).get("pitching", {})
-                ks           = stats.get("strikeOuts", None)
+                stats       = player_data.get("stats", {}).get("pitching", {})
+                ks          = stats.get("strikeOuts", None)
                 if full_name and ks is not None:
                     result[normalize_name(full_name)] = int(ks)
     except Exception as e:
@@ -149,9 +144,6 @@ def get_pitcher_ks_for_game(game_pk: int) -> dict:
 
 
 def get_batter_hrrbi_for_game(game_pk: int) -> dict:
-    """
-    Returns dict of {normalized_batter_name: total_h_r_rbi} for a game.
-    """
     result = {}
     try:
         url  = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
@@ -166,10 +158,10 @@ def get_batter_hrrbi_for_game(game_pk: int) -> dict:
                 player_key  = f"ID{pid}"
                 player_data = players.get(player_key, {})
                 full_name   = player_data.get("person", {}).get("fullName", "")
-                stats        = player_data.get("stats", {}).get("batting", {})
-                hits         = stats.get("hits", 0)
-                runs         = stats.get("runs", 0)
-                rbi          = stats.get("rbi", 0)
+                stats       = player_data.get("stats", {}).get("batting", {})
+                hits        = stats.get("hits", 0)
+                runs        = stats.get("runs", 0)
+                rbi         = stats.get("rbi", 0)
                 if full_name:
                     result[normalize_name(full_name)] = int(hits) + int(runs) + int(rbi)
     except Exception as e:
@@ -178,10 +170,6 @@ def get_batter_hrrbi_for_game(game_pk: int) -> dict:
 
 
 def build_ks_results(dates: list) -> dict:
-    """
-    Returns dict of {(date_str, normalized_pitcher_name): actual_ks}
-    for all games on the given dates.
-    """
     results = {}
     for game_date in dates:
         print(f"  Fetching KS results for {game_date}...")
@@ -195,10 +183,6 @@ def build_ks_results(dates: list) -> dict:
 
 
 def build_hrrbi_results(dates: list) -> dict:
-    """
-    Returns dict of {(date_str, normalized_batter_name): total_hrrbi}
-    for all games on the given dates.
-    """
     results = {}
     for game_date in dates:
         print(f"  Fetching HRRBI results for {game_date}...")
@@ -410,10 +394,10 @@ def build_scorecard(
 
     def add_roi(label, sub, bold=False):
         if sub.empty: return
-        total        = len(sub)
-        hits         = int(sub["hit_bool"].sum())
-        profit       = round(sub["unit_result"].sum(), 2)
-        roi          = round(profit / total * 100, 1) if total > 0 else 0.0
+        total  = len(sub)
+        hits   = int(sub["hit_bool"].sum())
+        profit = round(sub["unit_result"].sum(), 2)
+        roi    = round(profit / sub["bet_size"].sum() * 100, 1) if sub["bet_size"].sum() > 0 else 0.0
         roi_rows.append({"label": label, "bets": total, "hits": hits, "rate": round(hits / total * 100, 1), "profit": f"+{profit}" if profit >= 0 else str(profit), "roi": f"+{roi}%" if roi >= 0 else f"{roi}%", "_bold": bold, "_roi_val": roi, "_profit_val": profit})
 
     def add_score(label, sub, bold=False):
@@ -495,7 +479,7 @@ def build_scorecard(
     all_values = []
     perf_headers  = ["Category", "Total Picks", "Hits", "Hit Rate %"]
     roi_headers   = ["Category", "Bets Placed", "Hits", "Hit Rate %", "Units Profit", "ROI %"]
-    score_headers = ["Category", "Total Picks", "Hits", "Hit Rate %", f"Avg Score"]
+    score_headers = ["Category", "Total Picks", "Hits", "Hit Rate %", "Avg Score"]
 
     all_values.append([f"📊  {title} — MODEL PERFORMANCE", "", "", ""])
     all_values.append(perf_headers)
@@ -748,15 +732,15 @@ def main() -> None:
     if not ks_log.empty:
         build_scorecard(
             gc, sheet_id,
-            log          = ks_log,
-            sheet_name   = "KS_Scorecard",
-            hit_col      = "hit",
-            score_col    = "ks_score",
-            signal_col   = "prop_signal",
+            log               = ks_log,
+            sheet_name        = "KS_Scorecard",
+            hit_col           = "hit",
+            score_col         = "ks_score",
+            signal_col        = "prop_signal",
             section_color     = COLOR_TEAL,
             section_color_dim = COLOR_TEAL_DIM,
-            tab_color    = COLOR_TEAL,
-            title        = "PITCHER STRIKEOUTS",
+            tab_color         = COLOR_TEAL,
+            title             = "PITCHER STRIKEOUTS",
         )
     time.sleep(5)
 
@@ -769,15 +753,15 @@ def main() -> None:
     if not hrrbi_log.empty:
         build_scorecard(
             gc, sheet_id,
-            log          = hrrbi_log,
-            sheet_name   = "HRRBI_Scorecard",
-            hit_col      = "hit",
-            score_col    = "hrrbi_score",
-            signal_col   = "prop_signal",
+            log               = hrrbi_log,
+            sheet_name        = "HRRBI_Scorecard",
+            hit_col           = "hit",
+            score_col         = "hrrbi_score",
+            signal_col        = "prop_signal",
             section_color     = COLOR_BLUE,
             section_color_dim = COLOR_BLUE_DIM,
-            tab_color    = COLOR_BLUE,
-            title        = "H+R+RBI",
+            tab_color         = COLOR_BLUE,
+            title             = "H+R+RBI",
         )
 
     print("Done.")
