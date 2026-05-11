@@ -448,10 +448,12 @@ def build_scorecard(
     # ROI section
     if not bet_picks.empty:
         add_roi("💵  All Bets", bet_picks, bold=True)
+
         roi_rows.append({"label": "── By Confidence ──", "bets": "", "hits": "", "rate": "", "profit": "", "roi": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         for tier in ["High", "Medium", "Low"]:
             sub = bet_picks[bet_picks["confidence"].astype(str) == tier]
             if not sub.empty: add_roi(f"   {tier}", sub)
+
         roi_rows.append({"label": "── By Signal ──", "bets": "", "hits": "", "rate": "", "profit": "", "roi": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         if signal_col in bet_picks.columns:
             for sig in bet_picks[signal_col].dropna().unique():
@@ -459,6 +461,17 @@ def build_scorecard(
                     continue
                 sub = bet_picks[bet_picks[signal_col].astype(str) == str(sig)]
                 if not sub.empty: add_roi(f"   {sig}", sub)
+
+        roi_rows.append({"label": "── By Juice ──", "bets": "", "hits": "", "rate": "", "profit": "", "roi": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
+        favorable = bet_picks[bet_picks["odds_num"] >= -110]
+        standard  = bet_picks[(bet_picks["odds_num"] < -110) & (bet_picks["odds_num"] >= -130)]
+        heavy     = bet_picks[bet_picks["odds_num"] < -130]
+        plus_odds = bet_picks[bet_picks["odds_num"] > 0]
+        if not plus_odds.empty:  add_roi("   Plus odds (+100 or better)", plus_odds)
+        if not favorable.empty:  add_roi("   Favorable (-110 or better)", favorable)
+        if not standard.empty:   add_roi("   Standard (-111 to -130)", standard)
+        if not heavy.empty:      add_roi("   Heavy (-131 or worse)", heavy)
+
         roi_rows.append({"label": "── Rolling ──", "bets": "", "hits": "", "rate": "", "profit": "", "roi": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         max_bet = bet_picks["date_dt"].max()
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date_dt"] >= max_bet - pd.Timedelta(days=7)])
