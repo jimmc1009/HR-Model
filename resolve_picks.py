@@ -250,7 +250,11 @@ def resolve_ks_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
             log.at[idx, "actual_ks"] = ""
         else:
             log.at[idx, "actual_ks"] = str(actual_ks)
-            log.at[idx, "hit"]       = "Yes" if actual_ks > k_line else "No"
+            bet_side = str(log.at[idx, "bet_side"]).strip().lower() if "bet_side" in log.columns else "over"
+            if bet_side == "under":
+                log.at[idx, "hit"] = "Yes" if actual_ks <= k_line else "No"
+            else:
+                log.at[idx, "hit"] = "Yes" if actual_ks > k_line else "No"
         resolved += 1
 
     print(f"Resolved {resolved} KS picks. Yes: {(log['hit'] == 'Yes').sum()} | No: {(log['hit'] == 'No').sum()}")
@@ -308,7 +312,11 @@ def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
             log.at[idx, "actual_hrrbi"] = ""
         else:
             log.at[idx, "actual_hrrbi"] = str(actual_total)
-            log.at[idx, "hit"]          = "Yes" if actual_total > line else "No"
+            bet_side = str(log.at[idx, "bet_side"]).strip().lower() if "bet_side" in log.columns else "over"
+            if bet_side == "under":
+                log.at[idx, "hit"] = "Yes" if actual_total <= line else "No"
+            else:
+                log.at[idx, "hit"] = "Yes" if actual_total > line else "No"
         resolved += 1
 
     print(f"Resolved {resolved} HRRBI picks. Yes: {(log['hit'] == 'Yes').sum()} | No: {(log['hit'] == 'No').sum()}")
