@@ -95,9 +95,12 @@ def normalize_name(name: str) -> str:
 
 
 def american_odds_to_profit(odds: float) -> float:
-    if odds <= 0:
-        return 0.0
-    return odds / 100.0
+    if odds > 0:
+        return odds / 100.0
+    elif odds < 0:
+        return 100 / abs(odds)
+    return 0.0
+
 
 
 # ── MLB Stats API helpers ─────────────────────────────────────────────────
