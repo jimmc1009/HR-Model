@@ -193,7 +193,8 @@ jobs:
           inputs.script == 'migrate_ks'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
+
         run: python migrate_ks_log.py
 
 
