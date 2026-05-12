@@ -735,7 +735,7 @@ def main() -> None:
             log               = ks_log,
             sheet_name        = "KS_Scorecard",
             hit_col           = "hit",
-            score_col         = "ks_score",
+            score_col         = "confidence",
             signal_col        = "prop_signal",
             section_color     = COLOR_TEAL,
             section_color_dim = COLOR_TEAL_DIM,
