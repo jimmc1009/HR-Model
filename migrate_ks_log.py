@@ -27,13 +27,11 @@ NEW_COLS = [
     "prop_signal",
     "over_odds",
     "under_odds",
+    "confidence",
     "bet_side",
     "odds",
-    "bet_placed",
-    "confidence",
-    "actual_ks",
-    "hit",
-    "result",
+    "wager",
+    "win",
 ]
 
 
