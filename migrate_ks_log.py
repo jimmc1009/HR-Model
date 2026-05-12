@@ -52,9 +52,23 @@ def main() -> None:
     ws = sh.worksheet("KS_Picks_Log")
 
     print("Reading KS_Picks_Log...")
-    data = ws.get_all_records()
-    df   = pd.DataFrame(data)
-    print(f"  {len(df)} rows loaded, columns: {df.columns.tolist()}")
+    all_values = ws.get_all_values()
+
+    if not all_values:
+        print("Sheet is empty — nothing to migrate.")
+        return
+
+    # Use get_all_values to avoid duplicate header error
+    headers = all_values[0]
+    rows    = all_values[1:]
+    print(f"  {len(rows)} rows loaded")
+    print(f"  Existing headers: {headers}")
+
+    # Build dataframe from raw values
+    df = pd.DataFrame(rows, columns=headers)
+
+    # Drop completely empty rows
+    df = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)].copy()
 
     # Add any missing columns as empty
     for col in NEW_COLS:
