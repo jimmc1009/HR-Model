@@ -26,7 +26,7 @@ on:
           - ks_picks
           - dashboard
           - resolve_picks
-          - migrate_ks_log
+          - migrate_ks
 
 jobs:
   test:
