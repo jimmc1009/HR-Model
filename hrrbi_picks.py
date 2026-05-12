@@ -817,10 +817,16 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
 
     try:
-        ws       = sh.worksheet("HRRBI_Picks_Log")
-        existing = pd.DataFrame(with_retry(lambda: ws.get_all_records()))
+        ws         = sh.worksheet("HRRBI_Picks_Log")
+        all_values = with_retry(lambda: ws.get_all_values())
+        if all_values and len(all_values) > 1:
+            headers  = all_values[0]
+            rows     = all_values[1:]
+            existing = pd.DataFrame(rows, columns=headers)
+        else:
+            existing = pd.DataFrame()
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="HRRBI_Picks_Log", rows=5000, cols=20)
+        ws       = sh.add_worksheet(title="HRRBI_Picks_Log", rows=5000, cols=9)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -829,38 +835,43 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     new_rows = []
     for _, row in picks.iterrows():
         new_rows.append({
-            "date":          today_str,
-            "rank":          str(row.get("rank", "")),
-            "player_name":   str(row.get("player_name", "")),
-            "team":          str(row.get("batter_team", "")),
-            "hrrbi_score":   str(row.get("hrrbi_score", "")),
-            "confidence":    str(row.get("confidence", "")),
-            "line":          str(row.get("hrrbi_line", "")),
-            "over_odds":     str(row.get("hrrbi_over_odds", "")),
-            "under_odds":    str(row.get("hrrbi_under_odds", "")),
-            "prop_signal":   str(row.get("prop_signal", "")),
-            "momentum":      str(row.get("momentum_desc", "")),
-            "avg_14d":       str(row.get("avg_14d", "")),
-            "avg_bat_order": str(row.get("avg_bat_order", "")),
-            "opp_pitcher":   str(row.get("opp_pitcher_name", "")),
-            "odds":          "",
-            "hit":           "Pending",
-            "actual_hrrbi":  "",
-            "bet_placed":    "",
-            "result":        "",
+            "date":        today_str,
+            "rank":        str(row.get("rank", "")),
+            "player_name": str(row.get("player_name", "")),
+            "team":        str(row.get("batter_team", "")),
+            "line":        str(row.get("hrrbi_line", "")),
+            "prop_signal": str(row.get("prop_signal", "")),
+            "over_odds":   str(row.get("hrrbi_over_odds", "")),
+            "confidence":  str(row.get("confidence", "")),
+            "win":         "",
         })
 
     if not new_rows:
+        print("No HRRBI picks to log.")
         return
 
-    new_df       = pd.DataFrame(new_rows)
-    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
-    combined_log = combined_log.fillna("")
+    new_df = pd.DataFrame(new_rows)
+
+    col_order = [
+        "date", "rank", "player_name", "team", "line",
+        "prop_signal", "over_odds", "confidence", "win",
+    ]
+
+    if not existing.empty and "win" not in existing.columns:
+        existing["win"] = ""
+
+    combined = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined = combined.fillna("").replace([np.inf, -np.inf], "")
+
+    for col in col_order:
+        if col not in combined.columns:
+            combined[col] = ""
+    combined = combined[col_order]
 
     time.sleep(5)
     with_retry(lambda: ws.clear())
-    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
-    print(f"Logged {len(new_rows)} H+R+RBI picks to HRRBI_Picks_Log")
+    with_retry(lambda: ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist()))
+    print(f"Logged {len(new_rows)} HRRBI picks to HRRBI_Picks_Log")
 
 
 def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
