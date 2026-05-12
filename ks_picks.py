@@ -592,14 +592,14 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     try:
         ws         = sh.worksheet("KS_Picks_Log")
         all_values = with_retry(lambda: ws.get_all_values())
-        if all_values:
-            headers = all_values[0]
-            rows    = all_values[1:]
+        if all_values and len(all_values) > 1:
+            headers  = all_values[0]
+            rows     = all_values[1:]
             existing = pd.DataFrame(rows, columns=headers)
         else:
             existing = pd.DataFrame()
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=20)
+        ws       = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=9)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -616,11 +616,7 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
             "k_line":       str(row.get("k_line", "")),
             "prop_signal":  str(row.get("prop_signal", "")),
             "over_odds":    str(row.get("ks_over_odds", "")),
-            "under_odds":   str(row.get("ks_under_odds", "")),
             "confidence":   str(row.get("confidence", "")),
-            "bet_side":     "",
-            "odds":         "",
-            "wager":        "",
             "win":          "",
         })
 
@@ -631,15 +627,12 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     new_df = pd.DataFrame(new_rows)
 
     col_order = [
-        "date", "rank", "pitcher_name", "team", "k_line", "prop_signal",
-        "over_odds", "under_odds", "confidence", "bet_side", "odds", "wager", "win",
+        "date", "rank", "pitcher_name", "team", "k_line",
+        "prop_signal", "over_odds", "confidence", "win",
     ]
 
-    # Preserve existing manual bet data
-    preserve_cols = ["bet_side", "odds", "wager", "win"]
-    for col in preserve_cols:
-        if not existing.empty and col not in existing.columns:
-            existing[col] = ""
+    if not existing.empty and "win" not in existing.columns:
+        existing["win"] = ""
 
     combined = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
     combined = combined.fillna("").replace([np.inf, -np.inf], "")
