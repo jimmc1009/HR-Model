@@ -24,16 +24,16 @@ DASHBOARD_SHEET = "Today's Top Picks"
 
 COLOR_BG        = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
-COLOR_WHITE      = {"red": 1.000, "green": 1.000, "blue": 1.000}
-COLOR_GOLD       = {"red": 1.000, "green": 0.843, "blue": 0.000}
-COLOR_GREEN      = {"red": 0.118, "green": 0.627, "blue": 0.337}
-COLOR_BLUE       = {"red": 0.055, "green": 0.318, "blue": 0.580}
-COLOR_TEAL       = {"red": 0.047, "green": 0.450, "blue": 0.353}
-COLOR_DARK_RED   = {"red": 0.550, "green": 0.050, "blue": 0.050}
-COLOR_HEADER_BG  = {"red": 0.055, "green": 0.055, "blue": 0.055}
-COLOR_SUBTEXT    = {"red": 0.500, "green": 0.500, "blue": 0.500}
-COLOR_BLACK      = {"red": 0.050, "green": 0.050, "blue": 0.050}
-COLOR_ORANGE     = {"red": 0.980, "green": 0.502, "blue": 0.059}
+COLOR_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
+COLOR_GOLD      = {"red": 1.000, "green": 0.843, "blue": 0.000}
+COLOR_GREEN     = {"red": 0.118, "green": 0.627, "blue": 0.337}
+COLOR_BLUE      = {"red": 0.055, "green": 0.318, "blue": 0.580}
+COLOR_TEAL      = {"red": 0.047, "green": 0.450, "blue": 0.353}
+COLOR_DARK_RED  = {"red": 0.550, "green": 0.050, "blue": 0.050}
+COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
+COLOR_SUBTEXT   = {"red": 0.500, "green": 0.500, "blue": 0.500}
+COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
+COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -150,7 +150,6 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     if hr_df.empty:
         rows.append((pad(["—", "No candidates today"]), "no_plays"))
     else:
-        # Get top 10 batter names to exclude
         main_clean = hr_df.copy()
         main_clean = main_clean[main_clean.iloc[:, 1].astype(str).str.strip() != ""]
         main_clean = main_clean[~main_clean.iloc[:, 1].astype(str).str.contains(
@@ -159,10 +158,9 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         main_clean = main_clean[
             pd.to_numeric(main_clean.iloc[:, 0], errors="coerce").between(1, 10)
         ]
-        main_clean    = main_clean.drop_duplicates(subset=[main_clean.columns[0]], keep="first")
-        top10_names   = set(main_clean.iloc[:, 1].astype(str).str.strip().tolist())
+        main_clean  = main_clean.drop_duplicates(subset=[main_clean.columns[0]], keep="first")
+        top10_names = set(main_clean.iloc[:, 1].astype(str).str.strip().tolist())
 
-        # EV section rows — ranks 1-3 not in top 10
         ev_clean = hr_df.copy()
         ev_clean = ev_clean[ev_clean.iloc[:, 1].astype(str).str.strip() != ""]
         ev_clean = ev_clean[~ev_clean.iloc[:, 1].astype(str).str.contains(
@@ -212,8 +210,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         rows.append((pad(["—", "No plays today"]), "no_plays"))
     else:
         sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_df.columns), None)
-        top5    = ks_df.head(5)
-        plays   = top5[top5[sig_col].apply(has_signal)] if sig_col else pd.DataFrame()
+        plays   = ks_df[ks_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
 
         if plays.empty:
             rows.append((pad(["—", "No plays today"]), "no_plays"))
@@ -238,8 +235,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         rows.append((pad(["—", "No plays today"]), "no_plays"))
     else:
         sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in hrrbi_df.columns), None)
-        top5    = hrrbi_df.head(5)
-        plays   = top5[top5[sig_col].apply(has_signal)] if sig_col else pd.DataFrame()
+        plays   = hrrbi_df[hrrbi_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
 
         if plays.empty:
             rows.append((pad(["—", "No plays today"]), "no_plays"))
@@ -265,7 +261,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
 
-    # Unmerge all cells first
     reqs_pre = [{"unmergeCells": {
         "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
                   "startColumnIndex": 0, "endColumnIndex": 6}
@@ -282,7 +277,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     n_cols = 6
     reqs   = []
 
-    # Global base style
     reqs.append({"repeatCell": {
         "range": {
             "sheetId": ws_id, "startRowIndex": 0,
@@ -308,18 +302,18 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         r = row_idx
 
         if row_type.startswith("section_header"):
-            if "hr" in row_type and "hrrbi" not in row_type:
-                color      = COLOR_GOLD
-                text_color = COLOR_BLACK
-            elif "ev" in row_type:
+            if "ev" in row_type:
                 color      = COLOR_ORANGE
                 text_color = COLOR_BLACK
             elif "ks" in row_type:
                 color      = COLOR_TEAL
                 text_color = COLOR_WHITE
-            else:
+            elif "hrrbi" in row_type:
                 color      = COLOR_BLUE
                 text_color = COLOR_WHITE
+            else:
+                color      = COLOR_GOLD
+                text_color = COLOR_BLACK
 
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -381,7 +375,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-            # Rank col — centered, muted
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
@@ -396,7 +389,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
             }})
 
-            # Signal col — colored for KS and HRRBI
             if row_type in ("data_ks", "data_hrrbi"):
                 signal_val = str(row_data[5]).upper()
                 if "OVER" in signal_val and "UNDER" not in signal_val:
@@ -424,7 +416,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                 }})
 
-            # EV section — orange tint on last col
             if row_type == "data_ev":
                 reqs.append({"repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -457,7 +448,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-    # Column widths
     col_widths = [55, 180, 70, 90, 110, 120]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
@@ -467,7 +457,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
             "fields": "pixelSize",
         }})
 
-    # Row heights
     for row_idx, (_, row_type) in enumerate(rows):
         if row_type.startswith("section_header"):
             h = 40
@@ -484,7 +473,6 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
             "fields": "pixelSize",
         }})
 
-    # Sheet properties
     reqs.append({"updateSheetProperties": {
         "properties": {
             "sheetId": ws_id,

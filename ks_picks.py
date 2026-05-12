@@ -592,10 +592,25 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
 
     try:
-        ws       = sh.worksheet("KS_Picks_Log")
-        existing = pd.DataFrame(with_retry(lambda: ws.get_all_records()))
+        ws         = sh.worksheet("KS_Picks_Log")
+        all_values = with_retry(lambda: ws.get_all_values())
+        if all_values:
+            headers = all_values[0]
+            seen = {}
+            clean_headers = []
+            for h in headers:
+                if h in seen:
+                    seen[h] += 1
+                    clean_headers.append(f"{h}_{seen[h]}")
+                else:
+                    seen[h] = 0
+                    clean_headers.append(h)
+            rows     = all_values[1:]
+            existing = pd.DataFrame(rows, columns=clean_headers)
+        else:
+            existing = pd.DataFrame()
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=15)
+        ws       = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=20)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -606,30 +621,51 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
         new_rows.append({
             "date":         today_str,
             "rank":         str(row.get("rank", "")),
-            "pitcher_name": str(row.get("pitcher_name", "")),
-            "team":         str(row.get("team", row.get("pitching_team", ""))),
-            "ks_score":     str(row.get("ks_score", "")),
-            "projected_k":  str(row.get("projected_k_calc", "")),
-            "k_line":       str(row.get("k_line", "")),
-            "over_odds":    str(row.get("ks_over_odds", "")),
-            "prop_signal":  str(row.get("prop_signal", "")),
-            "confidence":   str(row.get("confidence", "")),
-            "hit":          "Pending",
+            "pitcher_name": str(row.get("Pitcher", "")),
+            "team":         str(row.get("Team", "")),
+            "k_line":       str(row.get("K Line", "")),
+            "prop_signal":  str(row.get("Signal", "")),
+            "over_odds":    str(row.get("Over Odds", "")),
+            "under_odds":   str(row.get("Under Odds", "")),
+            "bet_side":     "",
+            "odds":         "",
+            "bet_placed":   "",
+            "confidence":   str(row.get("Confidence", "")),
             "actual_ks":    "",
+            "hit":          "Pending",
             "result":       "",
         })
 
     if not new_rows:
+        print("No KS picks to log.")
         return
 
-    new_df       = pd.DataFrame(new_rows)
-    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
-    combined_log = combined_log.fillna("")
+    new_df = pd.DataFrame(new_rows)
+
+    preserve_cols = ["bet_side", "odds", "bet_placed", "actual_ks", "hit", "result"]
+    for col in preserve_cols:
+        if not existing.empty and col not in existing.columns:
+            existing[col] = ""
+
+    combined = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined = combined.fillna("").replace([np.inf, -np.inf], "")
+
+    col_order = [
+        "date", "rank", "pitcher_name", "team", "k_line", "prop_signal",
+        "over_odds", "under_odds", "bet_side", "odds", "bet_placed",
+        "confidence", "actual_ks", "hit", "result",
+    ]
+    for col in col_order:
+        if col not in combined.columns:
+            combined[col] = ""
+    combined = combined[col_order]
 
     time.sleep(5)
     with_retry(lambda: ws.clear())
-    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
-    print(f"Logged {len(new_rows)} K picks to KS_Picks_Log")
+    with_retry(lambda: ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist()))
+    print(f"Logged {len(new_rows)} KS picks to KS_Picks_Log")
+
+
 
 
 def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
