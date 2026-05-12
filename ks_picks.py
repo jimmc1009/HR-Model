@@ -781,8 +781,6 @@ def main() -> None:
     time.sleep(5)
     log_picks(gc, sheet_id, picks)
     time.sleep(5)
-    update_scorecard(gc, sheet_id)
-    time.sleep(5)
     write_timestamp(gc, sheet_id)
 
 
