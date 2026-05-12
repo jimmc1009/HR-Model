@@ -596,17 +596,8 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
         all_values = with_retry(lambda: ws.get_all_values())
         if all_values:
             headers = all_values[0]
-            seen = {}
-            clean_headers = []
-            for h in headers:
-                if h in seen:
-                    seen[h] += 1
-                    clean_headers.append(f"{h}_{seen[h]}")
-                else:
-                    seen[h] = 0
-                    clean_headers.append(h)
-            rows     = all_values[1:]
-            existing = pd.DataFrame(rows, columns=clean_headers)
+            rows    = all_values[1:]
+            existing = pd.DataFrame(rows, columns=headers)
         else:
             existing = pd.DataFrame()
     except gspread.WorksheetNotFound:
@@ -618,22 +609,21 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
 
     new_rows = []
     for _, row in picks.iterrows():
+        team = str(row.get("pitching_team", row.get("team", "")))
         new_rows.append({
             "date":         today_str,
             "rank":         str(row.get("rank", "")),
-            "pitcher_name": str(row.get("Pitcher", "")),
-            "team":         str(row.get("Team", "")),
-            "k_line":       str(row.get("K Line", "")),
-            "prop_signal":  str(row.get("Signal", "")),
-            "over_odds":    str(row.get("Over Odds", "")),
-            "under_odds":   str(row.get("Under Odds", "")),
+            "pitcher_name": str(row.get("pitcher_name", "")),
+            "team":         team,
+            "k_line":       str(row.get("k_line", "")),
+            "prop_signal":  str(row.get("prop_signal", "")),
+            "over_odds":    str(row.get("ks_over_odds", "")),
+            "under_odds":   str(row.get("ks_under_odds", "")),
+            "confidence":   str(row.get("confidence", "")),
             "bet_side":     "",
             "odds":         "",
-            "bet_placed":   "",
-            "confidence":   str(row.get("Confidence", "")),
-            "actual_ks":    "",
-            "hit":          "Pending",
-            "result":       "",
+            "wager":        "",
+            "win":          "",
         })
 
     if not new_rows:
@@ -642,7 +632,13 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
 
     new_df = pd.DataFrame(new_rows)
 
-    preserve_cols = ["bet_side", "odds", "bet_placed", "actual_ks", "hit", "result"]
+    col_order = [
+        "date", "rank", "pitcher_name", "team", "k_line", "prop_signal",
+        "over_odds", "under_odds", "confidence", "bet_side", "odds", "wager", "win",
+    ]
+
+    # Preserve existing manual bet data
+    preserve_cols = ["bet_side", "odds", "wager", "win"]
     for col in preserve_cols:
         if not existing.empty and col not in existing.columns:
             existing[col] = ""
@@ -650,11 +646,6 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     combined = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
     combined = combined.fillna("").replace([np.inf, -np.inf], "")
 
-    col_order = [
-        "date", "rank", "pitcher_name", "team", "k_line", "prop_signal",
-        "over_odds", "under_odds", "bet_side", "odds", "bet_placed",
-        "confidence", "actual_ks", "hit", "result",
-    ]
     for col in col_order:
         if col not in combined.columns:
             combined[col] = ""
@@ -664,60 +655,6 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     with_retry(lambda: ws.clear())
     with_retry(lambda: ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist()))
     print(f"Logged {len(new_rows)} KS picks to KS_Picks_Log")
-
-
-
-
-def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
-    sh = with_retry(lambda: gc.open_by_key(sheet_id))
-
-    try:
-        ws_log = sh.worksheet("KS_Picks_Log")
-        log    = pd.DataFrame(with_retry(lambda: ws_log.get_all_records()))
-    except gspread.WorksheetNotFound:
-        print("KS_Picks_Log not found — skipping scorecard")
-        return
-
-    if log.empty:
-        return
-
-    scored = log[log["hit"].isin(["Yes", "No"])].copy()
-    if scored.empty:
-        print("No scored K picks yet — skipping scorecard.")
-        return
-
-    scored["hit_bool"]  = scored["hit"] == "Yes"
-    scored["score_num"] = pd.to_numeric(scored["ks_score"], errors="coerce")
-
-    rows = []
-
-    def add_row(label, sub):
-        if sub.empty:
-            return
-        total = len(sub)
-        hits  = int(sub["hit_bool"].sum())
-        rows.append([label, total, hits, f"{hits / total * 100:.1f}%"])
-
-    add_row("All Picks", scored)
-    for tier, mask in [
-        ("Score 10+", scored["score_num"] >= 10),
-        ("Score 7+",  scored["score_num"] >= 7),
-        ("Score 5+",  scored["score_num"] >= 5),
-    ]:
-        add_row(tier, scored[mask])
-
-    for conf in ["High", "Medium", "Low"]:
-        add_row(f"Confidence: {conf}", scored[scored["confidence"] == conf])
-
-    time.sleep(5)
-    try:
-        sc_ws = sh.worksheet("KS_Scorecard")
-        with_retry(lambda: sc_ws.clear())
-    except gspread.WorksheetNotFound:
-        sc_ws = sh.add_worksheet(title="KS_Scorecard", rows=50, cols=6)
-
-    with_retry(lambda: sc_ws.update([["Category", "Picks", "Hits", "Hit Rate"]] + rows))
-    print("KS_Scorecard updated")
 
 
 def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
