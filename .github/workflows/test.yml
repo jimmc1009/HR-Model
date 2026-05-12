@@ -26,6 +26,7 @@ on:
           - ks_picks
           - dashboard
           - resolve_picks
+          - migrate_ks_log
 
 jobs:
   test:
@@ -186,4 +187,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python resolve_picks.py
+
+      - name: Run migrate_ks_log.py
+        if: 
+          inputs.script == 'migrate_ks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python migrate_ks_log.py
+
 
