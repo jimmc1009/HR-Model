@@ -595,11 +595,23 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
         ws         = sh.worksheet("KS_Picks_Log")
         all_values = with_retry(lambda: ws.get_all_values())
         if all_values:
-            headers  = all_values[0]
+                if all_values:
+            headers = all_values[0]
+            # Deduplicate headers
+            seen = {}
+            clean_headers = []
+            for h in headers:
+                if h in seen:
+                    seen[h] += 1
+                    clean_headers.append(f"{h}_{seen[h]}")
+                else:
+                    seen[h] = 0
+                    clean_headers.append(h)
             rows     = all_values[1:]
-            existing = pd.DataFrame(rows, columns=headers)
+            existing = pd.DataFrame(rows, columns=clean_headers)
         else:
             existing = pd.DataFrame()
+
     except gspread.WorksheetNotFound:
         ws       = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=20)
         existing = pd.DataFrame()
