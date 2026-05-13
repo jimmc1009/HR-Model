@@ -71,6 +71,7 @@ def fetch_props_for_event(
         "regions":     "us,us2",
         "markets":     market,
         "oddsFormat":  "american",
+        "bookmakers":  "fanduel,draftkings,betmgm,williamhill_us,betonlineag,ballybet,betparx,betrivers,hardrockbet,hardrockbet_oh",
     }
     time.sleep(delay)
     try:
