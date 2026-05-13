@@ -874,59 +874,6 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     print(f"Logged {len(new_rows)} HRRBI picks to HRRBI_Picks_Log")
 
 
-def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
-    sh = with_retry(lambda: gc.open_by_key(sheet_id))
-
-    try:
-        ws_log = sh.worksheet("HRRBI_Picks_Log")
-        log    = pd.DataFrame(with_retry(lambda: ws_log.get_all_records()))
-    except gspread.WorksheetNotFound:
-        print("HRRBI_Picks_Log not found — skipping scorecard")
-        return
-
-    if log.empty:
-        return
-
-    scored = log[log["hit"].isin(["Yes", "No"])].copy()
-    if scored.empty:
-        print("No scored H+R+RBI picks yet — skipping scorecard.")
-        return
-
-    scored["hit_bool"]  = scored["hit"] == "Yes"
-    scored["score_num"] = pd.to_numeric(scored["hrrbi_score"], errors="coerce")
-
-    rows = []
-
-    def add_row(label, sub):
-        if sub.empty:
-            return
-        total = len(sub)
-        hits  = int(sub["hit_bool"].sum())
-        rows.append([label, total, hits, f"{hits / total * 100:.1f}%"])
-
-    add_row("All Picks", scored)
-    for tier, mask in [
-        ("Score 12+",     scored["score_num"] >= 12),
-        ("Score 10+",     scored["score_num"] >= 10),
-        ("Score 8+",      scored["score_num"] >= 8),
-        ("Score Under 8", scored["score_num"] <  8),
-    ]:
-        add_row(tier, scored[mask])
-
-    for conf in ["High", "Medium", "Low"]:
-        add_row(f"Confidence: {conf}", scored[scored["confidence"] == conf])
-
-    time.sleep(5)
-    try:
-        sc_ws = sh.worksheet("HRRBI_Scorecard")
-        with_retry(lambda: sc_ws.clear())
-    except gspread.WorksheetNotFound:
-        sc_ws = sh.add_worksheet(title="HRRBI_Scorecard", rows=50, cols=6)
-
-    with_retry(lambda: sc_ws.update([["Category", "Picks", "Hits", "Hit Rate"]] + rows))
-    print("HRRBI_Scorecard updated")
-
-
 def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     et     = pytz.timezone("America/New_York")
     now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
@@ -990,8 +937,6 @@ def main() -> None:
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
     log_picks(gc, sheet_id, picks)
-    time.sleep(5)
-    update_scorecard(gc, sheet_id)
     time.sleep(5)
     write_timestamp(gc, sheet_id)
 
