@@ -76,7 +76,10 @@ def fetch_props_for_event(
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
-        return resp.json().get("bookmakers", [])
+        bookmakers = resp.json().get("bookmakers", [])
+        if bookmakers:
+            print(f"    Books returned for {event_label}: {[b['key'] for b in bookmakers]}")
+        return bookmakers
     except Exception as e:
         print(f"  ✗ {event_label}: {e}")
         return []
