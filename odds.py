@@ -84,8 +84,7 @@ def fetch_props_for_event(
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
-        bookmakers = resp.json().get("bookmakers", [])
-        return bookmakers
+        return resp.json().get("bookmakers", [])
     except Exception as e:
         print(f"  ✗ {event_label}: {e}")
         return []
@@ -108,42 +107,33 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         # Fetch standard HR market
         bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs")
 
-        # Fetch alternate HR market (FanDuel and others post as milestones)
+        # Fetch alternate HR market — FanDuel posts 0.5 lines here
         alt_bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs_alternate")
-        for book in alt_bookmakers:
-            if book["key"] == "fanduel":
-                print(f"    FanDuel alternate data: {json.dumps(book, indent=2)[:500]}")
 
-
-        # Filter alternate to only 1+ lines (equivalent to standard over 0.5)
-        # and remap market key so downstream code treats them the same
-        alt_filtered = []
+        # Filter alternate to only 0.5 lines under 1000 odds and remap market key
+        existing_book_keys = {b["key"] for b in bookmakers}
         for book in alt_bookmakers:
             if book["key"] in EXCLUDED_BOOKS:
                 continue
+            if book["key"] in existing_book_keys:
+                continue
             filtered_outcomes = []
             for market in book.get("markets", []):
-                                for outcome in market.get("outcomes", []):
-                    if (
-                        outcome.get("name", "").lower() == "over"
-                        and safe_float(outcome.get("point", 0)) == 0.5
-                        and int(float(outcome.get("price", 9999))) <= 1000
-                    ):
-
-                    ):
-                        filtered_outcomes.append(outcome)
+                for outcome in market.get("outcomes", []):
+                    try:
+                        point = safe_float(outcome.get("point", -1))
+                        price = int(float(outcome.get("price", 9999)))
+                        name  = outcome.get("name", "").lower()
+                        if name == "over" and point == 0.5 and price <= 1000:
+                            filtered_outcomes.append(outcome)
+                    except (ValueError, TypeError):
+                        pass
             if filtered_outcomes:
-                alt_filtered.append({
-                    "key": book["key"],
+                bookmakers.append({
+                    "key":     book["key"],
                     "markets": [{"key": "batter_home_runs", "outcomes": filtered_outcomes}],
                 })
-
-        # Merge alternate books — only add books not already in standard results
-        existing_book_keys = {b["key"] for b in bookmakers}
-        for book in alt_filtered:
-            if book["key"] not in existing_book_keys:
-                bookmakers.append(book)
-                print(f"    Added {book['key']} from alternate market")
+                print(f"    Added {book['key']} from alternate market ({len(filtered_outcomes)} players)")
 
         if not bookmakers:
             print(f"  ✗ {label}: no props found")
