@@ -43,6 +43,14 @@ def normalize_name(name: str) -> str:
     return name.lower().strip()
 
 
+def safe_float(val, default=0.0) -> float:
+    try:
+        f = float(val)
+        return default if (pd.isna(f) or np.isinf(f)) else f
+    except (ValueError, TypeError):
+        return default
+
+
 def get_mlb_events(api_key: str) -> List[dict]:
     url = "https://api.the-odds-api.com/v4/sports/baseball_mlb/events"
     resp = requests.get(url, params={"apiKey": api_key}, timeout=15)
@@ -67,10 +75,10 @@ def fetch_props_for_event(
 ) -> List[dict]:
     url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds"
     params = {
-        "apiKey":      api_key,
-        "regions":     "us,us2",
-        "markets":     market,
-        "oddsFormat":  "american",
+        "apiKey":     api_key,
+        "regions":    "us,us2",
+        "markets":    market,
+        "oddsFormat": "american",
     }
     time.sleep(delay)
     try:
@@ -84,9 +92,7 @@ def fetch_props_for_event(
 
 def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     print(f"\nFetching HR prop odds for {len(events)} games...")
-    
-    # Collect per-player, per-book odds across all games
-    # Key: player_name_norm, Value: dict of book_key -> best odds
+
     player_book_odds: Dict[str, Dict[str, int]] = {}
     player_display_names: Dict[str, str] = {}
     player_home_teams: Dict[str, str] = {}
@@ -98,13 +104,42 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         away_team = event.get("away_team", "")
         label     = f"{away_team} @ {home_team}"
 
+        # Fetch standard HR market
         bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs")
+
+        # Fetch alternate HR market — FanDuel posts 0.5 lines here
+        alt_bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs_alternate")
+
+        # Filter alternate to only 0.5 lines under 1000 odds and remap market key
+        existing_book_keys = {b["key"] for b in bookmakers}
+        for book in alt_bookmakers:
+            if book["key"] in EXCLUDED_BOOKS:
+                continue
+            if book["key"] in existing_book_keys:
+                continue
+            filtered_outcomes = []
+            for market in book.get("markets", []):
+                for outcome in market.get("outcomes", []):
+                    try:
+                        point = safe_float(outcome.get("point", -1))
+                        price = int(float(outcome.get("price", 9999)))
+                        name  = outcome.get("name", "").lower()
+                        if name == "over" and point == 0.5 and price <= 1000:
+                            filtered_outcomes.append(outcome)
+                    except (ValueError, TypeError):
+                        pass
+            if filtered_outcomes:
+                bookmakers.append({
+                    "key":     book["key"],
+                    "markets": [{"key": "batter_home_runs", "outcomes": filtered_outcomes}],
+                })
+                print(f"    Added {book['key']} from alternate market ({len(filtered_outcomes)} players)")
 
         if not bookmakers:
             print(f"  ✗ {label}: no props found")
             continue
 
-        book_keys  = [b["key"] for b in bookmakers if b["key"] not in EXCLUDED_BOOKS]
+        book_keys     = [b["key"] for b in bookmakers if b["key"] not in EXCLUDED_BOOKS]
         found_players = set()
 
         for book in bookmakers:
@@ -122,19 +157,15 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                         try:
                             price_int = int(float(price))
                             if price_int > 0:
-                                price_int = min(price_int, 3000)
+                                price_int = min(price_int, 1000)
                                 norm = normalize_name(player)
-                                # Only store one odds entry per book per player
                                 if norm not in player_book_odds:
                                     player_book_odds[norm]     = {}
                                     player_display_names[norm] = player
                                     player_home_teams[norm]    = home_team
                                     player_away_teams[norm]    = away_team
-                                # Only add this book if not already seen for this player
                                 if book["key"] not in player_book_odds[norm]:
-                                    # Cap at 1000 — anything higher is likely a 2+ HR market
-                                    if price_int <= 1000:
-                                        player_book_odds[norm][book["key"]] = price_int
+                                    player_book_odds[norm][book["key"]] = price_int
                                 found_players.add(norm)
                         except (ValueError, TypeError):
                             pass
@@ -155,14 +186,14 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         consensus = int(np.median(odds_list))
         implied   = round(100 / (consensus + 100) * 100, 2)
         all_rows.append({
-            "player_name":       player_display_names[norm],
-            "player_name_norm":  norm,
-            "home_team":         player_home_teams[norm],
-            "away_team":         player_away_teams[norm],
-            "consensus_odds":    consensus,
-            "implied_prob_pct":  implied,
-            "num_books":         len(odds_list),
-            "book_detail":       str(book_odds),  # shows each book and its odds
+            "player_name":      player_display_names[norm],
+            "player_name_norm": norm,
+            "home_team":        player_home_teams[norm],
+            "away_team":        player_away_teams[norm],
+            "consensus_odds":   consensus,
+            "implied_prob_pct": implied,
+            "num_books":        len(odds_list),
+            "book_detail":      str(book_odds),
         })
 
     df = pd.DataFrame(all_rows)
@@ -191,9 +222,6 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
             continue
 
         book_keys = [b["key"] for b in bookmakers if b["key"] not in EXCLUDED_BOOKS]
-
-        # K props return over/under with a point (line)
-        # Structure: {"name": "Over", "description": "Paul Skenes", "price": -130, "point": 6.5}
         pitcher_lines: Dict[str, Dict] = {}
 
         for book in bookmakers:
@@ -219,7 +247,6 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                             "over_odds":  [],
                             "under_odds": [],
                         }
-
                     try:
                         price_int = int(float(price))
                         if side == "over":
@@ -240,7 +267,6 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                 consensus_over  = int(np.median(over_odds))
                 consensus_under = int(np.median(under_odds)) if under_odds else None
 
-                # Implied prob from over odds
                 if consensus_over >= 0:
                     implied = round(100 / (consensus_over + 100) * 100, 2)
                 else:
@@ -264,7 +290,6 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-    # Keep the most common line per pitcher (books usually agree)
     df = (
         df.sort_values("num_books", ascending=False)
         .drop_duplicates(subset=["pitcher_name_norm"], keep="first")
@@ -278,12 +303,8 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
 
 
 def build_hrrbi_odds(events: List[dict], api_key: str) -> pd.DataFrame:
-    """
-    Attempts to pull batter_hits_runs_rbis market.
-    Falls back gracefully if unavailable on free tier.
-    """
     print(f"\nFetching H+R+RBI prop odds for {len(events)} games...")
-    all_rows = []
+    all_rows  = []
     found_any = False
 
     for event in events:
