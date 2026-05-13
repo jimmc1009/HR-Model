@@ -110,6 +110,10 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
 
         # Fetch alternate HR market (FanDuel and others post as milestones)
         alt_bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs_alternate")
+        for book in alt_bookmakers:
+            if book["key"] == "fanduel":
+                print(f"    FanDuel alternate data: {json.dumps(book, indent=2)[:500]}")
+
 
         # Filter alternate to only 1+ lines (equivalent to standard over 0.5)
         # and remap market key so downstream code treats them the same
