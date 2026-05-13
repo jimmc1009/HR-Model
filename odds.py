@@ -123,10 +123,13 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                 continue
             filtered_outcomes = []
             for market in book.get("markets", []):
-                for outcome in market.get("outcomes", []):
+                                for outcome in market.get("outcomes", []):
                     if (
                         outcome.get("name", "").lower() == "over"
-                        and safe_float(outcome.get("point", 0)) == 1.0
+                        and safe_float(outcome.get("point", 0)) == 0.5
+                        and int(float(outcome.get("price", 9999))) <= 1000
+                    ):
+
                     ):
                         filtered_outcomes.append(outcome)
             if filtered_outcomes:
