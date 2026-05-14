@@ -1539,6 +1539,19 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         for section in bet_picks["section"].dropna().unique():
             sub = bet_picks[bet_picks["section"] == section]
             if not sub.empty: add_roi(f"   {section}", sub)
+        roi_rows.append({"label": "── By Juice ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
+        bet_picks["odds_num_bet"] = pd.to_numeric(
+            bet_picks["odds"].apply(lambda x: str(x).replace("+", "").strip()),
+            errors="coerce"
+        )
+        for label, sub in [
+            ("   +200 to +299", bet_picks[(bet_picks["odds_num_bet"] >= 200) & (bet_picks["odds_num_bet"] < 300)]),
+            ("   +300 to +399", bet_picks[(bet_picks["odds_num_bet"] >= 300) & (bet_picks["odds_num_bet"] < 400)]),
+            ("   +400 to +499", bet_picks[(bet_picks["odds_num_bet"] >= 400) & (bet_picks["odds_num_bet"] < 500)]),
+            ("   +500 to +699", bet_picks[(bet_picks["odds_num_bet"] >= 500) & (bet_picks["odds_num_bet"] < 700)]),
+            ("   +700+",        bet_picks[bet_picks["odds_num_bet"] >= 700]),
+        ]:
+            if not sub.empty: add_roi(f"{label}", sub)
         roi_rows.append({"label": "── Rolling ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         max_bet = bet_picks["date"].max()
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
@@ -1554,17 +1567,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         ("   12+",      scored[scored["hr_score"] >= 12]),
         ("   11+",      scored[scored["hr_score"] >= 11]),
         ("   Under 11", scored[scored["hr_score"] <  11]),
-    ]:
-        if not sub.empty: add_score(label, sub)
-
-    score_rows.append({"label": "── By Odds Range ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
-    for label, sub in [
-        ("   +200 to +299", scored[(scored["odds_num"] >= 200) & (scored["odds_num"] < 300)]),
-        ("   +300 to +399", scored[(scored["odds_num"] >= 300) & (scored["odds_num"] < 400)]),
-        ("   +400 to +499", scored[(scored["odds_num"] >= 400) & (scored["odds_num"] < 500)]),
-        ("   +500 to +699", scored[(scored["odds_num"] >= 500) & (scored["odds_num"] < 700)]),
-        ("   +700+",        scored[scored["odds_num"] >= 700]),
-        ("   No odds data", scored[scored["odds_num"].isna()]),
     ]:
         if not sub.empty: add_score(label, sub)
 
