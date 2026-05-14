@@ -1435,6 +1435,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     scored["rank"]        = pd.to_numeric(scored["rank"], errors="coerce")
     scored["date"]        = pd.to_datetime(scored["date"], errors="coerce")
     scored["hr_score"]    = pd.to_numeric(scored["hr_score"], errors="coerce")
+    scored["odds_num"]    = pd.to_numeric(scored["consensus_odds"], errors="coerce")
 
     def is_bet_placed(x) -> bool:
         s = str(x).replace("$", "").strip().lower()
@@ -1452,8 +1453,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     ].copy()
 
     if not bet_picks.empty:
-        bet_picks["odds_num"]      = bet_picks["odds"].apply(lambda x: safe_float(str(x).replace("+", "").strip(), 0))
-        bet_picks["profit_if_win"] = bet_picks["odds_num"].apply(american_odds_to_profit)
+        bet_picks["odds_num_bet"]  = bet_picks["odds"].apply(lambda x: safe_float(str(x).replace("+", "").strip(), 0))
+        bet_picks["profit_if_win"] = bet_picks["odds_num_bet"].apply(american_odds_to_profit)
 
         def parse_bet_size(x) -> float:
             s = str(x).replace("$", "").strip().lower()
@@ -1492,24 +1493,30 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         avg_score = round(sub_df["hr_score"].mean(), 2) if not sub_df["hr_score"].isna().all() else 0.0
         score_rows.append({"label": label, "total_picks": total, "hr_count": hits, "hit_rate_pct": round(hits / total * 100, 1), "avg_score": avg_score, "_bold": bold})
 
+    # Performance section
     add_perf("🏆  Overall", scored, bold=True)
+
     perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for rank in range(1, 11):
         sub = scored[scored["rank"] == rank]
         if not sub.empty: add_perf(f"   Rank {rank}", sub)
+
     perf_rows.append({"label": "── By Confidence ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for tier in ["High", "Medium", "Low"]:
         sub = scored[scored["confidence"] == tier]
         if not sub.empty: add_perf(f"   {tier}", sub)
+
     perf_rows.append({"label": "── By Section ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for section in scored["section"].dropna().unique():
         sub = scored[scored["section"] == section]
         if not sub.empty: add_perf(f"   {section}", sub)
+
     perf_rows.append({"label": "── Rolling ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     max_date = scored["date"].max()
     add_perf("   Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
     add_perf("   Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
+    # ROI section
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
@@ -1531,15 +1538,27 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
         add_roi("   Last 30 Days", bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=30)])
 
+    # Score tier section
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
     for label, sub in [
-        ("   15+",     scored[scored["hr_score"] >= 15]),
-        ("   14+",     scored[scored["hr_score"] >= 14]),
-        ("   13+",     scored[scored["hr_score"] >= 13]),
-        ("   12+",     scored[scored["hr_score"] >= 12]),
-        ("   11+",     scored[scored["hr_score"] >= 11]),
-        ("   Under 11", scored[scored["hr_score"] < 11]),
+        ("   15+",      scored[scored["hr_score"] >= 15]),
+        ("   14+",      scored[scored["hr_score"] >= 14]),
+        ("   13+",      scored[scored["hr_score"] >= 13]),
+        ("   12+",      scored[scored["hr_score"] >= 12]),
+        ("   11+",      scored[scored["hr_score"] >= 11]),
+        ("   Under 11", scored[scored["hr_score"] <  11]),
+    ]:
+        if not sub.empty: add_score(label, sub)
+
+    score_rows.append({"label": "── By Odds Range ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
+    for label, sub in [
+        ("   +200 to +299", scored[(scored["odds_num"] >= 200) & (scored["odds_num"] < 300)]),
+        ("   +300 to +399", scored[(scored["odds_num"] >= 300) & (scored["odds_num"] < 400)]),
+        ("   +400 to +499", scored[(scored["odds_num"] >= 400) & (scored["odds_num"] < 500)]),
+        ("   +500 to +699", scored[(scored["odds_num"] >= 500) & (scored["odds_num"] < 700)]),
+        ("   +700+",        scored[scored["odds_num"] >= 700]),
+        ("   No odds data", scored[scored["odds_num"].isna()]),
     ]:
         if not sub.empty: add_score(label, sub)
 
