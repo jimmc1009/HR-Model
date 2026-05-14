@@ -50,6 +50,14 @@ def safe_float(val, default=0.0) -> float:
     except (ValueError, TypeError):
         return default
 
+def filter_outlier_odds(book_odds: dict) -> dict:
+    """Remove books whose odds are more than 2.5x the median — catches betonlineag outliers."""
+    if len(book_odds) < 3:
+        return book_odds
+    values = list(book_odds.values())
+    median = float(np.median(values))
+    return {k: v for k, v in book_odds.items() if v <= median * 2.5}
+
 
 def get_mlb_events(api_key: str) -> List[dict]:
     url = "https://api.the-odds-api.com/v4/sports/baseball_mlb/events"
