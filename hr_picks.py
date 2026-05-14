@@ -1435,8 +1435,11 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     scored["rank"]        = pd.to_numeric(scored["rank"], errors="coerce")
     scored["date"]        = pd.to_datetime(scored["date"], errors="coerce")
     scored["hr_score"]    = pd.to_numeric(scored["hr_score"], errors="coerce")
-    if "consensus_odds" in scored.columns:
-        scored["odds_num"] = pd.to_numeric(scored["consensus_odds"], errors="coerce")
+    if "odds" in scored.columns:
+        scored["odds_num"] = pd.to_numeric(
+            scored["odds"].apply(lambda x: str(x).replace("+", "").strip()),
+            errors="coerce"
+        )
     else:
         scored["odds_num"] = pd.Series(dtype=float, index=scored.index)
 
