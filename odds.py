@@ -188,6 +188,7 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
 
     all_rows = []
     for norm, book_odds in player_book_odds.items():
+        book_odds = filter_outlier_odds(book_odds)
         odds_list = list(book_odds.values())
         if not odds_list:
             continue
