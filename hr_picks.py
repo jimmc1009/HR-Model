@@ -1534,12 +1534,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
     for label, sub in [
+        ("   15+",     scored[scored["hr_score"] >= 15]),
+        ("   14+",     scored[scored["hr_score"] >= 14]),
         ("   13+",     scored[scored["hr_score"] >= 13]),
         ("   12+",     scored[scored["hr_score"] >= 12]),
         ("   11+",     scored[scored["hr_score"] >= 11]),
-        ("   10+",     scored[scored["hr_score"] >= 10]),
-        ("   9+",      scored[scored["hr_score"] >= 9]),
-        ("   Under 9", scored[scored["hr_score"] <  9]),
+        ("   Under 11", scored[scored["hr_score"] < 11]),
     ]:
         if not sub.empty: add_score(label, sub)
 
