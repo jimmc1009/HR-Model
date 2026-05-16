@@ -1,18 +1,21 @@
 """
 resolve_picks.py
-Builds KS and HRRBI scorecards from manually filled pick logs.
-No auto-resolution — fill in win column yourself (Yes/No).
+Auto-resolves KS and HRRBI win column using MLB Stats API.
+Builds KS and HRRBI scorecards from pick logs.
 """
 
 import os
 import json
 import time
+import unicodedata
+from datetime import date
 
 import pandas as pd
 import numpy as np
 import gspread
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
+import requests
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -85,6 +88,227 @@ def safe_float(val, default=0.0) -> float:
     except (ValueError, TypeError):
         return default
 
+
+def normalize_name(name: str) -> str:
+    name = unicodedata.normalize("NFD", str(name))
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    return name.lower().strip()
+
+
+# ── MLB Stats API ─────────────────────────────────────────────────────────
+
+def get_games_for_date(game_date: str) -> list:
+    try:
+        url  = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        games = []
+        for d in resp.json().get("dates", []):
+            for g in d.get("games", []):
+                games.append(g.get("gamePk"))
+        return [g for g in games if g]
+    except Exception as e:
+        print(f"  WARNING: Could not fetch games for {game_date}: {e}")
+        return []
+
+
+def get_pitcher_ks_for_game(game_pk: int) -> dict:
+    result = {}
+    try:
+        url  = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        for side in ["home", "away"]:
+            pitchers = data.get("teams", {}).get(side, {}).get("pitchers", [])
+            players  = data.get("teams", {}).get(side, {}).get("players", {})
+            for pid in pitchers:
+                player_key  = f"ID{pid}"
+                player_data = players.get(player_key, {})
+                full_name   = player_data.get("person", {}).get("fullName", "")
+                stats       = player_data.get("stats", {}).get("pitching", {})
+                ks          = stats.get("strikeOuts", None)
+                if full_name and ks is not None:
+                    result[normalize_name(full_name)] = int(ks)
+    except Exception as e:
+        print(f"  WARNING: Could not fetch pitcher Ks for game {game_pk}: {e}")
+    return result
+
+
+def get_batter_hrrbi_for_game(game_pk: int) -> dict:
+    result = {}
+    try:
+        url  = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        for side in ["home", "away"]:
+            batters  = data.get("teams", {}).get(side, {}).get("batters", [])
+            players  = data.get("teams", {}).get(side, {}).get("players", {})
+            for pid in batters:
+                player_key  = f"ID{pid}"
+                player_data = players.get(player_key, {})
+                full_name   = player_data.get("person", {}).get("fullName", "")
+                stats       = player_data.get("stats", {}).get("batting", {})
+                hits        = stats.get("hits", 0)
+                runs        = stats.get("runs", 0)
+                rbi         = stats.get("rbi", 0)
+                if full_name:
+                    result[normalize_name(full_name)] = int(hits) + int(runs) + int(rbi)
+    except Exception as e:
+        print(f"  WARNING: Could not fetch batter stats for game {game_pk}: {e}")
+    return result
+
+
+def build_ks_results(dates: list) -> dict:
+    results = {}
+    for game_date in dates:
+        print(f"  Fetching KS results for {game_date}...")
+        game_pks = get_games_for_date(game_date)
+        for pk in game_pks:
+            pitcher_ks = get_pitcher_ks_for_game(pk)
+            for name_norm, ks in pitcher_ks.items():
+                results[(game_date, name_norm)] = ks
+        time.sleep(0.5)
+    return results
+
+
+def build_hrrbi_results(dates: list) -> dict:
+    results = {}
+    for game_date in dates:
+        print(f"  Fetching HRRBI results for {game_date}...")
+        game_pks = get_games_for_date(game_date)
+        for pk in game_pks:
+            batter_stats = get_batter_hrrbi_for_game(pk)
+            for name_norm, total in batter_stats.items():
+                results[(game_date, name_norm)] = total
+        time.sleep(0.5)
+    return results
+
+
+# ── Resolution ────────────────────────────────────────────────────────────
+
+def resolve_ks_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
+    today_str = date.today().strftime("%Y-%m-%d")
+    log       = read_sheet_raw(gc, sheet_id, "KS_Picks_Log")
+
+    if log.empty:
+        print("KS_Picks_Log is empty.")
+        return pd.DataFrame()
+
+    if "win" not in log.columns:
+        print("KS_Picks_Log missing win column.")
+        return log
+
+    pending = log[
+        (log["win"].astype(str).str.strip() == "") &
+        (log["date"].astype(str).str.strip() != today_str) &
+        (log["date"].astype(str).str.strip() != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending KS picks to resolve.")
+        return log
+
+    pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
+    print(f"Resolving {len(pending)} pending KS picks across {len(pending_dates)} dates...")
+
+    ks_results = build_ks_results(pending_dates)
+
+    resolved = 0
+    for idx, row in log.iterrows():
+        if str(row.get("win", "")).strip() != "":
+            continue
+        row_date = str(row.get("date", "")).strip()
+        if row_date == today_str or not row_date:
+            continue
+
+        pitcher_norm = normalize_name(str(row.get("pitcher_name", "")))
+        k_line       = safe_float(row.get("k_line", 0))
+        actual_ks    = ks_results.get((row_date, pitcher_norm))
+
+        if actual_ks is None:
+            log.at[idx, "win"] = "No"
+        else:
+            log.at[idx, "win"] = "Yes" if actual_ks > k_line else "No"
+        resolved += 1
+
+    print(f"Resolved {resolved} KS picks. Yes: {(log['win'] == 'Yes').sum()} | No: {(log['win'] == 'No').sum()}")
+
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("KS_Picks_Log")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=13)
+
+    log = log.fillna("").replace([np.inf, -np.inf], "")
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
+    print("KS_Picks_Log updated.")
+    return log
+
+
+def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
+    today_str = date.today().strftime("%Y-%m-%d")
+    log       = read_sheet_raw(gc, sheet_id, "HRRBI_Picks_Log")
+
+    if log.empty:
+        print("HRRBI_Picks_Log is empty.")
+        return pd.DataFrame()
+
+    if "win" not in log.columns:
+        print("HRRBI_Picks_Log missing win column.")
+        return log
+
+    pending = log[
+        (log["win"].astype(str).str.strip() == "") &
+        (log["date"].astype(str).str.strip() != today_str) &
+        (log["date"].astype(str).str.strip() != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending HRRBI picks to resolve.")
+        return log
+
+    pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
+    print(f"Resolving {len(pending)} pending HRRBI picks across {len(pending_dates)} dates...")
+
+    hrrbi_results = build_hrrbi_results(pending_dates)
+
+    resolved = 0
+    for idx, row in log.iterrows():
+        if str(row.get("win", "")).strip() != "":
+            continue
+        row_date = str(row.get("date", "")).strip()
+        if row_date == today_str or not row_date:
+            continue
+
+        player_norm  = normalize_name(str(row.get("player_name", "")))
+        line         = safe_float(row.get("line", 0))
+        actual_total = hrrbi_results.get((row_date, player_norm))
+
+        if actual_total is None:
+            log.at[idx, "win"] = "No"
+        else:
+            log.at[idx, "win"] = "Yes" if actual_total > line else "No"
+        resolved += 1
+
+    print(f"Resolved {resolved} HRRBI picks. Yes: {(log['win'] == 'Yes').sum()} | No: {(log['win'] == 'No').sum()}")
+
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("HRRBI_Picks_Log")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="HRRBI_Picks_Log", rows=5000, cols=13)
+
+    log = log.fillna("").replace([np.inf, -np.inf], "")
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
+    print("HRRBI_Picks_Log updated.")
+    return log
+
+
+# ── Scorecard ─────────────────────────────────────────────────────────────
 
 def build_scorecard(
     gc: gspread.Client,
@@ -171,7 +395,6 @@ def build_scorecard(
             f"{rate}%" if rate != "" else "",
         ])
 
-    # Write sheet
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
         ws = sh.worksheet(sheet_name)
@@ -186,7 +409,6 @@ def build_scorecard(
     total_cols = 4
     reqs       = []
 
-    # Base style
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -198,7 +420,6 @@ def build_scorecard(
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
 
-    # Title row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -211,7 +432,6 @@ def build_scorecard(
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
     }})
 
-    # Column header row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -320,35 +540,41 @@ def main() -> None:
     gc       = get_gspread_client()
 
     print("=" * 50)
-    print("Building KS Scorecard...")
+    print("Resolving KS picks...")
     print("=" * 50)
-    ks_log = read_sheet_raw(gc, sheet_id, "KS_Picks_Log")
-    build_scorecard(
-        gc, sheet_id,
-        log               = ks_log,
-        sheet_name        = "KS_Scorecard",
-        signal_col        = "prop_signal",
-        section_color     = COLOR_TEAL,
-        section_color_dim = COLOR_TEAL_DIM,
-        tab_color         = COLOR_TEAL,
-        title             = "PITCHER STRIKEOUTS",
-    )
+    ks_log = resolve_ks_log(gc, sheet_id)
+    time.sleep(5)
+
+    if not ks_log.empty:
+        build_scorecard(
+            gc, sheet_id,
+            log               = ks_log,
+            sheet_name        = "KS_Scorecard",
+            signal_col        = "prop_signal",
+            section_color     = COLOR_TEAL,
+            section_color_dim = COLOR_TEAL_DIM,
+            tab_color         = COLOR_TEAL,
+            title             = "PITCHER STRIKEOUTS",
+        )
     time.sleep(5)
 
     print("=" * 50)
-    print("Building HRRBI Scorecard...")
+    print("Resolving HRRBI picks...")
     print("=" * 50)
-    hrrbi_log = read_sheet_raw(gc, sheet_id, "HRRBI_Picks_Log")
-    build_scorecard(
-        gc, sheet_id,
-        log               = hrrbi_log,
-        sheet_name        = "HRRBI_Scorecard",
-        signal_col        = "prop_signal",
-        section_color     = COLOR_BLUE,
-        section_color_dim = COLOR_BLUE_DIM,
-        tab_color         = COLOR_BLUE,
-        title             = "H+R+RBI",
-    )
+    hrrbi_log = resolve_hrrbi_log(gc, sheet_id)
+    time.sleep(5)
+
+    if not hrrbi_log.empty:
+        build_scorecard(
+            gc, sheet_id,
+            log               = hrrbi_log,
+            sheet_name        = "HRRBI_Scorecard",
+            signal_col        = "prop_signal",
+            section_color     = COLOR_BLUE,
+            section_color_dim = COLOR_BLUE_DIM,
+            tab_color         = COLOR_BLUE,
+            title             = "H+R+RBI",
+        )
 
     print("Done.")
 
