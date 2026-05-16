@@ -676,18 +676,21 @@ def prepare_combined(
 
 
 def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
+    # Only include players with a signal
+    df = df[df["prop_signal"] != "—"].copy()
+
+    if df.empty:
+        print("No HRRBI signals today.")
+        return pd.DataFrame()
+
     df = df.sort_values("hrrbi_score", ascending=False).reset_index(drop=True)
     selected    = []
     team_counts = {}
 
     for _, row in df.iterrows():
-        if len(selected) >= TOP_N:
-            break
-
         team = str(row.get("batter_team", "UNK"))
         if team_counts.get(team, 0) >= MAX_PER_TEAM:
             continue
-
         selected.append(row)
         team_counts[team] = team_counts.get(team, 0) + 1
 
