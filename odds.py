@@ -50,6 +50,7 @@ def safe_float(val, default=0.0) -> float:
     except (ValueError, TypeError):
         return default
 
+
 def filter_outlier_odds(book_odds: dict) -> dict:
     """Remove books whose odds are more than 2.5x the median — catches betonlineag outliers."""
     if len(book_odds) < 3:
@@ -98,6 +99,65 @@ def fetch_props_for_event(
         return []
 
 
+def build_game_totals(events: List[dict], api_key: str) -> pd.DataFrame:
+    print(f"\nFetching game totals for {len(events)} games...")
+    all_rows = []
+
+    url = "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds"
+    params = {
+        "apiKey":     api_key,
+        "regions":    "us",
+        "markets":    "totals",
+        "oddsFormat": "american",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        games = resp.json()
+    except Exception as e:
+        print(f"  WARNING: Could not fetch game totals: {e}")
+        return pd.DataFrame()
+
+    for game in games:
+        home_team  = game.get("home_team", "")
+        away_team  = game.get("away_team", "")
+        bookmakers = game.get("bookmakers", [])
+
+        over_lines = []
+        for book in bookmakers:
+            if book["key"] in EXCLUDED_BOOKS:
+                continue
+            for market in book.get("markets", []):
+                if market["key"] != "totals":
+                    continue
+                for outcome in market.get("outcomes", []):
+                    if outcome.get("name", "").lower() == "over":
+                        try:
+                            point = safe_float(outcome.get("point", 0))
+                            if point > 0:
+                                over_lines.append(point)
+                        except (ValueError, TypeError):
+                            pass
+
+        if over_lines:
+            consensus_total = round(float(np.median(over_lines)), 1)
+            all_rows.append({
+                "home_team":       home_team,
+                "away_team":       away_team,
+                "game_total":      consensus_total,
+                "num_books":       len(over_lines),
+            })
+            print(f"  ✓ {away_team} @ {home_team}: total {consensus_total}")
+
+    if not all_rows:
+        print("No game totals found.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    print(f"\nBuilt game totals: {len(df)} games")
+    return df
+
+
 def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     print(f"\nFetching HR prop odds for {len(events)} games...")
 
@@ -112,13 +172,10 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         away_team = event.get("away_team", "")
         label     = f"{away_team} @ {home_team}"
 
-        # Fetch standard HR market
         bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs")
 
-        # Fetch alternate HR market — FanDuel posts 0.5 lines here
         alt_bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs_alternate")
 
-        # Filter alternate to only 0.5 lines under 1000 odds and remap market key
         existing_book_keys = {b["key"] for b in bookmakers}
         for book in alt_bookmakers:
             if book["key"] in EXCLUDED_BOOKS:
@@ -429,6 +486,14 @@ def main() -> None:
 
     print("Fetching today's MLB events from The Odds API...")
     events = get_mlb_events(api_key)
+
+    # ── Game totals ───────────────────────────────────────────────
+    totals_df = build_game_totals(events, api_key)
+    if not totals_df.empty:
+        write_sheet(gc, sheet_id, "Game_Totals", totals_df)
+        print(f"Written {len(totals_df)} game totals to Game_Totals sheet")
+    else:
+        print("No game totals data to write.")
 
     # ── HR props ──────────────────────────────────────────────────
     hr_df = build_hr_odds(events, api_key)
