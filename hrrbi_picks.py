@@ -1,16 +1,15 @@
 """
 hrrbi_picks.py
-H+R+RBI model — absolute threshold scoring with momentum.
+H+R+RBI model — value focused, targets 1.5 lines at plus odds.
 Reads from HRRBI_Statcast, Pitcher_Statcast_2026, Park_Factors,
-Weather, HRRBI_Odds sheets.
-Outputs Top_HRRBI_Picks + HRRBI_Picks_Log + HRRBI_Scorecard.
+Weather, Game_Totals, HRRBI_Odds sheets.
 """
 
 import os
 import json
 import time
 import unicodedata
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Set
 
 import pandas as pd
@@ -29,7 +28,6 @@ SCOPES = [
 LEAGUE_AVG_BA        = 0.248
 LEAGUE_AVG_OBP       = 0.318
 LEAGUE_AVG_WOBA      = 0.318
-LEAGUE_AVG_XWOBA     = 0.318
 LEAGUE_AVG_ISO       = 0.155
 LEAGUE_AVG_EV_7D     = 89.0
 LEAGUE_AVG_HH_7D     = 40.0
@@ -39,9 +37,11 @@ MIN_PA               = 80
 MIN_BBE_7D           = 5
 MIN_BATTING_AVG      = 0.220
 MAX_PER_TEAM         = 2
-MAX_CHALK_PICKS      = 3
-CHALK_ODDS_THRESHOLD = 165
 TOP_N                = 10
+
+# Signal filters
+MIN_ODDS_FOR_SIGNAL  = 100   # must be +100 or better
+MAX_LINE_FOR_SIGNAL  = 1.5   # only 1.5 lines
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
@@ -159,15 +159,6 @@ def score_avg(v: float, pa: float) -> float:
     if v >= 0.240: return 0.2
     return 0.0
 
-def score_xwoba(v: float, pa: float) -> float:
-    if pa < MIN_PA: return 0.0
-    if v >= 0.390: return 2.0
-    if v >= 0.360: return 1.5
-    if v >= 0.340: return 1.0
-    if v >= 0.320: return 0.5
-    if v >= 0.300: return 0.2
-    return 0.0
-
 def score_woba(v: float, pa: float) -> float:
     if pa < MIN_PA: return 0.0
     if v >= 0.380: return 2.0
@@ -185,14 +176,6 @@ def score_obp(v: float, pa: float) -> float:
     if v >= 0.330: return 0.3
     return 0.0
 
-def score_iso(v: float, pa: float) -> float:
-    if pa < MIN_PA: return 0.0
-    if v >= 0.280: return 1.2
-    if v >= 0.230: return 0.9
-    if v >= 0.190: return 0.6
-    if v >= 0.165: return 0.3
-    return 0.0
-
 def score_ld_pct(v: float, pa: float) -> float:
     if pa < MIN_PA: return 0.0
     if v >= 28.0: return 1.2
@@ -202,7 +185,6 @@ def score_ld_pct(v: float, pa: float) -> float:
     return 0.0
 
 def score_gb_pct(v: float, pa: float) -> float:
-    """High GB% hurts HRRBI — ground balls don't score runs."""
     if pa < MIN_PA: return 0.0
     if v >= 55.0: return -1.0
     if v >= 50.0: return -0.6
@@ -250,12 +232,6 @@ def score_bat_order(v: float, pa: float) -> float:
     if v <= 6.5: return 0.4
     return 0.0
 
-def score_speed(v: float) -> float:
-    if v >= 7.0: return 0.8
-    if v >= 5.5: return 0.4
-    if v >= 4.0: return 0.1
-    return 0.0
-
 def score_bb_pct(v: float, pa: float) -> float:
     if pa < MIN_PA: return 0.0
     if v >= 14.0: return 0.8
@@ -264,26 +240,50 @@ def score_bb_pct(v: float, pa: float) -> float:
     return 0.0
 
 def score_opp_whip(v: float) -> float:
-    if v >= 1.50: return 1.2
-    if v >= 1.35: return 0.8
-    if v >= 1.20: return 0.4
+    """Higher WHIP = more baserunners = more runs and RBI opportunities."""
+    if v >= 1.60: return 2.0
+    if v >= 1.50: return 1.5
+    if v >= 1.35: return 1.0
+    if v >= 1.20: return 0.5
     if v >= 1.10: return 0.1
-    if v <= 0.95: return -0.6
+    if v <= 0.95: return -1.0
+    if v <= 1.00: return -0.5
     return 0.0
 
 def score_opp_k_pct(v: float) -> float:
-    if v >= 30.0: return -1.2
-    if v >= 26.0: return -0.8
-    if v >= 22.0: return -0.4
+    if v >= 30.0: return -1.5
+    if v >= 26.0: return -1.0
+    if v >= 22.0: return -0.5
+    if v <= 14.0: return  1.0
     if v <= 16.0: return  0.6
     if v <= 18.0: return  0.3
+    return 0.0
+
+def score_opp_bb_pct(v: float) -> float:
+    """High pitcher walk rate = more baserunners = more scoring opportunities."""
+    if v >= 12.0: return 1.5
+    if v >= 10.0: return 1.0
+    if v >=  8.0: return 0.5
+    if v >=  6.0: return 0.1
+    if v <=  4.0: return -0.5
     return 0.0
 
 def score_opp_hard_hit(v: float) -> float:
     if v >= 45.0: return  0.8
     if v >= 40.0: return  0.4
-    if v <= 30.0: return -0.6
-    if v <= 35.0: return -0.3
+    if v <= 30.0: return -0.8
+    if v <= 35.0: return -0.4
+    return 0.0
+
+def score_game_total(v: float) -> float:
+    """Higher game total = more expected offense = better for H+R+RBI overs."""
+    if v >= 10.0: return 2.0
+    if v >= 9.5:  return 1.5
+    if v >= 9.0:  return 1.0
+    if v >= 8.5:  return 0.5
+    if v >= 8.0:  return 0.1
+    if v <= 7.0:  return -1.0
+    if v <= 7.5:  return -0.5
     return 0.0
 
 def score_park_hits(v: float) -> float:
@@ -305,11 +305,6 @@ def score_weather_hits(boost: float) -> float:
 # ── Momentum scoring ──────────────────────────────────────────────────────
 
 def compute_momentum_score(row: pd.Series) -> tuple:
-    """
-    Computes a momentum score based on directional trends.
-    Returns (score, description).
-    Positive = trending up, negative = trending down.
-    """
     score = 0.0
     parts = []
 
@@ -318,25 +313,23 @@ def compute_momentum_score(row: pd.Series) -> tuple:
     bbe_14d  = safe_float(row.get("bbe_14d", 0))
     pa_14d   = safe_float(row.get("pa_14d", 0))
 
-    # ── AVG trend: 14d vs season ──────────────────────────────────────────
     avg_season = safe_float(row.get("avg", 0))
     avg_14d    = safe_float(row.get("avg_14d", 0))
     if pa >= MIN_PA and pa_14d >= 20 and avg_season > 0:
         avg_delta = avg_14d - avg_season
         if avg_delta >= 0.060:
             score += 1.5
-            parts.append(f"🔥 AVG trending up (.{int(avg_season*1000)} season → .{int(avg_14d*1000)} last 14d)")
+            parts.append(f"🔥 AVG trending up (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
         elif avg_delta >= 0.030:
             score += 0.8
             parts.append(f"📈 AVG trending up (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
         elif avg_delta <= -0.060:
             score -= 1.5
-            parts.append(f"❄️ AVG trending down (.{int(avg_season*1000)} season → .{int(avg_14d*1000)} last 14d)")
+            parts.append(f"❄️ AVG trending down (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
         elif avg_delta <= -0.030:
             score -= 0.8
             parts.append(f"📉 AVG trending down (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
 
-    # ── EV trend: 7d vs 14d ───────────────────────────────────────────────
     ev_7d  = safe_float(row.get("avg_ev_7d", 0))
     ev_14d = safe_float(row.get("avg_ev_14d", 0))
     if bbe_7d >= MIN_BBE_7D and bbe_14d >= MIN_BBE_7D and ev_7d > 0 and ev_14d > 0:
@@ -346,14 +339,12 @@ def compute_momentum_score(row: pd.Series) -> tuple:
             parts.append(f"💥 EV trending up ({ev_14d:.1f}→{ev_7d:.1f} mph last 7d)")
         elif ev_delta >= 1.5:
             score += 0.5
-            parts.append(f"📈 EV trending up ({ev_14d:.1f}→{ev_7d:.1f} mph)")
         elif ev_delta <= -3.0:
             score -= 1.0
             parts.append(f"📉 EV trending down ({ev_14d:.1f}→{ev_7d:.1f} mph last 7d)")
         elif ev_delta <= -1.5:
             score -= 0.5
 
-    # ── Hard hit trend: 7d vs 14d ─────────────────────────────────────────
     hh_7d  = safe_float(row.get("hard_hit_pct_7d", 0))
     hh_14d = safe_float(row.get("hard_hit_pct_14d", 0))
     if bbe_7d >= MIN_BBE_7D and bbe_14d >= MIN_BBE_7D and hh_7d > 0 and hh_14d > 0:
@@ -369,9 +360,8 @@ def compute_momentum_score(row: pd.Series) -> tuple:
         elif hh_delta <= -6.0:
             score -= 0.4
 
-    # ── Hot/cold streak flags ─────────────────────────────────────────────
-    hot   = str(row.get("hot_streak", "")).strip().lower()
-    cold  = str(row.get("cold_streak", "")).strip().lower()
+    hot  = str(row.get("hot_streak", "")).strip().lower()
+    cold = str(row.get("cold_streak", "")).strip().lower()
     if hot in ("1", "true", "yes"):
         score += 0.5
         if not any("trending up" in p or "surging" in p for p in parts):
@@ -389,11 +379,9 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     bbe_7d = safe_float(row.get("bbe_7d", 0))
     pa_14d = safe_float(row.get("pa_14d", 0))
 
-    woba_score = score_woba(safe_float(row.get("woba")), pa)
-
     s_avg      = score_avg(safe_float(row.get("avg")), pa)
+    s_woba     = score_woba(safe_float(row.get("woba")), pa)
     s_obp      = score_obp(safe_float(row.get("obp")), pa)
-    s_iso      = score_iso(safe_float(row.get("iso")), pa)
     s_ld       = score_ld_pct(safe_float(row.get("ld_pct")), pa)
     s_gb       = score_gb_pct(safe_float(row.get("gb_pct")), pa)
     s_hh_s     = score_hard_hit_season(safe_float(row.get("hard_hit_pct_season")), pa)
@@ -401,24 +389,28 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_hh_7d    = score_hard_hit_7d(safe_float(row.get("hard_hit_pct_7d")), bbe_7d)
     s_roll_avg = score_rolling_avg(safe_float(row.get("avg_14d")), pa_14d)
     s_bat_ord  = score_bat_order(safe_float(row.get("avg_bat_order", 6)), pa)
-    s_speed    = score_speed(safe_float(row.get("speed_score")))
     s_bb       = score_bb_pct(safe_float(row.get("bb_pct")), pa)
+
+    # Pitcher matchup — now more heavily weighted
     s_opp_whip = score_opp_whip(safe_float(row.get("opp_whip", 1.20), 1.20))
     s_opp_k    = score_opp_k_pct(safe_float(row.get("opp_k_pct_season", 22.0), 22.0))
+    s_opp_bb   = score_opp_bb_pct(safe_float(row.get("opp_bb_pct_season", 8.0), 8.0))
     s_opp_hh   = score_opp_hard_hit(safe_float(row.get("opp_hard_hit_pct", 38.0), 38.0))
-    s_park     = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
-    s_weather  = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
 
-    # Momentum component
+    # Game context
+    s_game_total = score_game_total(safe_float(row.get("game_total", 8.5), 8.5))
+    s_park       = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
+    s_weather    = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
+
     momentum_score, _ = compute_momentum_score(row)
     momentum_capped   = max(-2.0, min(2.0, momentum_score))
 
     return round(
-        s_avg + woba_score + s_obp + s_iso + s_ld + s_gb + s_hh_s +
+        s_avg + s_woba + s_obp + s_ld + s_gb + s_hh_s +
         s_ev_7d + s_hh_7d + s_roll_avg +
-        s_bat_ord + s_speed + s_bb +
-        s_opp_whip + s_opp_k + s_opp_hh +
-        s_park + s_weather + momentum_capped, 3
+        s_bat_ord + s_bb +
+        s_opp_whip + s_opp_k + s_opp_bb + s_opp_hh +
+        s_game_total + s_park + s_weather + momentum_capped, 3
     )
 
 
@@ -440,25 +432,24 @@ def assign_confidence(row: pd.Series) -> str:
 
 
 def calc_prop_signal(row: pd.Series) -> str:
-    line  = safe_float(row.get("hrrbi_line", 0))
-    score = safe_float(row.get("hrrbi_score", 0))
+    line      = safe_float(row.get("hrrbi_line", 0))
+    score     = safe_float(row.get("hrrbi_score", 0))
+    over_odds = safe_float(row.get("hrrbi_over_odds", -999), -999)
 
     if line <= 0:
         return "—"
-    if line < 1.0:
+
+    # Only fire on 1.5 lines at plus odds
+    if line > MAX_LINE_FOR_SIGNAL:
         return "—"
 
-    if line >= 2.0:
-        if score >= 12.0:
-            return f"LEAN OVER {line}"
+    if over_odds < MIN_ODDS_FOR_SIGNAL:
         return "—"
 
     if score >= 11.0:
         return f"OVER {line} ✅"
     if score >= 9.0:
         return f"LEAN OVER {line}"
-    if score <= 5.0:
-        return f"LEAN UNDER {line}"
     return "—"
 
 
@@ -477,7 +468,6 @@ def build_reason(row: pd.Series) -> str:
         elif roll <= 0.200:
             reasons.append(f"❄️ .{int(roll * 1000)} avg last 14 days — cold")
 
-    # Momentum
     momentum_score, momentum_desc = compute_momentum_score(row)
     if momentum_desc:
         reasons.append(momentum_desc)
@@ -496,28 +486,27 @@ def build_reason(row: pd.Series) -> str:
     elif order <= 5.0:
         reasons.append(f"📋 Bats {order:.1f} — prime RBI spot")
 
-    ld = safe_float(row.get("ld_pct"))
-    if ld >= 24.0:
-        reasons.append(f"📐 {ld:.1f}% LD% — elite contact quality")
-
-    gb = safe_float(row.get("gb_pct"))
-    if gb >= 50.0:
-        reasons.append(f"⚠️ {gb:.1f}% GB% — ground ball heavy, limits runs")
-
-    ev_7d = safe_float(row.get("avg_ev_7d"))
-    bbe_7d = safe_float(row.get("bbe_7d"))
-    if bbe_7d >= MIN_BBE_7D and ev_7d >= 94:
-        reasons.append(f"💥 {ev_7d:.1f} mph avg EV last 7 days")
-
     whip = safe_float(row.get("opp_whip", 1.20), 1.20)
     if whip >= 1.35:
-        reasons.append(f"🎯 Opp pitcher WHIP {whip:.2f} — hittable")
+        reasons.append(f"🎯 Opp pitcher WHIP {whip:.2f} — lots of baserunners")
+    elif whip <= 1.00:
+        reasons.append(f"⚠️ Opp pitcher WHIP {whip:.2f} — stingy")
+
+    opp_bb = safe_float(row.get("opp_bb_pct_season", 8.0), 8.0)
+    if opp_bb >= 10.0:
+        reasons.append(f"🚶 Opp pitcher walks {opp_bb:.1f}% — free baserunners")
 
     opp_k = safe_float(row.get("opp_k_pct_season", 22.0), 22.0)
-    if opp_k <= 18.0:
+    if opp_k <= 16.0:
         reasons.append(f"✅ Opp K% {opp_k:.1f}% — contact-friendly matchup")
     elif opp_k >= 28.0:
         reasons.append(f"⚠️ Opp K% {opp_k:.1f}% — strikeout risk")
+
+    game_total = safe_float(row.get("game_total", 8.5), 8.5)
+    if game_total >= 9.5:
+        reasons.append(f"📈 High scoring game expected (total {game_total})")
+    elif game_total <= 7.5:
+        reasons.append(f"📉 Low scoring game expected (total {game_total})")
 
     park = safe_float(row.get("park_hr_factor", 100), 100)
     park_name = str(row.get("park_name", ""))
@@ -536,6 +525,7 @@ def prepare_combined(
     parks: pd.DataFrame,
     weather: pd.DataFrame,
     odds_df: pd.DataFrame,
+    game_totals: pd.DataFrame,
     game_times: dict,
 ) -> pd.DataFrame:
     if batters.empty:
@@ -567,18 +557,16 @@ def prepare_combined(
             "season_barrel_pct_allowed": "opp_barrel_pct",
             "hr_per_fb_allowed":         "opp_hr_per_fb",
             "avg_ev_allowed":            "opp_avg_ev",
+            "whip_proxy":                "opp_whip",
+            "k_pct_season":              "opp_k_pct_season",
+            "bb_pct_season":             "opp_bb_pct_season",
         }
         pitchers = pitchers.rename(columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns})
-
-        if "opp_k_pct_season" not in pitchers.columns:
-            pitchers["opp_k_pct_season"] = 22.0
-        if "opp_whip" not in pitchers.columns:
-            pitchers["opp_whip"] = 1.20
 
         pitcher_cols = [c for c in [
             "batter_team", "opp_pitcher_name", "opp_pitcher_hand",
             "opp_pitcher_bbe", "opp_hard_hit_pct", "opp_barrel_pct",
-            "opp_hr_per_fb", "opp_k_pct_season", "opp_whip",
+            "opp_hr_per_fb", "opp_k_pct_season", "opp_bb_pct_season", "opp_whip",
         ] if c in pitchers.columns]
 
         if "batter_team" in pitchers.columns:
@@ -608,14 +596,36 @@ def prepare_combined(
                 how="left",
             )
 
+    # Merge game totals
+    if not game_totals.empty:
+        game_totals = game_totals.copy()
+        game_totals.columns = [c.strip() for c in game_totals.columns]
+        if "home_team" in game_totals.columns and "game_total" in game_totals.columns:
+            batters = batters.merge(
+                game_totals[["home_team", "game_total"]],
+                left_on="batter_team",
+                right_on="home_team",
+                how="left",
+            )
+            # Also try away team match
+            missing_total = batters["game_total"].isna()
+            if missing_total.any() and "away_team" in game_totals.columns:
+                away_totals = game_totals[["away_team", "game_total"]].rename(
+                    columns={"away_team": "batter_team_away", "game_total": "game_total_away"}
+                )
+                batters = batters.merge(away_totals, left_on="batter_team", right_on="batter_team_away", how="left")
+                batters.loc[missing_total, "game_total"] = batters.loc[missing_total, "game_total_away"]
+                if "game_total_away" in batters.columns:
+                    batters = batters.drop(columns=["game_total_away", "batter_team_away"], errors="ignore")
+
     defaults = {
         "opp_whip": 1.20,
         "opp_k_pct_season": 22.0,
+        "opp_bb_pct_season": 8.0,
         "opp_hard_hit_pct": 38.0,
         "park_hr_factor": 100.0,
         "hr_weather_boost": 0.0,
         "avg_bat_order": 5.0,
-        "speed_score": 4.0,
         "ld_pct": 0.0,
         "gb_pct": 42.0,
         "bb_pct": 0.0,
@@ -623,6 +633,7 @@ def prepare_combined(
         "hard_hit_pct_14d": 0.0,
         "barrel_pct_14d": 0.0,
         "bbe_14d": 0.0,
+        "game_total": 8.5,
     }
     for col, val in defaults.items():
         if col not in batters.columns:
@@ -643,7 +654,6 @@ def prepare_combined(
     batters["confidence"]  = batters.apply(assign_confidence, axis=1)
     batters["reason"]      = batters.apply(build_reason, axis=1)
 
-    # Add momentum desc as separate column for logging
     momentum_results = batters.apply(compute_momentum_score, axis=1)
     batters["momentum_score"] = momentum_results.apply(lambda x: x[0])
     batters["momentum_desc"]  = momentum_results.apply(lambda x: x[1])
@@ -666,41 +676,18 @@ def prepare_combined(
 
 
 def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
+    # Only include players with a signal
+    df = df[df["prop_signal"] != "—"].copy()
+
+    if df.empty:
+        print("No HRRBI signals today.")
+        return pd.DataFrame()
+
     df = df.sort_values("hrrbi_score", ascending=False).reset_index(drop=True)
     selected    = []
     team_counts = {}
-    chalk_count = 0
-    no_odds     = []
 
     for _, row in df.iterrows():
-        odds = row.get("hrrbi_over_odds")
-        try:
-            odds_val = float(odds)
-            has_odds = True
-        except (TypeError, ValueError):
-            has_odds = False
-            no_odds.append(row)
-            continue
-
-        if len(selected) >= TOP_N:
-            break
-
-        team = str(row.get("batter_team", "UNK"))
-        if team_counts.get(team, 0) >= MAX_PER_TEAM:
-            continue
-
-        is_chalk = has_odds and abs(odds_val) >= CHALK_ODDS_THRESHOLD and odds_val < 0
-        if is_chalk and chalk_count >= MAX_CHALK_PICKS:
-            continue
-
-        selected.append(row)
-        team_counts[team] = team_counts.get(team, 0) + 1
-        if is_chalk:
-            chalk_count += 1
-
-    for row in no_odds:
-        if len(selected) >= TOP_N:
-            break
         team = str(row.get("batter_team", "UNK"))
         if team_counts.get(team, 0) >= MAX_PER_TEAM:
             continue
@@ -732,6 +719,10 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "hrrbi_over_odds":  "Over Odds",
         "hrrbi_under_odds": "Under Odds",
         "prop_signal":      "Signal",
+        "game_total":       "Game Total",
+        "opp_whip":         "Opp WHIP",
+        "opp_k_pct_season": "Opp K%",
+        "opp_bb_pct_season":"Opp BB%",
         "reason":           "Key Reasons",
         "confidence":       "Confidence",
     }
@@ -781,7 +772,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-    col_widths = [45, 160, 55, 160, 55, 80, 85, 150, 320, 90]
+    col_widths = [45, 160, 55, 160, 55, 80, 85, 150, 80, 80, 65, 65, 320, 90]
     for i, w in enumerate(col_widths[:n_cols]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -896,21 +887,24 @@ def main() -> None:
     gc       = get_gspread_client()
 
     print("Reading HRRBI data from Google Sheets...")
-    batters  = read_sheet(gc, sheet_id, "HRRBI_Statcast")
+    batters     = read_sheet(gc, sheet_id, "HRRBI_Statcast")
     time.sleep(3)
-    pitchers = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
+    pitchers    = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
     time.sleep(3)
-    parks    = read_sheet(gc, sheet_id, "Park_Factors")
+    parks       = read_sheet(gc, sheet_id, "Park_Factors")
     time.sleep(3)
-    weather  = read_sheet(gc, sheet_id, "Weather")
+    weather     = read_sheet(gc, sheet_id, "Weather")
     time.sleep(3)
-    odds_df  = read_sheet(gc, sheet_id, "HRRBI_Odds")
+    odds_df     = read_sheet(gc, sheet_id, "HRRBI_Odds")
+    time.sleep(3)
+    game_totals = read_sheet(gc, sheet_id, "Game_Totals")
 
     print(f"Batters: {len(batters)} rows")
     print(f"Pitchers: {len(pitchers)} rows")
     print(f"Parks: {len(parks)} rows")
     print(f"Weather: {len(weather)} rows")
     print(f"HRRBI Odds: {len(odds_df)} rows")
+    print(f"Game Totals: {len(game_totals)} rows")
 
     if not odds_df.empty and "player_name" in odds_df.columns:
         odds_df["player_name_norm"] = odds_df["player_name"].apply(normalize_name)
@@ -919,7 +913,7 @@ def main() -> None:
     game_times = get_todays_game_times()
     print(f"  Found {len(game_times)} game times")
 
-    combined = prepare_combined(batters, pitchers, parks, weather, odds_df, game_times)
+    combined = prepare_combined(batters, pitchers, parks, weather, odds_df, game_totals, game_times)
 
     if combined.empty:
         print("WARNING: No combined H+R+RBI data.")
@@ -932,7 +926,8 @@ def main() -> None:
         return
 
     print(f"\nTop {len(picks)} H+R+RBI Picks:")
-    print(picks[["rank", "player_name", "batter_team", "hrrbi_score", "confidence", "momentum_score"]].to_string(index=False))
+    print(picks[["rank", "player_name", "batter_team", "hrrbi_score", "confidence",
+                 "momentum_score", "prop_signal", "game_total"]].to_string(index=False))
 
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
