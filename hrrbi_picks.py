@@ -923,7 +923,16 @@ def main() -> None:
     picks = apply_diversity_cap(combined)
 
     if picks.empty:
-        print("WARNING: No H+R+RBI picks generated.")
+        print("WARNING: No H+R+RBI picks generated — clearing sheet.")
+        sh = with_retry(lambda: gc.open_by_key(sheet_id))
+        try:
+            ws = sh.worksheet("Top_HRRBI_Picks")
+            ws.clear()
+            et     = pytz.timezone("America/New_York")
+            now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+            with_retry(lambda: ws.update([[f"⏱  Last Run: {now_et} — No signals today"]]))
+        except Exception:
+            pass
         return
 
     print(f"\nTop {len(picks)} H+R+RBI Picks:")
