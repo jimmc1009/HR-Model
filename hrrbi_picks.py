@@ -436,8 +436,6 @@ def calc_prop_signal(row: pd.Series) -> str:
     score     = safe_float(row.get("hrrbi_score", 0))
     over_odds = safe_float(row.get("hrrbi_over_odds", -999), -999)
     
-    print(f"  DEBUG signal: {row.get('player_name','')} line={line} score={score} odds={over_odds}")
-
 
     if line <= 0:
         return "—"
