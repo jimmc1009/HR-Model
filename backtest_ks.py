@@ -228,9 +228,12 @@ def compute_ks_score(pitcher: pd.Series, as_of_date: str) -> tuple:
     Compute KS score for a pitcher as of a given date.
     Returns (ks_score, projected_k, confidence)
     """
-    ip         = safe_float(pitcher.get("ip", 0))
+    ip         = safe_float(pitcher.get("ks_ip", 0))
     gs         = safe_float(pitcher.get("games_started", 0))
     bf         = safe_float(pitcher.get("bf", 0))
+    if bf == 0:
+        # estimate from ks_ip
+        bf = ip * 4.3
     k_pct      = safe_float(pitcher.get("k_pct_season", 0))
     bb_pct     = safe_float(pitcher.get("bb_pct_season", 0))
     swstr      = safe_float(pitcher.get("swstr_pct", 0))
