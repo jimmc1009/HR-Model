@@ -338,24 +338,6 @@ def calc_signal(score: float, proj_k: float, line: float) -> str:
     return "—"
 
 
-# ── Statcast data pull ────────────────────────────────────────────────────
-
-def pull_statcast_season(start: str, end: str) -> pd.DataFrame:
-    print(f"Pulling Statcast pitcher data {start} to {end}...")
-    try:
-        pybaseball.cache.enable()
-        df = pybaseball.pitching_stats(
-            int(start[:4]),
-            int(end[:4]),
-            qual=1,
-            ind=1,
-        )
-        print(f"  Pulled {len(df)} pitcher seasons")
-        return df
-    except Exception as e:
-        print(f"  WARNING: Could not pull Statcast data: {e}")
-        return pd.DataFrame()
-
 
 # ── Main backtest ─────────────────────────────────────────────────────────
 
@@ -371,23 +353,27 @@ def run_backtest(api_key: str, sheet_id: str, gc: gspread.Client) -> None:
 
     print(f"Backtesting {len(dates)} dates from {START_DATE} to {END_DATE}")
 
-    # Pull full season Statcast once
-    statcast_df = pull_statcast_season(START_DATE, END_DATE)
+    # Read pitcher stats from existing sheet
+    print("Reading pitcher stats from Pitcher_Statcast_2026 sheet...")
+    try:
+        sh          = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws          = sh.worksheet("Pitcher_Statcast_2026")
+        data        = with_retry(lambda: ws.get_all_records())
+        statcast_df = pd.DataFrame(data)
+        print(f"  Loaded {len(statcast_df)} pitchers")
+    except Exception as e:
+        print(f"ERROR: Could not read Pitcher_Statcast_2026: {e}")
+        return
+
     if statcast_df.empty:
         print("ERROR: No Statcast data — cannot backtest.")
         return
 
-    # Normalize pitcher names
-    name_col = None
-    for col in ["Name", "name", "player_name", "PlayerName"]:
-        if col in statcast_df.columns:
-            name_col = col
-            break
-    if not name_col:
-        print(f"ERROR: Cannot find name column. Columns: {statcast_df.columns.tolist()}")
+    if "pitcher_name" in statcast_df.columns:
+        statcast_df["pitcher_norm"] = statcast_df["pitcher_name"].apply(normalize_name)
+    else:
+        print(f"ERROR: No pitcher_name column. Columns: {statcast_df.columns.tolist()}")
         return
-
-    statcast_df["pitcher_norm"] = statcast_df[name_col].apply(normalize_name)
 
     all_results = []
 
