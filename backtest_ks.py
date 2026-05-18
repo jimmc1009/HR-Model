@@ -27,7 +27,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-START_DATE    = "2025-03-31"
+START_DATE    = "2026-03-31"
 END_DATE      = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 SNAPSHOT_TIME = "T11:00:00Z"  # 11 AM UTC = ~7 AM ET, before most games start
 
