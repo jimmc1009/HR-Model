@@ -27,7 +27,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-START_DATE    = "2026-03-31"
+START_DATE    = "2026-05-15"
 END_DATE      = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 SNAPSHOT_TIME = "T11:00:00Z"  # 11 AM UTC = ~7 AM ET, before most games start
 
@@ -377,6 +377,16 @@ def run_backtest(api_key: str, sheet_id: str, gc: gspread.Client) -> None:
     else:
         print(f"ERROR: No pitcher_name column. Columns: {statcast_df.columns.tolist()}")
         return
+
+    # Debug — check first pitcher's key columns
+    if not statcast_df.empty:
+        sample = statcast_df.iloc[0]
+        print(f"Sample pitcher: {sample.get('pitcher_name', 'N/A')}")
+        print(f"  ks_ip: {sample.get('ks_ip', 'MISSING')}")
+        print(f"  games_started: {sample.get('games_started', 'MISSING')}")
+        print(f"  k_pct_season: {sample.get('k_pct_season', 'MISSING')}")
+        print(f"  swstr_pct: {sample.get('swstr_pct', 'MISSING')}")
+        print(f"  bf: {sample.get('bf', 'MISSING')}")
 
     all_results = []
 
