@@ -28,8 +28,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-START_DATE    = "2026-03-31"
-END_DATE      = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+START_DATE    = "2026-04-05"
+END_DATE      = "2026-04-06"
 SNAPSHOT_TIME = "T14:00:00Z"  # 10 AM ET — before most games start
 
 EXCLUDED_BOOKS = {"fliff", "espnbet"}
@@ -529,6 +529,11 @@ def run_backtest(api_key: str, sheet_id: str, gc: gspread.Client) -> None:
             continue
 
         print(f"  Computed stats for {len(pitcher_stats)} pitchers as of {game_date}")
+        if not pitcher_stats.empty and game_date == "2026-04-05":
+            sample = pitcher_stats.iloc[0]
+            print(f"  SAMPLE: {sample.get('pitcher_name')} ip={sample.get('ks_ip')} gs={sample.get('games_started')} k_pct={sample.get('k_pct_season')} swstr={sample.get('swstr_pct')} bf={sample.get('bf')}")
+            score, proj, conf = compute_ks_score(sample)
+            print(f"  SCORE: {score} proj={proj} conf={conf}")
 
         # Get historical events
         events = get_historical_events(api_key, game_date)
