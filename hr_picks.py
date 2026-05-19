@@ -950,7 +950,9 @@ def apply_odds_diversity_cap(
     selected           = []
     chalk_count        = 0
     team_counts        = {}
+    game_counts        = {}
     no_odds_candidates = []
+
 
     # Pass 1 — players with odds data
     for _, row in sorted_df.iterrows():
