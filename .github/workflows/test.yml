@@ -19,7 +19,6 @@ on:
           - weather
           - odds
           - hr_picks
-          - backtest
           - hrrbi_statcast
           - hrrbi_picks
           - ks_statcast
