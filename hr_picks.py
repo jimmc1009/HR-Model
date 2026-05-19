@@ -971,14 +971,20 @@ def apply_odds_diversity_cap(
         if team_count >= MAX_PER_TEAM:
             continue
 
-        is_chalk = consensus_odds <= CHALK_ODDS_THRESHOLD
+                is_chalk = consensus_odds <= CHALK_ODDS_THRESHOLD
         if is_chalk and chalk_count >= MAX_CHALK_PICKS:
+            continue
+
+        home_team = str(row.get("home_team", row.get("away_team", "UNK")))
+        if game_counts.get(home_team, 0) >= MAX_PER_GAME:
             continue
 
         selected.append(row)
         team_counts[team] = team_count + 1
+        game_counts[home_team] = game_counts.get(home_team, 0) + 1
         if is_chalk:
             chalk_count += 1
+
 
     # Pass 2 — fill remaining slots with no-odds players
     if len(selected) < 10:
