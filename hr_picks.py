@@ -42,6 +42,7 @@ BVP_WEIGHT           = 0.9
 
 MIN_BATTING_AVG      = 0.200
 MAX_PER_TEAM         = 2
+MAX_PER_GAME = 2
 MAX_CHALK_PICKS      = 3
 CHALK_ODDS_THRESHOLD = 310
 MIN_START_RATE       = 0.40
@@ -941,14 +942,10 @@ def apply_odds_diversity_cap(
     sorted_df: pd.DataFrame,
     odds_lookup: dict,
 ) -> pd.DataFrame:
-    """
-    Apply chalk cap and deprioritize players with no odds data.
-    Pass 1 — players WITH odds data, chalk cap enforced
-    Pass 2 — players WITHOUT odds data fill remaining slots
-    """
     selected           = []
     chalk_count        = 0
     team_counts        = {}
+    game_counts        = {}
     no_odds_candidates = []
 
     # Pass 1 — players with odds data
@@ -972,8 +969,13 @@ def apply_odds_diversity_cap(
         if is_chalk and chalk_count >= MAX_CHALK_PICKS:
             continue
 
+        home_team = str(row.get("home_team", row.get("away_team", "UNK")))
+        if game_counts.get(home_team, 0) >= MAX_PER_GAME:
+            continue
+
         selected.append(row)
         team_counts[team] = team_count + 1
+        game_counts[home_team] = game_counts.get(home_team, 0) + 1
         if is_chalk:
             chalk_count += 1
 
@@ -1008,6 +1010,7 @@ def apply_odds_diversity_cap(
         axis=1
     )
     return result
+
 
 
 def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd.DataFrame:
