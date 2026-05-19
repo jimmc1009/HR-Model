@@ -942,17 +942,11 @@ def apply_odds_diversity_cap(
     sorted_df: pd.DataFrame,
     odds_lookup: dict,
 ) -> pd.DataFrame:
-    """
-    Apply chalk cap and deprioritize players with no odds data.
-    Pass 1 — players WITH odds data, chalk cap enforced
-    Pass 2 — players WITHOUT odds data fill remaining slots
-    """
     selected           = []
     chalk_count        = 0
     team_counts        = {}
     game_counts        = {}
     no_odds_candidates = []
-
 
     # Pass 1 — players with odds data
     for _, row in sorted_df.iterrows():
@@ -971,20 +965,19 @@ def apply_odds_diversity_cap(
         if team_count >= MAX_PER_TEAM:
             continue
 
-    is_chalk = consensus_odds <= CHALK_ODDS_THRESHOLD
-            if is_chalk and chalk_count >= MAX_CHALK_PICKS:
-                continue
+        is_chalk = consensus_odds <= CHALK_ODDS_THRESHOLD
+        if is_chalk and chalk_count >= MAX_CHALK_PICKS:
+            continue
 
-            home_team = str(row.get("home_team", row.get("away_team", "UNK")))
-            if game_counts.get(home_team, 0) >= MAX_PER_GAME:
-                continue
+        home_team = str(row.get("home_team", row.get("away_team", "UNK")))
+        if game_counts.get(home_team, 0) >= MAX_PER_GAME:
+            continue
 
-            selected.append(row)
-            team_counts[team] = team_count + 1
-            game_counts[home_team] = game_counts.get(home_team, 0) + 1
-            if is_chalk:
-                chalk_count += 1
-
+        selected.append(row)
+        team_counts[team] = team_count + 1
+        game_counts[home_team] = game_counts.get(home_team, 0) + 1
+        if is_chalk:
+            chalk_count += 1
 
     # Pass 2 — fill remaining slots with no-odds players
     if len(selected) < 10:
@@ -1017,6 +1010,7 @@ def apply_odds_diversity_cap(
         axis=1
     )
     return result
+
 
 
 def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd.DataFrame:
