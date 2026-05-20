@@ -1050,19 +1050,6 @@ def main() -> None:
     else:
         print("No active roster data to write.")
 
-    # ── Projected lineups (RotoWire) ───────────────────────────────
-    print("Scraping RotoWire projected lineups...")
-    roto_lineups = scrape_rotowire_lineups()
-    if roto_lineups:
-        projected_df = match_lineup_player_ids(roto_lineups)
-        if not projected_df.empty:
-            write_dataframe_to_sheet(gc, sheet_id, "Projected_Lineups", projected_df)
-            print(f"Written {len(projected_df)} projected lineup rows to Projected_Lineups")
-        else:
-            print("Could not match projected lineup player IDs.")
-    else:
-        print("No projected lineups scraped — Projected_Lineups not updated.")
-
     # ── Confirmed lineups ──────────────────────────────────────────
     print("Fetching confirmed lineups...")
     lineups = get_today_confirmed_lineups()
