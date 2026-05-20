@@ -151,10 +151,6 @@ def get_season_statcast() -> pd.DataFrame:
 
 
 def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
-    """
-    Scrape RotoWire projected lineups using BeautifulSoup.
-    Returns dict of mlb_team_abbr -> list of {batting_order, player_name}
-    """
     from bs4 import BeautifulSoup
 
     lineups = {}
@@ -177,53 +173,26 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         game_boxes = soup.find_all("div", class_="lineup__box")
         print(f"RotoWire: found {len(game_boxes)} game boxes")
 
-        for box in game_boxes:
-            team_divs = box.find_all("div", class_="lineup__mteam")
-
-            for team_div in team_divs:
-                abbr_tag = team_div.find(class_="lineup__abbr")
-                if not abbr_tag:
-                    continue
-                abbr     = abbr_tag.get_text(strip=True)
-                mlb_abbr = ROTOWIRE_TO_MLB.get(abbr, abbr)
-
-                main_div = team_div.find(class_="lineup__main")
-                if not main_div:
-                    continue
-
-                players     = []
-                player_divs = main_div.find_all(class_="lineup__player-highlight-name")
-
-                if player_divs:
-                    for i, name_div in enumerate(player_divs[:9], 1):
-                        link = name_div.find("a")
-                        name = link.get_text(strip=True) if link else name_div.get_text(strip=True)
-                        if name and len(name) > 3 and " " in name:
-                            players.append({"batting_order": i, "player_name": name})
-                else:
-                    links = main_div.find_all("a")
-                    for i, link in enumerate(links[:9], 1):
-                        name = link.get_text(strip=True)
-                        if name and len(name) > 3 and " " in name:
-                            players.append({"batting_order": i, "player_name": name})
-
-                if len(players) >= 7:
-                    lineups[mlb_abbr] = players
-
-        if lineups:
-            print(f"RotoWire: scraped lineups for {len(lineups)} teams: {sorted(lineups.keys())}")
-        else:
-            print("RotoWire: no lineups found — page structure may have changed")
+        # DEBUG — inspect first box only
+        if game_boxes:
+            first_box  = game_boxes[0]
+            team_divs  = first_box.find_all("div", class_="lineup__mteam")
+            print(f"DEBUG: found {len(team_divs)} mteam divs in first box")
+            if team_divs:
+                first_team = team_divs[0]
+                inner = set()
+                for tag in first_team.find_all(class_=True):
+                    for cls in tag.get("class", []):
+                        inner.add(cls)
+                print(f"DEBUG mteam inner classes: {sorted(inner)}")
+                print(f"DEBUG mteam text: {first_team.get_text(separator='|', strip=True)[:400]}")
 
     except ImportError:
-        print("RotoWire scrape failed: beautifulsoup4 not installed — run: pip install beautifulsoup4")
+        print("RotoWire scrape failed: beautifulsoup4 not installed")
     except Exception as e:
         print(f"RotoWire scrape failed: {e}")
 
     return lineups
-
-
-
 
 
 def match_lineup_player_ids(lineups: Dict[str, List[dict]]) -> pd.DataFrame:
