@@ -4,3 +4,5 @@ gspread
 google-auth
 requests
 pytz
+beautifulsoup4>=4.12.0
+
