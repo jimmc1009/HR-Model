@@ -173,35 +173,30 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        
-        # DEBUG — find all div classes containing "lineup"
-            lineup_divs = soup.find_all("div", class_=True)
-            lineup_classes = set()
-            for div in lineup_divs:
-                for cls in div.get("class", []):
-                    if "lineup" in cls.lower():
-                        lineup_classes.add(cls)
-            print(f"DEBUG lineup classes found: {sorted(lineup_classes)[:20]}")
 
+        # DEBUG — find all div classes containing "lineup"
+        lineup_classes = set()
+        for div in soup.find_all("div", class_=True):
+            for cls in div.get("class", []):
+                if "lineup" in cls.lower():
+                    lineup_classes.add(cls)
+        print(f"DEBUG lineup classes found: {sorted(lineup_classes)[:20]}")
 
         # Each game is a lineup__game div containing two lineup__team divs
         game_divs = soup.find_all("div", class_=lambda c: c and "lineup__game" in c)
 
         if not game_divs:
-            # Fallback — find all lineup__team divs directly
             game_divs = [soup]
 
         for game in game_divs:
             team_divs = game.find_all("div", class_=lambda c: c and "lineup__team" in c)
             for team_div in team_divs:
-                # Get team abbreviation
                 abbr_tag = team_div.find(class_=lambda c: c and "lineup__abbr" in c)
                 if not abbr_tag:
                     continue
                 abbr     = abbr_tag.get_text(strip=True)
                 mlb_abbr = ROTOWIRE_TO_MLB.get(abbr, abbr)
 
-                # Get player list
                 list_div = team_div.find("ul", class_=lambda c: c and "lineup__list" in c)
                 if not list_div:
                     continue
@@ -234,6 +229,7 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         print(f"RotoWire scrape failed: {e}")
 
     return lineups
+
 
 
 def match_lineup_player_ids(lineups: Dict[str, List[dict]]) -> pd.DataFrame:
