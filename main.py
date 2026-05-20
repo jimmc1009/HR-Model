@@ -178,9 +178,24 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         game_boxes = soup.find_all("div", class_="lineup__box")
         print(f"RotoWire: found {len(game_boxes)} game boxes")
 
+        # DEBUG — print classes of all direct children of first box
+        if game_boxes:
+            first_box = game_boxes[0]
+            child_classes = []
+            for child in first_box.find_all(True, recursive=False):
+                child_classes.append((child.name, child.get("class", [])))
+            print(f"DEBUG first box children: {child_classes[:15]}")
+
+            # Also print all classes inside first box
+            inner_classes = set()
+            for tag in first_box.find_all(class_=True):
+                for cls in tag.get("class", []):
+                    inner_classes.add(cls)
+            print(f"DEBUG first box inner classes: {sorted(inner_classes)}")
+
         for box in game_boxes:
             # Each team is a lineup__mteam div
-            team_divs = box.find_all("div", class_="lineup__mteam")
+            team_divs = box.find_all("div", class
 
             for team_div in team_divs:
                 # Team abbreviation
