@@ -174,57 +174,36 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Each game block is a lineup__box div
         game_boxes = soup.find_all("div", class_="lineup__box")
         print(f"RotoWire: found {len(game_boxes)} game boxes")
 
-        # DEBUG — print classes of all direct children of first box
-        if game_boxes:
-            first_box = game_boxes[0]
-            child_classes = []
-            for child in first_box.find_all(True, recursive=False):
-                child_classes.append((child.name, child.get("class", [])))
-            print(f"DEBUG first box children: {child_classes[:15]}")
-
-            # Also print all classes inside first box
-            inner_classes = set()
-            for tag in first_box.find_all(class_=True):
-                for cls in tag.get("class", []):
-                    inner_classes.add(cls)
-            print(f"DEBUG first box inner classes: {sorted(inner_classes)}")
-
         for box in game_boxes:
-            # Each team is a lineup__mteam div
-            team_divs = box.find_all("div", class
+            team_divs = box.find_all("div", class_="lineup__mteam")
 
             for team_div in team_divs:
-                # Team abbreviation
                 abbr_tag = team_div.find(class_="lineup__abbr")
                 if not abbr_tag:
                     continue
                 abbr     = abbr_tag.get_text(strip=True)
                 mlb_abbr = ROTOWIRE_TO_MLB.get(abbr, abbr)
 
-                # Player list is in lineup__main
                 main_div = team_div.find(class_="lineup__main")
                 if not main_div:
                     continue
 
-                players  = []
-                # Each player row
+                players     = []
                 player_divs = main_div.find_all(class_="lineup__player-highlight-name")
 
-                if not player_divs:
-                    # Try finding any anchor tags inside lineup__main
-                    links = main_div.find_all("a")
-                    for i, link in enumerate(links[:9], 1):
-                        name = link.get_text(strip=True)
-                        if name and len(name) > 3 and " " in name:
-                            players.append({"batting_order": i, "player_name": name})
-                else:
+                if player_divs:
                     for i, name_div in enumerate(player_divs[:9], 1):
                         link = name_div.find("a")
                         name = link.get_text(strip=True) if link else name_div.get_text(strip=True)
+                        if name and len(name) > 3 and " " in name:
+                            players.append({"batting_order": i, "player_name": name})
+                else:
+                    links = main_div.find_all("a")
+                    for i, link in enumerate(links[:9], 1):
+                        name = link.get_text(strip=True)
                         if name and len(name) > 3 and " " in name:
                             players.append({"batting_order": i, "player_name": name})
 
@@ -242,6 +221,7 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         print(f"RotoWire scrape failed: {e}")
 
     return lineups
+
 
 
 
