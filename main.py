@@ -152,10 +152,10 @@ def get_season_statcast() -> pd.DataFrame:
 
 def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
     """
-    Scrape RotoWire projected lineups.
+    Scrape RotoWire projected lineups using BeautifulSoup.
     Returns dict of mlb_team_abbr -> list of {batting_order, player_name}
     """
-    import re
+    from bs4 import BeautifulSoup
 
     lineups = {}
     try:
@@ -172,72 +172,54 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
             timeout=20,
         )
         resp.raise_for_status()
-        html = resp.text
+        soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Each game block contains two team lineup sections
-        # Pattern: find team abbreviation then the ordered player list
-        game_blocks = re.findall(
-            r'<div[^>]*class="[^"]*lineup__team[^"]*"[^>]*>(.*?)</div>\s*'
-            r'<div[^>]*class="[^"]*lineup__team[^"]*"[^>]*>',
-            html, re.DOTALL
-        )
+        # Each game is a lineup__game div containing two lineup__team divs
+        game_divs = soup.find_all("div", class_=lambda c: c and "lineup__game" in c)
 
-        # Primary pattern — find abbr + player list pairs
-        abbr_pattern   = re.compile(r'class="lineup__abbr"[^>]*>([A-Z]{2,3})<', re.DOTALL)
-        player_pattern = re.compile(
-            r'class="[^"]*lineup__player[^"]*"[^>]*>\s*<a[^>]*>([^<]+)</a>',
-            re.DOTALL
-        )
+        if not game_divs:
+            # Fallback — find all lineup__team divs directly
+            game_divs = [soup]
 
-        # Split HTML into per-team sections by lineup__list blocks
-        # Find all (abbr, lineup_list_html) pairs
-        sections = re.findall(
-            r'class="lineup__abbr"[^>]*>([A-Z]{2,3})</[^>]+>'
-            r'(?:(?!class="lineup__abbr").)*?'
-            r'class="lineup__list[^"]*"[^>]*>(.*?)</ul>',
-            html, re.DOTALL
-        )
+        for game in game_divs:
+            team_divs = game.find_all("div", class_=lambda c: c and "lineup__team" in c)
+            for team_div in team_divs:
+                # Get team abbreviation
+                abbr_tag = team_div.find(class_=lambda c: c and "lineup__abbr" in c)
+                if not abbr_tag:
+                    continue
+                abbr     = abbr_tag.get_text(strip=True)
+                mlb_abbr = ROTOWIRE_TO_MLB.get(abbr, abbr)
 
-        if not sections:
-            # Fallback — broader pattern
-            sections = re.findall(
-                r'lineup__abbr["\s][^>]*>([A-Z]{2,3})<.*?'
-                r'lineup__list[^>]*>(.*?)</ul>',
-                html, re.DOTALL
-            )
+                # Get player list
+                list_div = team_div.find("ul", class_=lambda c: c and "lineup__list" in c)
+                if not list_div:
+                    continue
 
-        for abbr, list_html in sections:
-            mlb_abbr = ROTOWIRE_TO_MLB.get(abbr.strip(), abbr.strip())
+                players     = []
+                player_tags = list_div.find_all("li", class_=lambda c: c and "lineup__player" in c)
 
-            # Extract player names from list items
-            players = re.findall(
-                r'<a[^>]*>([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)</a>',
-                list_html
-            )
-
-            if not players:
-                players = re.findall(
-                    r'lineup__player[^>]*>\s*<a[^>]*>([^<]{4,30})</a>',
-                    list_html
-                )
-
-            if players:
-                lineup_list = []
-                for i, name in enumerate(players[:9], 1):
-                    name = name.strip()
+                for i, li in enumerate(player_tags[:9], 1):
+                    link = li.find("a")
+                    if not link:
+                        continue
+                    name = link.get_text(strip=True)
                     if name and len(name) > 3 and " " in name:
-                        lineup_list.append({
+                        players.append({
                             "batting_order": i,
                             "player_name":   name,
                         })
-                if len(lineup_list) >= 7:
-                    lineups[mlb_abbr] = lineup_list
+
+                if len(players) >= 7:
+                    lineups[mlb_abbr] = players
 
         if lineups:
             print(f"RotoWire: scraped lineups for {len(lineups)} teams: {sorted(lineups.keys())}")
         else:
-            print("RotoWire: no lineups found in page — structure may have changed")
+            print("RotoWire: no lineups found — page structure may have changed")
 
+    except ImportError:
+        print("RotoWire scrape failed: beautifulsoup4 not installed — run: pip install beautifulsoup4")
     except Exception as e:
         print(f"RotoWire scrape failed: {e}")
 
