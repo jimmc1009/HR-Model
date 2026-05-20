@@ -1,5 +1,7 @@
 import os
 import json
+import time
+import unicodedata
 from datetime import date, timedelta
 from typing import Dict, List, Set, Tuple
 
@@ -31,6 +33,17 @@ ESPN_TO_MLB = {
     "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
     "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
     "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
+
+ROTOWIRE_TO_MLB = {
+    "ARI": "AZ",  "ATL": "ATL", "BAL": "BAL", "BOS": "BOS",
+    "CHC": "CHC", "CWS": "CWS", "CIN": "CIN", "CLE": "CLE",
+    "COL": "COL", "DET": "DET", "HOU": "HOU", "KC":  "KC",
+    "LAA": "LAA", "LAD": "LAD", "MIA": "MIA", "MIL": "MIL",
+    "MIN": "MIN", "NYM": "NYM", "NYY": "NYY", "OAK": "ATH",
+    "PHI": "PHI", "PIT": "PIT", "SD":  "SD",  "SF":  "SF",
+    "SEA": "SEA", "STL": "STL", "TB":  "TB",  "TEX": "TEX",
+    "TOR": "TOR", "WSH": "WSH",
 }
 
 PITCH_GROUP_MAP = {
@@ -137,6 +150,150 @@ def get_season_statcast() -> pd.DataFrame:
     return combined
 
 
+def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
+    """
+    Scrape RotoWire projected lineups.
+    Returns dict of mlb_team_abbr -> list of {batting_order, player_name}
+    """
+    import re
+
+    lineups = {}
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(
+            "https://www.rotowire.com/baseball/daily-lineups.php",
+            headers=headers,
+            timeout=20,
+        )
+        resp.raise_for_status()
+        html = resp.text
+
+        # Each game block contains two team lineup sections
+        # Pattern: find team abbreviation then the ordered player list
+        game_blocks = re.findall(
+            r'<div[^>]*class="[^"]*lineup__team[^"]*"[^>]*>(.*?)</div>\s*'
+            r'<div[^>]*class="[^"]*lineup__team[^"]*"[^>]*>',
+            html, re.DOTALL
+        )
+
+        # Primary pattern — find abbr + player list pairs
+        abbr_pattern   = re.compile(r'class="lineup__abbr"[^>]*>([A-Z]{2,3})<', re.DOTALL)
+        player_pattern = re.compile(
+            r'class="[^"]*lineup__player[^"]*"[^>]*>\s*<a[^>]*>([^<]+)</a>',
+            re.DOTALL
+        )
+
+        # Split HTML into per-team sections by lineup__list blocks
+        # Find all (abbr, lineup_list_html) pairs
+        sections = re.findall(
+            r'class="lineup__abbr"[^>]*>([A-Z]{2,3})</[^>]+>'
+            r'(?:(?!class="lineup__abbr").)*?'
+            r'class="lineup__list[^"]*"[^>]*>(.*?)</ul>',
+            html, re.DOTALL
+        )
+
+        if not sections:
+            # Fallback — broader pattern
+            sections = re.findall(
+                r'lineup__abbr["\s][^>]*>([A-Z]{2,3})<.*?'
+                r'lineup__list[^>]*>(.*?)</ul>',
+                html, re.DOTALL
+            )
+
+        for abbr, list_html in sections:
+            mlb_abbr = ROTOWIRE_TO_MLB.get(abbr.strip(), abbr.strip())
+
+            # Extract player names from list items
+            players = re.findall(
+                r'<a[^>]*>([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)</a>',
+                list_html
+            )
+
+            if not players:
+                players = re.findall(
+                    r'lineup__player[^>]*>\s*<a[^>]*>([^<]{4,30})</a>',
+                    list_html
+                )
+
+            if players:
+                lineup_list = []
+                for i, name in enumerate(players[:9], 1):
+                    name = name.strip()
+                    if name and len(name) > 3 and " " in name:
+                        lineup_list.append({
+                            "batting_order": i,
+                            "player_name":   name,
+                        })
+                if len(lineup_list) >= 7:
+                    lineups[mlb_abbr] = lineup_list
+
+        if lineups:
+            print(f"RotoWire: scraped lineups for {len(lineups)} teams: {sorted(lineups.keys())}")
+        else:
+            print("RotoWire: no lineups found in page — structure may have changed")
+
+    except Exception as e:
+        print(f"RotoWire scrape failed: {e}")
+
+    return lineups
+
+
+def match_lineup_player_ids(lineups: Dict[str, List[dict]]) -> pd.DataFrame:
+    """
+    Match RotoWire player names to MLB player IDs using the MLB Stats API.
+    Batches lookups to minimize API calls.
+    Returns DataFrame: team | batting_order | player_name | player_id
+    """
+    if not lineups:
+        return pd.DataFrame()
+
+    # Collect unique names
+    all_names = set()
+    for players in lineups.values():
+        for p in players:
+            all_names.add(p["player_name"].strip())
+
+    # Look up each name via MLB Stats API people search
+    name_to_id: Dict[str, int] = {}
+    for name in sorted(all_names):
+        try:
+            resp = requests.get(
+                "https://statsapi.mlb.com/api/v1/people/search",
+                params={"names": name, "sportId": 1, "season": 2026},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                people = resp.json().get("people", [])
+                if people:
+                    # Take the first active match
+                    name_to_id[name] = int(people[0].get("id", 0))
+            time.sleep(0.15)
+        except Exception:
+            pass
+
+    print(f"RotoWire: matched {len(name_to_id)}/{len(all_names)} player names to MLB IDs")
+
+    rows = []
+    for team, players in lineups.items():
+        for p in players:
+            name      = p["player_name"].strip()
+            player_id = name_to_id.get(name, "")
+            rows.append({
+                "team":          team,
+                "batting_order": p["batting_order"],
+                "player_name":   name,
+                "player_id":     player_id,
+            })
+
+    return pd.DataFrame(rows)
+
+
 def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     today_str = date.today().strftime("%Y-%m-%d")
     lineups: Dict[str, Set[int]] = {}
@@ -239,7 +396,7 @@ def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
                         if player_ids:
                             lineups[abbr] = player_ids
 
-            except Exception as e:
+            except Exception:
                 continue
 
         if lineups:
@@ -369,7 +526,6 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["pitch_group"] = "other"
 
-    # Launch angle buckets for HRRBI
     df["is_ld"] = df["launch_angle"].between(10, 25).fillna(False).astype(int) if "launch_angle" in df.columns else 0
     df["is_gb"] = (df["launch_angle"] < 10).fillna(False).astype(int) if "launch_angle" in df.columns else 0
 
@@ -467,15 +623,9 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute additional batter metrics needed by the HRRBI model.
-    These are added to Batter_Statcast_2026 to avoid a separate Statcast pull.
-    Returns a df keyed on batter ID with extra columns.
-    """
     if df.empty:
         return pd.DataFrame()
 
-    # ── PA-level data ──────────────────────────────────────────────
     pa_df = df[df["events"].astype("string").str.lower().isin(PA_EVENTS)].copy()
     pa_df = pa_df.drop_duplicates(
         subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
@@ -495,7 +645,6 @@ def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     pa_df["tb"]       = pa_df["events"].astype("string").str.lower().map(TB_MAP).fillna(0)
     pa_df["woba_val"] = pa_df["events"].astype("string").str.lower().map(WOBA_WEIGHTS).fillna(0)
 
-    # ── Season PA agg ──────────────────────────────────────────────
     pa_counts = pa_df.groupby("batter").agg(
         hrrbi_pa=("is_hit", "count"),
         hrrbi_hits=("is_hit", "sum"),
@@ -517,7 +666,6 @@ def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     result["bb_pct"] = (result["hrrbi_bb"] / result["hrrbi_pa"].replace(0, np.nan) * 100).round(1)
     result["k_pct"]  = (result["hrrbi_k"]  / result["hrrbi_pa"].replace(0, np.nan) * 100).round(1)
 
-    # ── LD%, GB%, FB% from BBE ─────────────────────────────────────
     bbe = filter_bbe(df)
     if not bbe.empty:
         bbe = add_flags(bbe)
@@ -535,7 +683,6 @@ def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
         result["gb_pct"] = 0.0
         result["fb_pct"] = 0.0
 
-    # ── Batting order ──────────────────────────────────────────────
     if "bat_order" in pa_df.columns:
         bat_order = (
             pa_df.groupby("batter")["bat_order"]
@@ -547,7 +694,6 @@ def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         result["avg_bat_order"] = 5.0
 
-    # ── 14-day rolling avg ─────────────────────────────────────────
     cutoff_14d = pd.Timestamp(date.today() - timedelta(days=14))
     pa_14d     = pa_df[pa_df["game_date"] >= cutoff_14d].copy()
     pa_14d_agg = pa_14d.groupby("batter").agg(
@@ -557,14 +703,11 @@ def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     pa_14d_agg["avg_14d"] = (pa_14d_agg["hits_14d"] / pa_14d_agg["pa_14d"].replace(0, np.nan)).round(3)
     result = result.merge(pa_14d_agg, on="batter", how="left")
 
-    # ── Hot/cold flags ─────────────────────────────────────────────
     result["hot_streak"]  = ((result.get("avg_14d", 0) >= 0.320) & (result.get("pa_14d", 0) >= 20)).astype(int)
     result["cold_streak"] = ((result.get("avg_14d", 0) <= 0.180) & (result.get("pa_14d", 0) >= 20)).astype(int)
 
-    # Drop intermediate columns
     drop_cols = ["hrrbi_pa", "hrrbi_hits", "hrrbi_bb", "hrrbi_k", "hrrbi_ab", "hrrbi_tb", "woba_num"]
     result = result.drop(columns=[c for c in drop_cols if c in result.columns])
-
     result = result.rename(columns={"batter": "batter_id_hrrbi"})
     return result
 
@@ -701,14 +844,14 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
     season["ab"] = season["ab"].fillna(0)
     season["pa"] = season["pa"].fillna(0)
 
-    season["hr_per_pa"]         = (season["season_hr"] / season["pa"].replace(0, np.nan) * 100).round(2)
-    season["hr_per_fb"]         = (season["season_hr"] / season["season_fb"].replace(0, np.nan) * 100).round(2)
-    season["fb_rate"]           = (season["season_fb"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
-    season["season_barrel_pct"] = (season["season_barrel"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
-    season["iso"]               = ((season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)).round(3)
-    season["batting_avg"]       = (season["hits"] / season["ab"].replace(0, np.nan)).round(3)
-    season["pull_rate"]         = (season["pull_count"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
-    season["avg_launch_angle"]  = season["avg_launch_angle"].round(2)
+    season["hr_per_pa"]           = (season["season_hr"] / season["pa"].replace(0, np.nan) * 100).round(2)
+    season["hr_per_fb"]           = (season["season_hr"] / season["season_fb"].replace(0, np.nan) * 100).round(2)
+    season["fb_rate"]             = (season["season_fb"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
+    season["season_barrel_pct"]   = (season["season_barrel"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
+    season["iso"]                 = ((season["total_bases"] - season["hits"]) / season["ab"].replace(0, np.nan)).round(3)
+    season["batting_avg"]         = (season["hits"] / season["ab"].replace(0, np.nan)).round(3)
+    season["pull_rate"]           = (season["pull_count"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
+    season["avg_launch_angle"]    = season["avg_launch_angle"].round(2)
     season["hard_hit_pct_season"] = (season["season_hard_hit"] / season["season_bbe"].replace(0, np.nan) * 100).round(2)
 
     today = date.today()
@@ -1005,7 +1148,6 @@ def main() -> None:
         batter_df = batter_df[batter_df["player_name"] != ""].copy()
         batter_df = batter_df.rename(columns={"batter": "batter_id"})
 
-        # ── Handedness start rates ─────────────────────────────────
         print("Building handedness start rates...")
         start_rates = build_handedness_start_rates(raw_df)
         if not start_rates.empty:
@@ -1014,7 +1156,6 @@ def main() -> None:
             batter_df["rhp_start_rate"] = batter_df["rhp_start_rate"].fillna(0.5)
             print(f"Handedness start rates added for {len(start_rates)} batters")
 
-        # ── HRRBI extra features ───────────────────────────────────
         print("Building HRRBI extra features...")
         hrrbi_extra = build_hrrbi_extra_features(raw_df)
         if not hrrbi_extra.empty:
@@ -1052,6 +1193,19 @@ def main() -> None:
         print(f"Written {len(active_roster_ids)} active player IDs to Active_Rosters")
     else:
         print("No active roster data to write.")
+
+    # ── Projected lineups (RotoWire) ───────────────────────────────
+    print("Scraping RotoWire projected lineups...")
+    roto_lineups = scrape_rotowire_lineups()
+    if roto_lineups:
+        projected_df = match_lineup_player_ids(roto_lineups)
+        if not projected_df.empty:
+            write_dataframe_to_sheet(gc, sheet_id, "Projected_Lineups", projected_df)
+            print(f"Written {len(projected_df)} projected lineup rows to Projected_Lineups")
+        else:
+            print("Could not match projected lineup player IDs.")
+    else:
+        print("No projected lineups scraped — Projected_Lineups not updated.")
 
     # ── Confirmed lineups ──────────────────────────────────────────
     print("Fetching confirmed lineups...")
