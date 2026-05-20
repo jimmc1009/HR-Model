@@ -173,19 +173,47 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         game_boxes = soup.find_all("div", class_="lineup__box")
         print(f"RotoWire: found {len(game_boxes)} game boxes")
 
-        # DEBUG — inspect first box only
-        if game_boxes:
-            first_box  = game_boxes[0]
-            team_divs  = first_box.find_all("div", class_="lineup__mteam")
-            print(f"DEBUG: found {len(team_divs)} mteam divs in first box")
-            if team_divs:
-                first_team = team_divs[0]
-                inner = set()
-                for tag in first_team.find_all(class_=True):
-                    for cls in tag.get("class", []):
-                        inner.add(cls)
-                print(f"DEBUG mteam inner classes: {sorted(inner)}")
-                print(f"DEBUG mteam text: {first_team.get_text(separator='|', strip=True)[:400]}")
+        for box in game_boxes:
+            # Team names are in lineup__mteam, player lists are in lineup__main
+            # They are siblings inside lineup__box, ordered: away team, away lineup, home team, home lineup
+            mteam_divs = box.find_all("div", class_="lineup__mteam")
+            main_divs  = box.find_all("div", class_="lineup__main")
+
+            # Pair each team with its corresponding lineup
+            # mteam[0] = away team, main[0] = away lineup
+            # mteam[1] = home team, main[1] = home lineup
+            for i, (mteam, main) in enumerate(zip(mteam_divs, main_divs)):
+                # Get abbreviation from lineup__abbr inside the box
+                # Since abbr is not inside mteam, find all abbr tags in box
+                abbr_tags = box.find_all(class_="lineup__abbr")
+                if i >= len(abbr_tags):
+                    continue
+                abbr     = abbr_tags[i].get_text(strip=True)
+                mlb_abbr = ROTOWIRE_TO_MLB.get(abbr, abbr)
+
+                players     = []
+                player_divs = main.find_all(class_="lineup__player-highlight-name")
+
+                if player_divs:
+                    for j, name_div in enumerate(player_divs[:9], 1):
+                        link = name_div.find("a")
+                        name = link.get_text(strip=True) if link else name_div.get_text(strip=True)
+                        if name and len(name) > 3 and " " in name:
+                            players.append({"batting_order": j, "player_name": name})
+                else:
+                    links = main.find_all("a")
+                    for j, link in enumerate(links[:9], 1):
+                        name = link.get_text(strip=True)
+                        if name and len(name) > 3 and " " in name:
+                            players.append({"batting_order": j, "player_name": name})
+
+                if len(players) >= 7:
+                    lineups[mlb_abbr] = players
+
+        if lineups:
+            print(f"RotoWire: scraped lineups for {len(lineups)} teams: {sorted(lineups.keys())}")
+        else:
+            print("RotoWire: no lineups found — page structure may have changed")
 
     except ImportError:
         print("RotoWire scrape failed: beautifulsoup4 not installed")
