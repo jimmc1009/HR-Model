@@ -35,6 +35,8 @@ COLOR_TEAL      = {"red": 0.047, "green": 0.450, "blue": 0.353}
 COLOR_TEAL_DIM  = {"red": 0.020, "green": 0.120, "blue": 0.090}
 COLOR_GREY      = {"red": 0.600, "green": 0.600, "blue": 0.600}
 COLOR_HEADER_BG = {"red": 0.078, "green": 0.078, "blue": 0.078}
+COLOR_PURPLE    = {"red": 0.576, "green": 0.439, "blue": 0.859}
+COLOR_PURPLE_DIM = {"red": 0.118, "green": 0.078, "blue": 0.196}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -200,6 +202,10 @@ def resolve_ks_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
         print("KS_Picks_Log missing win column.")
         return log
 
+    # Add ks_score column if missing from older log entries
+    if "ks_score" not in log.columns:
+        log["ks_score"] = ""
+
     pending = log[
         (log["win"].astype(str).str.strip() == "") &
         (log["date"].astype(str).str.strip() != today_str) &
@@ -320,6 +326,8 @@ def build_scorecard(
     section_color_dim: dict,
     tab_color: dict,
     title: str,
+    has_score_tiers: bool = False,
+    score_col: str = "",
 ) -> None:
     if log.empty or "win" not in log.columns:
         print(f"{sheet_name}: empty or missing win column — skipping.")
@@ -333,6 +341,11 @@ def build_scorecard(
     scored["hit_bool"] = scored["win"].astype(str).str.strip() == "Yes"
     scored["rank_num"] = pd.to_numeric(scored["rank"], errors="coerce")
     scored["date_dt"]  = pd.to_datetime(scored["date"], errors="coerce")
+
+    if score_col and score_col in scored.columns:
+        scored["score_num"] = pd.to_numeric(scored[score_col], errors="coerce")
+    else:
+        scored["score_num"] = np.nan
 
     rows = []
 
@@ -371,6 +384,18 @@ def build_scorecard(
             sub = scored[scored[signal_col].astype(str) == str(sig)]
             if not sub.empty: add_row(f"   {sig}", sub)
 
+    # Score tier breakdown — only for KS which has ks_score column
+    if has_score_tiers and not scored["score_num"].isna().all():
+        add_row("── By Score Tier ──", pd.DataFrame(), bold=True, header=True)
+        for label, sub in [
+            ("   Score 9+",   scored[scored["score_num"] >= 9]),
+            ("   Score 8-9",  scored[(scored["score_num"] >= 8) & (scored["score_num"] < 9)]),
+            ("   Score 6-8",  scored[(scored["score_num"] >= 6) & (scored["score_num"] < 8)]),
+            ("   Score 4-6",  scored[(scored["score_num"] >= 4) & (scored["score_num"] < 6)]),
+            ("   Under 4",    scored[scored["score_num"] < 4]),
+        ]:
+            if not sub.empty: add_row(label, sub)
+
     add_row("── Rolling ──", pd.DataFrame(), bold=True, header=True)
     max_date = scored["date_dt"].max()
     sub7  = scored[scored["date_dt"] >= max_date - pd.Timedelta(days=7)]
@@ -378,7 +403,6 @@ def build_scorecard(
     if not sub7.empty:  add_row("   Last 7 Days", sub7)
     if not sub30.empty: add_row("   Last 30 Days", sub30)
 
-    # Build values
     all_values  = []
     headers_row = ["Category", "Total Picks", "Hits", "Hit Rate %"]
 
@@ -555,6 +579,8 @@ def main() -> None:
             section_color_dim = COLOR_TEAL_DIM,
             tab_color         = COLOR_TEAL,
             title             = "PITCHER STRIKEOUTS",
+            has_score_tiers   = True,
+            score_col         = "ks_score",
         )
     time.sleep(5)
 
@@ -574,6 +600,8 @@ def main() -> None:
             section_color_dim = COLOR_BLUE_DIM,
             tab_color         = COLOR_BLUE,
             title             = "H+R+RBI",
+            has_score_tiers   = False,
+            score_col         = "",
         )
 
     print("Done.")
