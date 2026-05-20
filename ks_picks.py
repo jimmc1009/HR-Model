@@ -1,7 +1,8 @@
 """
 ks_picks.py
 Pitcher strikeout prop model.
-Reads from KS_Statcast, Pitcher_Statcast_2026, Team_K_Rates, Park_Factors, KS_Odds.
+Reads from KS_Statcast, Pitcher_Statcast_2026, Team_K_Rates, Park_Factors,
+KS_Odds, Projected_Lineups, Batter_Statcast_2026.
 Outputs Top_KS_Picks + KS_Picks_Log + KS_Scorecard.
 """
 
@@ -10,7 +11,7 @@ import json
 import time
 import unicodedata
 from datetime import date, datetime
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 import numpy as np
@@ -25,10 +26,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-MIN_IP      = 10
-MIN_GS      = 2
+MIN_IP       = 10
+MIN_GS       = 2
 MAX_PER_TEAM = 1
-TOP_N       = 10
+TOP_N        = 10
+
+# Minimum batters needed to trust lineup K% score
+MIN_LINEUP_BATTERS = 5
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
@@ -114,6 +118,8 @@ def get_todays_game_times() -> dict:
     return game_times
 
 
+# ── Scoring functions ─────────────────────────────────────────────────────
+
 def score_k_pct(v: float, ip: float) -> float:
     if ip < MIN_IP: return 0.0
     if v >= 32.0: return 3.0
@@ -179,12 +185,33 @@ def score_avg_ip(v: float) -> float:
     return 0.0
 
 
-def score_opp_k_pct(v: float) -> float:
+def score_opp_team_k_pct(v: float) -> float:
+    """Team-level K% fallback when lineup data unavailable."""
     if v >= 28.0: return  1.0
     if v >= 24.0: return  0.6
     if v >= 20.0: return  0.2
     if v <= 16.0: return -0.6
     if v <= 18.0: return -0.3
+    return 0.0
+
+
+def score_opp_lineup_k_pct(avg_k_pct: float, num_batters: int) -> float:
+    """
+    Score based on the individual K% of batters in the opposing projected lineup.
+    More precise than team-level K% because it accounts for who is actually in
+    the lineup today vs the full roster average.
+    Only applied when we have data on at least MIN_LINEUP_BATTERS batters.
+    """
+    if num_batters < MIN_LINEUP_BATTERS or avg_k_pct <= 0:
+        return 0.0
+    if avg_k_pct >= 28.0: return  2.0
+    if avg_k_pct >= 25.0: return  1.5
+    if avg_k_pct >= 23.0: return  1.0
+    if avg_k_pct >= 21.0: return  0.5
+    if avg_k_pct >= 19.0: return  0.1
+    if avg_k_pct <= 14.0: return -1.5
+    if avg_k_pct <= 16.0: return -1.0
+    if avg_k_pct <= 18.0: return -0.5
     return 0.0
 
 
@@ -208,11 +235,112 @@ def score_opener_risk(v: float) -> float:
     return 0.0
 
 
-def compute_ks_score(row: pd.Series) -> float:
+# ── Lineup K% builder ─────────────────────────────────────────────────────
+
+def build_opp_lineup_k_stats(
+    projected_lineups: pd.DataFrame,
+    batters_df: pd.DataFrame,
+) -> Dict[str, dict]:
+    """
+    For each team in the projected lineup, compute the average K%
+    of their actual lineup batters using Batter_Statcast_2026 data.
+
+    Returns dict of team_abbr -> {avg_k_pct, num_batters, top6_avg_k_pct}
+    top6 = batters 1-6 in the order who get the most plate appearances
+    """
+    result: Dict[str, dict] = {}
+
+    if projected_lineups.empty or batters_df.empty:
+        return result
+
+    if "k_pct" not in batters_df.columns:
+        print("  WARNING: k_pct not in Batter_Statcast_2026 — lineup K% skipped")
+        return result
+
+    batters_df = batters_df.copy()
+
+    # Build lookup by player_id
+    id_to_k: Dict[int, float] = {}
+    if "batter_id" in batters_df.columns:
+        for _, row in batters_df.iterrows():
+            try:
+                pid   = int(float(str(row["batter_id"])))
+                k_pct = safe_float(row.get("k_pct", 0))
+                if k_pct > 0:
+                    id_to_k[pid] = k_pct
+            except (ValueError, TypeError):
+                pass
+
+    # Build lookup by normalized player name as fallback
+    name_to_k: Dict[str, float] = {}
+    if "player_name" in batters_df.columns:
+        for _, row in batters_df.iterrows():
+            norm  = normalize_name(str(row.get("player_name", "")))
+            k_pct = safe_float(row.get("k_pct", 0))
+            if norm and k_pct > 0:
+                name_to_k[norm] = k_pct
+
+    for team, group in projected_lineups.groupby("team"):
+        group = group.sort_values("batting_order") if "batting_order" in group.columns else group
+        k_pcts      = []
+        k_pcts_top6 = []
+
+        for _, row in group.iterrows():
+            order = safe_float(row.get("batting_order", 9))
+            k_pct = 0.0
+
+            # Try player_id match first
+            player_id = row.get("player_id", "")
+            if player_id and str(player_id).strip() not in ("", "nan", "0"):
+                try:
+                    pid   = int(float(str(player_id)))
+                    k_pct = id_to_k.get(pid, 0.0)
+                except (ValueError, TypeError):
+                    pass
+
+            # Fall back to name match
+            if k_pct == 0.0:
+                name_norm = normalize_name(str(row.get("player_name", "")))
+                k_pct     = name_to_k.get(name_norm, 0.0)
+
+            if k_pct > 0:
+                k_pcts.append(k_pct)
+                if order <= 6:
+                    k_pcts_top6.append(k_pct)
+
+        if k_pcts:
+            result[str(team)] = {
+                "avg_k_pct":      round(float(np.mean(k_pcts)), 1),
+                "top6_avg_k_pct": round(float(np.mean(k_pcts_top6)), 1) if k_pcts_top6 else round(float(np.mean(k_pcts)), 1),
+                "num_batters":    len(k_pcts),
+            }
+
+    print(f"  Lineup K% computed for {len(result)} opposing teams")
+    return result
+
+
+# ── Main scoring ──────────────────────────────────────────────────────────
+
+def compute_ks_score(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> float:
     ip = safe_float(row.get("ip", 0))
     gs = safe_float(row.get("games_started", 0))
     if ip < MIN_IP or gs < MIN_GS:
         return 0.0
+
+    # Determine lineup K score
+    opposing_team  = str(row.get("opposing_team", "")).strip()
+    lineup_data    = lineup_k_stats.get(opposing_team, {})
+    num_batters    = lineup_data.get("num_batters", 0)
+    lineup_k_score = 0.0
+    team_k_score   = 0.0
+
+    if num_batters >= MIN_LINEUP_BATTERS:
+        # Use individual lineup K% — more precise
+        avg_k_pct      = lineup_data.get("avg_k_pct", 0.0)
+        lineup_k_score = score_opp_lineup_k_pct(avg_k_pct, num_batters)
+    else:
+        # Fall back to team-level K%
+        team_k_score = score_opp_team_k_pct(safe_float(row.get("opp_team_k_pct", 22.0), 22.0))
 
     s = (
         score_k_pct(safe_float(row.get("k_pct_season")), ip) +
@@ -222,7 +350,8 @@ def compute_ks_score(row: pd.Series) -> float:
         score_velo(safe_float(row.get("fastball_velo")), ip) +
         score_k_per_start_21d(safe_float(row.get("k_per_start_21d"))) +
         score_avg_ip(safe_float(row.get("avg_ip_per_start"))) +
-        score_opp_k_pct(safe_float(row.get("opp_team_k_pct", 22.0), 22.0)) +
+        lineup_k_score +
+        team_k_score +
         score_park(safe_float(row.get("park_hr_factor", 100), 100)) +
         score_trends(row.get("swstr_trend", ""), row.get("velo_trend", "")) +
         score_opener_risk(safe_float(row.get("opener_risk", 0)))
@@ -230,13 +359,25 @@ def compute_ks_score(row: pd.Series) -> float:
     return round(s, 2)
 
 
-def project_ks(row: pd.Series) -> float:
+def project_ks(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> float:
     ip      = safe_float(row.get("avg_ip_per_start", 5.5), 5.5)
     k_per_9 = safe_float(row.get("k_per_9", 7.0), 7.0)
     k_pct   = safe_float(row.get("k_pct_season", 22.0), 22.0)
 
+    # If lineup data available, blend in lineup K% to adjust projection
+    opposing_team = str(row.get("opposing_team", "")).strip()
+    lineup_data   = lineup_k_stats.get(opposing_team, {})
+    num_batters   = lineup_data.get("num_batters", 0)
+
+    if num_batters >= MIN_LINEUP_BATTERS:
+        lineup_k_pct = lineup_data.get("avg_k_pct", k_pct)
+        # Blend pitcher K% with opposing lineup K% — 70% pitcher, 30% lineup
+        blended_k_pct = (k_pct * 0.70) + (lineup_k_pct * 0.30)
+    else:
+        blended_k_pct = k_pct
+
     method1 = (k_per_9 / 9.0) * ip
-    method2 = (k_pct / 100.0) * ip * 3.0
+    method2 = (blended_k_pct / 100.0) * ip * 3.0
     return round((method1 + method2) / 2, 1)
 
 
@@ -265,7 +406,7 @@ def assign_confidence(row: pd.Series) -> str:
     return "Low"
 
 
-def build_reason(row: pd.Series) -> str:
+def build_reason(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> str:
     reasons = []
 
     k_pct = safe_float(row.get("k_pct_season"))
@@ -300,11 +441,27 @@ def build_reason(row: pd.Series) -> str:
     if avg_ip >= 6.0:
         reasons.append(f"⏱️ {avg_ip:.1f} avg IP/start — goes deep")
 
-    opp_k = safe_float(row.get("opp_team_k_pct", 22.0), 22.0)
-    if opp_k >= 26:
-        reasons.append(f"✅ Opp team K% {opp_k:.1f}% — high strikeout lineup")
-    elif opp_k <= 17:
-        reasons.append(f"⚠️ Opp team K% {opp_k:.1f}% — contact-heavy lineup")
+    # Lineup K% reason — preferred over team K%
+    opposing_team = str(row.get("opposing_team", "")).strip()
+    lineup_data   = lineup_k_stats.get(opposing_team, {})
+    num_batters   = lineup_data.get("num_batters", 0)
+
+    if num_batters >= MIN_LINEUP_BATTERS:
+        avg_k = lineup_data.get("avg_k_pct", 0.0)
+        if avg_k >= 25:
+            reasons.append(f"✅ Opp lineup K% {avg_k:.1f}% ({num_batters} batters) — high strikeout lineup")
+        elif avg_k >= 22:
+            reasons.append(f"📊 Opp lineup K% {avg_k:.1f}% ({num_batters} batters)")
+        elif avg_k <= 16:
+            reasons.append(f"⚠️ Opp lineup K% {avg_k:.1f}% ({num_batters} batters) — contact-heavy lineup")
+        elif avg_k <= 18:
+            reasons.append(f"📉 Opp lineup K% {avg_k:.1f}% ({num_batters} batters) — below avg K lineup")
+    else:
+        opp_k = safe_float(row.get("opp_team_k_pct", 22.0), 22.0)
+        if opp_k >= 26:
+            reasons.append(f"✅ Opp team K% {opp_k:.1f}% — high strikeout lineup")
+        elif opp_k <= 17:
+            reasons.append(f"⚠️ Opp team K% {opp_k:.1f}% — contact-heavy lineup")
 
     swstr_trend = str(row.get("swstr_trend", ""))
     if "up" in swstr_trend.lower():
@@ -328,6 +485,7 @@ def prepare_picks(
     parks_df: pd.DataFrame,
     odds_df: pd.DataFrame,
     game_times: dict,
+    lineup_k_stats: Dict[str, dict],
 ) -> pd.DataFrame:
 
     if ks_df.empty:
@@ -337,7 +495,6 @@ def prepare_picks(
     df = ks_df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # Always overwrite ip with ks_ip
     if "ks_ip" in df.columns:
         df["ip"] = df["ks_ip"].apply(safe_float)
 
@@ -348,8 +505,8 @@ def prepare_picks(
 
         if "pitcher_id" in pitchers_df.columns and "pitcher_id" in df.columns:
             try:
-                df["pitcher_id"]           = df["pitcher_id"].astype("int64")
-                pitchers_df["pitcher_id"]  = pitchers_df["pitcher_id"].astype("int64")
+                df["pitcher_id"]          = df["pitcher_id"].astype("int64")
+                pitchers_df["pitcher_id"] = pitchers_df["pitcher_id"].astype("int64")
             except Exception:
                 pass
             today_ids = set(pitchers_df["pitcher_id"].dropna().unique())
@@ -373,18 +530,29 @@ def prepare_picks(
         df = df[~df["home_team"].apply(game_started)].copy()
         removed = before - len(df)
         if removed > 0:
-            print(f"Starter filter: {removed} removed, {len(df)} remaining")
+            print(f"Game time filter: {removed} removed, {len(df)} remaining")
 
     if df.empty:
         return pd.DataFrame()
 
-    # Merge opponent team K rates
+    # Merge opponent team K rates (fallback when no lineup data)
     if not team_k_rates.empty and "opposing_team" in df.columns:
         team_k_rates = team_k_rates.copy()
         team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
-        if "team" in team_k_rates.columns and "k_pct" in team_k_rates.columns:
+        if "team" in team_k_rates.columns and "team_k_pct" in team_k_rates.columns:
             df = df.merge(
-                team_k_rates[["team", "k_pct"]].rename(columns={"k_pct": "opp_team_k_pct", "team": "opposing_team"}),
+                team_k_rates[["team", "team_k_pct"]].rename(columns={
+                    "team_k_pct": "opp_team_k_pct",
+                    "team":       "opposing_team",
+                }),
+                on="opposing_team", how="left"
+            )
+        elif "team" in team_k_rates.columns and "k_pct" in team_k_rates.columns:
+            df = df.merge(
+                team_k_rates[["team", "k_pct"]].rename(columns={
+                    "k_pct": "opp_team_k_pct",
+                    "team":  "opposing_team",
+                }),
                 on="opposing_team", how="left"
             )
 
@@ -399,15 +567,15 @@ def prepare_picks(
             )
 
     defaults = {
-        "opp_team_k_pct": 22.0,
-        "park_hr_factor": 100.0,
-        "swstr_trend": "",
-        "velo_trend": "",
-        "opener_risk": 0.0,
-        "k_per_start_21d": 0.0,
+        "opp_team_k_pct":   22.0,
+        "park_hr_factor":   100.0,
+        "swstr_trend":      "",
+        "velo_trend":       "",
+        "opener_risk":      0.0,
+        "k_per_start_21d":  0.0,
         "avg_ip_per_start": 5.5,
-        "fastball_velo": 93.0,
-        "chase_rate": 30.0,
+        "fastball_velo":    93.0,
+        "chase_rate":       30.0,
     }
     for col, val in defaults.items():
         if col not in df.columns:
@@ -416,10 +584,21 @@ def prepare_picks(
             if isinstance(val, float):
                 df[col] = df[col].apply(lambda x: safe_float(x, val))
 
-    df["ks_score"]          = df.apply(compute_ks_score, axis=1)
-    df["projected_k_calc"]  = df.apply(project_ks, axis=1)
-    df["confidence"]        = df.apply(assign_confidence, axis=1)
-    df["reason"]            = df.apply(build_reason, axis=1)
+    # Score — pass lineup_k_stats through
+    df["ks_score"]         = df.apply(lambda r: compute_ks_score(r, lineup_k_stats), axis=1)
+    df["projected_k_calc"] = df.apply(lambda r: project_ks(r, lineup_k_stats), axis=1)
+    df["confidence"]       = df.apply(assign_confidence, axis=1)
+    df["reason"]           = df.apply(lambda r: build_reason(r, lineup_k_stats), axis=1)
+
+    # Attach lineup K% data for display
+    def get_lineup_k_display(row):
+        opposing_team = str(row.get("opposing_team", "")).strip()
+        data          = lineup_k_stats.get(opposing_team, {})
+        if data.get("num_batters", 0) >= MIN_LINEUP_BATTERS:
+            return f"{data['avg_k_pct']:.1f}% ({data['num_batters']} batters)"
+        return ""
+
+    df["opp_lineup_k_pct"] = df.apply(get_lineup_k_display, axis=1)
 
     # Merge odds
     if not odds_df.empty:
@@ -440,8 +619,8 @@ def prepare_picks(
             })
             df = df.merge(odds_slim, on="pitcher_name_norm", how="left")
     else:
-        df["k_line"]       = np.nan
-        df["ks_over_odds"] = np.nan
+        df["k_line"]        = np.nan
+        df["ks_over_odds"]  = np.nan
         df["ks_under_odds"] = np.nan
 
     df["prop_signal"] = df.apply(calc_prop_signal, axis=1)
@@ -496,6 +675,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "swstr_pct":        "SwStr%",
         "chase_rate":       "Chase%",
         "avg_ip_per_start": "Avg IP/Start",
+        "opp_lineup_k_pct": "Opp Lineup K%",
         "k_line":           "K Line",
         "ks_over_odds":     "Over Odds",
         "projected_k_calc": "Proj K",
@@ -514,7 +694,6 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
     n_cols = len(out_df.columns)
     reqs   = []
 
-    # Base formatting — no wrap, clip
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 2,
                   "startColumnIndex": 0, "endColumnIndex": n_cols},
@@ -527,7 +706,6 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
 
-    # Header row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
                   "startColumnIndex": 0, "endColumnIndex": n_cols},
@@ -542,7 +720,6 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
     }})
 
-    # Alternating row colors
     for i in range(len(out_df)):
         bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
         reqs.append({"repeatCell": {
@@ -552,8 +729,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-    # Column widths: Rank, Pitcher, Team, K%, SwStr%, Chase%, Avg IP/Start, K Line, Over Odds, Proj K, Signal, Key Reasons, Confidence
-    col_widths = [45, 160, 55, 55, 65, 65, 90, 65, 90, 60, 150, 300, 90]
+    col_widths = [45, 160, 55, 55, 65, 65, 90, 120, 65, 90, 60, 150, 300, 90]
     for i, w in enumerate(col_widths[:n_cols]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -562,7 +738,6 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
             "fields": "pixelSize",
         }})
 
-    # Row height — compact
     for i in range(len(out_df) + 1):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "ROWS",
@@ -653,7 +828,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
     sh     = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
-        ws = sh.worksheet("Top_KS_Picks")
+        ws        = sh.worksheet("Top_KS_Picks")
         first_row = ws.row_values(1)
         if first_row and "Last Run" in str(first_row[0]):
             ws.delete_rows(1)
@@ -670,27 +845,44 @@ def main() -> None:
     gc       = get_gspread_client()
 
     print("Reading KS data from Google Sheets...")
-    ks_df        = read_sheet(gc, sheet_id, "KS_Statcast")
+    ks_df             = read_sheet(gc, sheet_id, "KS_Statcast")
     time.sleep(2)
-    pitchers_df  = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
+    pitchers_df       = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
     time.sleep(2)
-    team_k_rates = read_sheet(gc, sheet_id, "Team_K_Rates")
+    team_k_rates      = read_sheet(gc, sheet_id, "Team_K_Rates")
     time.sleep(2)
-    parks_df     = read_sheet(gc, sheet_id, "Park_Factors")
+    parks_df          = read_sheet(gc, sheet_id, "Park_Factors")
     time.sleep(2)
-    odds_df      = read_sheet(gc, sheet_id, "KS_Odds")
+    odds_df           = read_sheet(gc, sheet_id, "KS_Odds")
+    time.sleep(2)
+    projected_lineups = read_sheet(gc, sheet_id, "Projected_Lineups")
+    time.sleep(2)
+    batters_df        = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
 
     print(f"KS_Statcast: {len(ks_df)} pitchers")
     print(f"Today's probables: {len(pitchers_df)} pitchers")
     print(f"Team K Rates: {len(team_k_rates)} rows")
     print(f"Parks: {len(parks_df)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
+    print(f"Projected Lineups: {len(projected_lineups)} rows")
+    print(f"Batter Statcast: {len(batters_df)} rows")
+
+    # Build opposing lineup K% stats
+    print("Building opposing lineup K% stats...")
+    lineup_k_stats = build_opp_lineup_k_stats(projected_lineups, batters_df)
+    if lineup_k_stats:
+        print(f"  Lineup K% available for {len(lineup_k_stats)} opposing teams")
+    else:
+        print("  No lineup K% data — falling back to team K rates")
 
     print("Fetching game start times...")
     game_times = get_todays_game_times()
     print(f"  Found {len(game_times)} game times")
 
-    picks = prepare_picks(ks_df, pitchers_df, team_k_rates, parks_df, odds_df, game_times)
+    picks = prepare_picks(
+        ks_df, pitchers_df, team_k_rates, parks_df,
+        odds_df, game_times, lineup_k_stats,
+    )
 
     if picks.empty:
         print("WARNING: No KS picks generated.")
@@ -703,7 +895,7 @@ def main() -> None:
         return
 
     print(f"\nTop {len(picks)} Pitcher K Picks:")
-    print(picks[["rank", "pitcher_name", "ks_score", "projected_k_calc", "k_line", "prop_signal", "confidence"]].to_string(index=False))
+    print(picks[["rank", "pitcher_name", "ks_score", "projected_k_calc", "k_line", "prop_signal", "confidence", "opp_lineup_k_pct"]].to_string(index=False))
 
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
