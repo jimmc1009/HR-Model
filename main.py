@@ -173,6 +173,16 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # DEBUG — find all div classes containing "lineup"
+            lineup_divs = soup.find_all("div", class_=True)
+            lineup_classes = set()
+            for div in lineup_divs:
+                for cls in div.get("class", []):
+                    if "lineup" in cls.lower():
+                        lineup_classes.add(cls)
+            print(f"DEBUG lineup classes found: {sorted(lineup_classes)[:20]}")
+
 
         # Each game is a lineup__game div containing two lineup__team divs
         game_divs = soup.find_all("div", class_=lambda c: c and "lineup__game" in c)
