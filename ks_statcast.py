@@ -121,20 +121,16 @@ def main() -> None:
 
     ks_df = pitchers[keep].copy()
 
-    # Always use ks_ip as the authoritative IP for the KS model
-    # ks_ip counts all out events correctly; ip from HR model may be smaller
     if "ks_ip" in ks_df.columns:
         ks_df["ip"] = ks_df["ks_ip"]
         ks_df = ks_df.drop(columns=["ks_ip"])
 
-    # Numeric coerce
     str_cols = ["pitcher_name", "pitcher_id", "pitcher_team",
                 "opposing_team", "home_team", "pitcher_hand"]
     for col in ks_df.columns:
         if col not in str_cols:
             ks_df[col] = pd.to_numeric(ks_df[col], errors="coerce")
 
-    # Sort by k_pct_season
     if "k_pct_season" in ks_df.columns:
         ks_df = ks_df.sort_values("k_pct_season", ascending=False)
 
@@ -144,7 +140,6 @@ def main() -> None:
     write_sheet(gc, sheet_id, "KS_Statcast", ks_df)
     print("Written to KS_Statcast")
 
-    # Team K rates from HRRBI_Statcast
     print("Reading HRRBI_Statcast for team K rates...")
     batters = read_sheet(gc, sheet_id, "HRRBI_Statcast")
     if not batters.empty:
