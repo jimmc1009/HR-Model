@@ -26,7 +26,6 @@ on:
           - dashboard
           - resolve_picks
           - migrate_ks
-          - backtest_hr
 
 jobs:
   test:
@@ -181,13 +180,6 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python resolve_picks.py
 
-      - name: Run backtest_hr.py
-        if: inputs.script == 'backtest_hr'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "${{ secrets.GOOGLE_SHEET_ID }}"
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python backtest_hr.py
 
 
 
