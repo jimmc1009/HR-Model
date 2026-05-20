@@ -150,56 +150,6 @@ def get_season_statcast() -> pd.DataFrame:
     return combined
 
 
-def match_lineup_player_ids(lineups: Dict[str, List[dict]]) -> pd.DataFrame:
-    """
-    Match RotoWire player names to MLB player IDs using the MLB Stats API.
-    Batches lookups to minimize API calls.
-    Returns DataFrame: team | batting_order | player_name | player_id
-    """
-    if not lineups:
-        return pd.DataFrame()
-
-    # Collect unique names
-    all_names = set()
-    for players in lineups.values():
-        for p in players:
-            all_names.add(p["player_name"].strip())
-
-    # Look up each name via MLB Stats API people search
-    name_to_id: Dict[str, int] = {}
-    for name in sorted(all_names):
-        try:
-            resp = requests.get(
-                "https://statsapi.mlb.com/api/v1/people/search",
-                params={"names": name, "sportId": 1, "season": 2026},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                people = resp.json().get("people", [])
-                if people:
-                    # Take the first active match
-                    name_to_id[name] = int(people[0].get("id", 0))
-            time.sleep(0.15)
-        except Exception:
-            pass
-
-    print(f"RotoWire: matched {len(name_to_id)}/{len(all_names)} player names to MLB IDs")
-
-    rows = []
-    for team, players in lineups.items():
-        for p in players:
-            name      = p["player_name"].strip()
-            player_id = name_to_id.get(name, "")
-            rows.append({
-                "team":          team,
-                "batting_order": p["batting_order"],
-                "player_name":   name,
-                "player_id":     player_id,
-            })
-
-    return pd.DataFrame(rows)
-
-
 def get_today_confirmed_lineups() -> Dict[str, Set[int]]:
     today_str = date.today().strftime("%Y-%m-%d")
     lineups: Dict[str, Set[int]] = {}
