@@ -174,46 +174,44 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # DEBUG — find all div classes containing "lineup"
-        lineup_classes = set()
-        for div in soup.find_all("div", class_=True):
-            for cls in div.get("class", []):
-                if "lineup" in cls.lower():
-                    lineup_classes.add(cls)
-        print(f"DEBUG lineup classes found: {sorted(lineup_classes)[:20]}")
+        # Each game block is a lineup__box div
+        game_boxes = soup.find_all("div", class_="lineup__box")
+        print(f"RotoWire: found {len(game_boxes)} game boxes")
 
-        # Each game is a lineup__game div containing two lineup__team divs
-        game_divs = soup.find_all("div", class_=lambda c: c and "lineup__game" in c)
+        for box in game_boxes:
+            # Each team is a lineup__mteam div
+            team_divs = box.find_all("div", class_="lineup__mteam")
 
-        if not game_divs:
-            game_divs = [soup]
-
-        for game in game_divs:
-            team_divs = game.find_all("div", class_=lambda c: c and "lineup__team" in c)
             for team_div in team_divs:
-                abbr_tag = team_div.find(class_=lambda c: c and "lineup__abbr" in c)
+                # Team abbreviation
+                abbr_tag = team_div.find(class_="lineup__abbr")
                 if not abbr_tag:
                     continue
                 abbr     = abbr_tag.get_text(strip=True)
                 mlb_abbr = ROTOWIRE_TO_MLB.get(abbr, abbr)
 
-                list_div = team_div.find("ul", class_=lambda c: c and "lineup__list" in c)
-                if not list_div:
+                # Player list is in lineup__main
+                main_div = team_div.find(class_="lineup__main")
+                if not main_div:
                     continue
 
-                players     = []
-                player_tags = list_div.find_all("li", class_=lambda c: c and "lineup__player" in c)
+                players  = []
+                # Each player row
+                player_divs = main_div.find_all(class_="lineup__player-highlight-name")
 
-                for i, li in enumerate(player_tags[:9], 1):
-                    link = li.find("a")
-                    if not link:
-                        continue
-                    name = link.get_text(strip=True)
-                    if name and len(name) > 3 and " " in name:
-                        players.append({
-                            "batting_order": i,
-                            "player_name":   name,
-                        })
+                if not player_divs:
+                    # Try finding any anchor tags inside lineup__main
+                    links = main_div.find_all("a")
+                    for i, link in enumerate(links[:9], 1):
+                        name = link.get_text(strip=True)
+                        if name and len(name) > 3 and " " in name:
+                            players.append({"batting_order": i, "player_name": name})
+                else:
+                    for i, name_div in enumerate(player_divs[:9], 1):
+                        link = name_div.find("a")
+                        name = link.get_text(strip=True) if link else name_div.get_text(strip=True)
+                        if name and len(name) > 3 and " " in name:
+                            players.append({"batting_order": i, "player_name": name})
 
                 if len(players) >= 7:
                     lineups[mlb_abbr] = players
@@ -229,6 +227,7 @@ def scrape_rotowire_lineups() -> Dict[str, List[dict]]:
         print(f"RotoWire scrape failed: {e}")
 
     return lineups
+
 
 
 
