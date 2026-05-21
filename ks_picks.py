@@ -668,7 +668,7 @@ def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
     for _, row in df.iterrows():
         if len(selected) >= TOP_N:
             break
-        team = str(row.get("pitching_team", row.get("team", "UNK")))
+        team = str(row.get("pitcher_team", row.get("pitching_team", row.get("team", "UNK"))))
         if team_counts.get(team, 0) >= MAX_PER_TEAM:
             continue
         selected.append(row)
