@@ -381,7 +381,10 @@ def main() -> None:
     combined["game_date"] = pd.to_datetime(combined["game_date"], errors="coerce")
     combined["season"]  = combined["game_date"].dt.year.astype(str)
 
-    scored = combined[combined["hit_hr"].isin(["Yes", "No"])].copy()
+    scored = combined[
+        combined["hit_hr"].isin(["Yes", "No"]) &
+        (pd.to_numeric(combined["line"], errors="coerce") == 0.5)
+    ].copy()
 
     if scored.empty:
         print("No scored rows to analyze.")
