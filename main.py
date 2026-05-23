@@ -425,31 +425,36 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame()
 
-    pa_df = df[df["events"].notna()].copy()
-    pa_df = pa_df.drop_duplicates(
-        subset=[c for c in ["game_pk", "batter"] if c in pa_df.columns]
-    )
+    # Use all pitches — deduplicate to one row per batter per game
+    # Don't filter by events.notna() since that misses games where
+    # a batter's PA-ending event is null in Statcast
+    game_df = df.drop_duplicates(
+        subset=[c for c in ["game_pk", "batter"] if c in df.columns]
+    ).copy()
+
+    if "p_throws" not in game_df.columns:
+        return pd.DataFrame()
 
     team_vs_lhp = (
-        pa_df[pa_df["p_throws"] == "L"]
+        game_df[game_df["p_throws"] == "L"]
         .groupby("batting_team")["game_pk"]
         .nunique()
         .reset_index(name="team_games_vs_lhp")
     )
     team_vs_rhp = (
-        pa_df[pa_df["p_throws"] == "R"]
+        game_df[game_df["p_throws"] == "R"]
         .groupby("batting_team")["game_pk"]
         .nunique()
         .reset_index(name="team_games_vs_rhp")
     )
     batter_vs_lhp = (
-        pa_df[pa_df["p_throws"] == "L"]
+        game_df[game_df["p_throws"] == "L"]
         .groupby(["batter", "batting_team"])["game_pk"]
         .nunique()
         .reset_index(name="batter_games_vs_lhp")
     )
     batter_vs_rhp = (
-        pa_df[pa_df["p_throws"] == "R"]
+        game_df[game_df["p_throws"] == "R"]
         .groupby(["batter", "batting_team"])["game_pk"]
         .nunique()
         .reset_index(name="batter_games_vs_rhp")
@@ -476,6 +481,7 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
     return starts[["batter_id", "batting_team", "batter_games_vs_lhp", "batter_games_vs_rhp",
                     "team_games_vs_lhp", "team_games_vs_rhp",
                     "lhp_start_rate", "rhp_start_rate"]]
+
 
 
 def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
