@@ -26,10 +26,12 @@ on:
           - dashboard
           - resolve_picks
           - migrate_ks
+          - hr_odds_backtest
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repo (dev branch)
@@ -44,7 +46,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pybaseball pandas numpy gspread oauth2client pytz requests
+          pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
 
       - name: Run main.py
         if: >
@@ -174,12 +176,16 @@ jobs:
       - name: Run resolve_picks.py
         if: >
           inputs.script == 'full' ||
-          inputs.script == 'resolve'
+          inputs.script == 'resolve_picks'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python resolve_picks.py
 
-
-
-
+      - name: Run hr_odds_backtest.py
+        if: inputs.script == 'hr_odds_backtest'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python hr_odds_backtest.py
