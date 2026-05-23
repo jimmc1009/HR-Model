@@ -19,13 +19,13 @@ on:
           - weather
           - odds
           - hr_picks
-          - backtest
           - hrrbi_statcast
           - hrrbi_picks
           - ks_statcast
           - ks_picks
           - dashboard
           - resolve_picks
+          - migrate_ks
 
 jobs:
   test:
@@ -120,13 +120,6 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks.py
 
-      - name: Run backtest.py
-        if: inputs.script == 'backtest'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python backtest.py
-
       - name: Run hrrbi_statcast.py
         if: >
           inputs.script == 'full' ||
@@ -186,4 +179,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python resolve_picks.py
+
+
+
 
