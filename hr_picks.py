@@ -1361,7 +1361,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
         ws       = sh.worksheet("Picks_Log")
         existing = pd.DataFrame(ws.get_all_records())
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="Picks_Log", rows=5000, cols=25)
+        ws       = sh.add_worksheet(title="Picks_Log", rows=5000, cols=60)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -1372,22 +1372,73 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
     def build_log_rows(df: pd.DataFrame, section: str) -> None:
         if df.empty:
             return
-        score_col = "HR Score" if section == "Main" else "HR Score"
         for _, row in df.iterrows():
             new_rows.append({
-                "date":        today_str,
-                "rank":        str(row.get("Rank", "")),
-                "player_name": str(row.get("Batter", "")),
-                "player_id":   "",
-                "team":        str(row.get("Team", "")),
-                "pitcher_id":  "",
-                "park_name":   str(row.get("Park", "")),
-                "hr_score":    str(row.get(score_col, "")),
-                "confidence":  str(row.get("Confidence", "")),
-                "hit_hr":      "Pending",
-                "section":     section,
-                "odds":        "",
-                "bet_placed":  "",
+                # ── Identity ──────────────────────────────────────────
+                "date":                      today_str,
+                "rank":                      str(row.get("Rank", "")),
+                "player_name":               str(row.get("Batter", "")),
+                "team":                      str(row.get("Team", "")),
+                "pitcher_name":              str(row.get("Opposing Pitcher", "")),
+                "pitcher_hand":              str(row.get("Throws", "")),
+                "pitcher_team":              str(row.get("Pitcher Team", "")),
+                "park_name":                 str(row.get("Park", "")),
+                "hr_score":                  str(row.get("HR Score", "")),
+                "consensus_odds":            str(row.get("Consensus Odds", "")),
+                "confidence":                str(row.get("Confidence", "")),
+                "hit_hr":                    "Pending",
+                "section":                   section,
+                "odds":                      "",
+                "bet_placed":                "",
+                # ── Batter features ───────────────────────────────────
+                "batting_avg":               str(row.get("Batting Avg", "")),
+                "barrel_pct_7d":             str(row.get("Barrel% (7d)", "")),
+                "season_barrel_pct":         str(row.get("Barrel% (Season)", "")),
+                "barrel_pct_5d":             str(row.get("Barrel% (5d)", "")),
+                "barrel_pct_10d":            str(row.get("Barrel% (10d)", "")),
+                "hr_per_pa":                 str(row.get("HR/PA%", "")),
+                "hr_per_fb":                 str(row.get("HR/FB%", "")),
+                "iso":                       str(row.get("ISO", "")),
+                "iso_vs_lhp":                str(row.get("ISO vs LHP", "")),
+                "iso_vs_rhp":                str(row.get("ISO vs RHP", "")),
+                "avg_ev_7d":                 str(row.get("Avg EV (7d)", "")),
+                "avg_ev_5d":                 str(row.get("Avg EV (5d)", "")),
+                "avg_ev_10d":                str(row.get("Avg EV (10d)", "")),
+                "avg_la_7d":                 str(row.get("Avg Launch Angle (7d)", "")),
+                "avg_la_season":             str(row.get("Avg Launch Angle (Season)", "")),
+                "pull_rate":                 str(row.get("Pull Rate%", "")),
+                "lhp_start_rate":            str(row.get("LHP Start Rate", "")),
+                "rhp_start_rate":            str(row.get("RHP Start Rate", "")),
+                # ── Pitcher features ──────────────────────────────────
+                "pitcher_barrel_pct":        str(row.get("Pitcher Barrel% Allowed", "")),
+                "pitcher_hr_per_fb":         str(row.get("Pitcher HR/FB% Allowed", "")),
+                "pitcher_barrel_vs_lhh":     str(row.get("Pitcher Barrel% vs LHH", "")),
+                "pitcher_barrel_vs_rhh":     str(row.get("Pitcher Barrel% vs RHH", "")),
+                "pitcher_hr9_vs_lhh":        str(row.get("Pitcher HR/9 vs LHH", "")),
+                "pitcher_hr9_vs_rhh":        str(row.get("Pitcher HR/9 vs RHH", "")),
+                "top_pitch_1":               str(row.get("Top Pitch 1", "")),
+                "top_pitch_1_pct":           str(row.get("Top Pitch 1 %", "")),
+                "top_pitch_2":               str(row.get("Top Pitch 2", "")),
+                "top_pitch_2_pct":           str(row.get("Top Pitch 2 %", "")),
+                "top_pitch_3":               str(row.get("Top Pitch 3", "")),
+                "top_pitch_3_pct":           str(row.get("Top Pitch 3 %", "")),
+                # ── Context ───────────────────────────────────────────
+                "park_hr_factor":            str(row.get("Park HR Factor", "")),
+                "lf_dist":                   str(row.get("LF Distance", "")),
+                "lf_height":                 str(row.get("LF Wall Height", "")),
+                "rf_dist":                   str(row.get("RF Distance", "")),
+                "rf_height":                 str(row.get("RF Wall Height", "")),
+                "weather_boost":             str(row.get("Weather Boost", "")),
+                "wind":                      str(row.get("Wind", "")),
+                "temp_f":                    str(row.get("Temp (°F)", "")),
+                "pull_park_matchup":         str(row.get("Pull Park Matchup", "")),
+                "platoon_matchup":           str(row.get("Platoon Matchup", "")),
+                "pitch_matchup":             str(row.get("Pitch Matchup", "")),
+                "momentum":                  str(row.get("Momentum", "")),
+                "bvp_pa":                    str(row.get("BvP PA", "")),
+                "bvp_hr":                    str(row.get("BvP HR", "")),
+                "bvp_iso":                   str(row.get("BvP ISO", "")),
+                "bvp_notes":                 str(row.get("BvP Notes", "")),
             })
 
     build_log_rows(picks,      "Main")
@@ -1398,9 +1449,11 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
         return
 
     new_df = pd.DataFrame(new_rows)
-    for col in ["odds", "bet_placed"]:
-        if not existing.empty and col not in existing.columns:
-            existing[col] = ""
+
+    if not existing.empty:
+        for col in new_df.columns:
+            if col not in existing.columns:
+                existing[col] = ""
 
     combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
 
