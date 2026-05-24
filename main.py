@@ -642,6 +642,13 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    print(f"  Team K stats columns available: zone={'zone' in df.columns}, description={'description' in df.columns}")
+    if "zone" in df.columns:
+        print(f"  Zone sample values: {df['zone'].dropna().head(5).tolist()}")
+
+    if "batting_team" not in df.columns:
+
+
     if "batting_team" not in df.columns:
         if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
             df = df.copy()
