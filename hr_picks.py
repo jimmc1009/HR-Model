@@ -1112,145 +1112,136 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
 
 
 def build_value_plays(combined: pd.DataFrame, exclude_names: set, odds_lookup: dict = None) -> pd.DataFrame:
-    if combined.empty:
-        return pd.DataFrame()
+   if combined.empty:
+       return pd.DataFrame()
 
-    combined = combined.copy()
+   combined = combined.copy()
 
-    # Remove players already in main top 10
-    if "player_name" in combined.columns and exclude_names:
-        combined = combined[~combined["player_name"].isin(exclude_names)].copy()
+   # Remove players already in main top 10
+   if "player_name" in combined.columns and exclude_names:
+       combined = combined[~combined["player_name"].isin(exclude_names)].copy()
 
-    # Coerce needed columns
-    for col in ["score", "consensus_odds"]:
-        if col in combined.columns:
-            combined[col] = combined[col].apply(safe_float)
-        else:
-            combined[col] = 0.0
+   # Coerce needed columns
+   for col in ["score"]:
+       if col in combined.columns:
+           combined[col] = combined[col].apply(safe_float)
+       else:
+           combined[col] = 0.0
 
-    # Core filter — model likes them, books don't
-    value_df = combined[
-        (combined["score"] >= 11.0) &
-        (combined["consensus_odds"] >= 500)
-    ].copy()
+   # Map odds from lookup onto combined
+   combined["consensus_odds"] = combined["player_name"].apply(
+       lambda n: odds_lookup.get(normalize_name(str(n)), 0) if odds_lookup else 0
+   )
 
-    if value_df.empty:
-        print("No value plays found today.")
-        return pd.DataFrame()
+   # Core filter — model likes them, books don't
+   value_df = combined[
+       (combined["score"] >= 11.0) &
+       (combined["consensus_odds"] >= 500)
+   ].copy()
 
-    # Apply odds lookup if available
-    if odds_lookup and "player_name" in value_df.columns:
-        def get_odds(row):
-            norm = normalize_name(str(row.get("player_name", "")))
-            return odds_lookup.get(norm, None)
-        value_df["consensus_odds"] = value_df.apply(get_odds, axis=1)
-        value_df = value_df[
-            value_df["consensus_odds"].notna() &
-            (value_df["consensus_odds"] >= 500)
-        ].copy()
+   if value_df.empty:
+       print("No value plays found today.")
+       return pd.DataFrame()
 
-    if value_df.empty:
-        print("No value plays found today.")
-        return pd.DataFrame()
+   # Sort by score, one per team, top 5
+   value_df = value_df.sort_values("score", ascending=False)
+   value_df["team_count"] = value_df.groupby("batter_team").cumcount()
+   value_df = value_df[value_df["team_count"] < 1].head(5).copy()
+   value_df = value_df.drop(columns=["team_count"])
+   value_df["value_rank"] = range(1, len(value_df) + 1)
 
-    # Sort by score, one per team, top 5
-    value_df = value_df.sort_values("score", ascending=False)
-    value_df["team_count"] = value_df.groupby("batter_team").cumcount()
-    value_df = value_df[value_df["team_count"] < 1].head(5).copy()
-    value_df = value_df.drop(columns=["team_count"])
-    value_df["value_rank"] = range(1, len(value_df) + 1)
+   print(f"Built {len(value_df)} value plays")
 
-    print(f"Built {len(value_df)} value plays")
+   def build_value_reason(row) -> str:
+       reasons = []
 
-    def build_value_reason(row) -> str:
-        reasons = []
+       score = safe_float(row.get("score"))
+       odds  = safe_float(row.get("consensus_odds"))
+       reasons.append(f"📊 Model score {score:.1f} — books have at +{int(odds)}")
 
-        score = safe_float(row.get("score"))
-        odds  = safe_float(row.get("consensus_odds"))
-        reasons.append(f"📊 Model score {score:.1f} — books have at +{int(odds)}")
+       barrel_7d = safe_float(row.get("barrel_pct_7d"))
+       if barrel_7d >= 12:
+           reasons.append(f"🔥 {barrel_7d:.1f}% barrel rate last 7 days")
 
-        barrel_7d = safe_float(row.get("barrel_pct_7d"))
-        if barrel_7d >= 12:
-            reasons.append(f"🔥 {barrel_7d:.1f}% barrel rate last 7 days")
+       season_barrel = safe_float(row.get("season_barrel_pct"))
+       if season_barrel >= 9:
+           reasons.append(f"💣 {season_barrel:.1f}% season barrel%")
 
-        season_barrel = safe_float(row.get("season_barrel_pct"))
-        if season_barrel >= 9:
-            reasons.append(f"💣 {season_barrel:.1f}% season barrel%")
+       iso = safe_float(row.get("iso"))
+       if iso >= 0.175:
+           reasons.append(f"⚡ ISO {iso:.3f}")
 
-        iso = safe_float(row.get("iso"))
-        if iso >= 0.175:
-            reasons.append(f"⚡ ISO {iso:.3f}")
+       p_barrel = safe_float(row.get("pitcher_barrel_pct"))
+       if p_barrel >= 9:
+           reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
 
-        p_barrel = safe_float(row.get("pitcher_barrel_pct"))
-        if p_barrel >= 9:
-            reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
+       bvp_iso = safe_float(row.get("bvp_iso"))
+       bvp_pa  = safe_float(row.get("bvp_pa"))
+       bvp_hr  = safe_float(row.get("bvp_hr"))
+       if bvp_pa >= 5 and bvp_iso >= 0.150:
+           reasons.append(f"✅ ISO {bvp_iso:.3f} vs this pitcher in {int(bvp_pa)} PA" + (f", {int(bvp_hr)} HR" if bvp_hr > 0 else ""))
 
-        bvp_iso = safe_float(row.get("bvp_iso"))
-        bvp_pa  = safe_float(row.get("bvp_pa"))
-        bvp_hr  = safe_float(row.get("bvp_hr"))
-        if bvp_pa >= 5 and bvp_iso >= 0.150:
-            reasons.append(f"✅ ISO {bvp_iso:.3f} vs this pitcher in {int(bvp_pa)} PA" + (f", {int(bvp_hr)} HR" if bvp_hr > 0 else ""))
+       park = safe_float(row.get("park_hr_factor"), 100)
+       if park >= 110:
+           reasons.append(f"🏟️ HR-friendly park (factor {park:.0f})")
 
-        park = safe_float(row.get("park_hr_factor"), 100)
-        if park >= 110:
-            reasons.append(f"🏟️ HR-friendly park (factor {park:.0f})")
+       boost = safe_float(row.get("hr_weather_boost"))
+       if boost >= 1.0:
+           reasons.append(f"🌬️ Favorable weather")
 
-        boost = safe_float(row.get("hr_weather_boost"))
-        if boost >= 1.0:
-            reasons.append(f"🌬️ Favorable weather")
+       platoon = str(row.get("platoon_desc", ""))
+       if platoon and "advantage" in platoon.lower():
+           reasons.append(f"🔄 {platoon}")
 
-        platoon = str(row.get("platoon_desc", ""))
-        if platoon and "advantage" in platoon.lower():
-            reasons.append(f"🔄 {platoon}")
+       momentum = str(row.get("momentum_desc", ""))
+       if momentum:
+           reasons.append(momentum)
 
-        momentum = str(row.get("momentum_desc", ""))
-        if momentum:
-            reasons.append(momentum)
+       if not reasons:
+           reasons.append("High model score at value odds")
 
-        if not reasons:
-            reasons.append("High model score at value odds")
+       return " | ".join(reasons)
 
-        return " | ".join(reasons)
+   value_df["why"] = value_df.apply(build_value_reason, axis=1)
 
-    value_df["why"] = value_df.apply(build_value_reason, axis=1)
+   output_cols = {
+       "value_rank":                 "Rank",
+       "player_name":                "Batter",
+       "batter_hand":                "Bats",
+       "batter_team":                "Team",
+       "opp_pitcher_name":           "Opposing Pitcher",
+       "pitcher_hand":               "Throws",
+       "opp_pitcher_team":           "Pitcher Team",
+       "park_name":                  "Park",
+       "score":                      "HR Score",
+       "consensus_odds":             "Consensus Odds",
+       "confidence":                 "Confidence",
+       "why":                        "Why They're Here",
+       "batting_avg":                "Batting Avg",
+       "barrel_pct_7d":              "Barrel% (7d)",
+       "season_barrel_pct":          "Barrel% (Season)",
+       "iso":                        "ISO",
+       "avg_ev_7d":                  "Avg EV (7d)",
+       "avg_la_7d":                  "Avg Launch Angle (7d)",
+       "hard_hit_pct_7d":            "Hard Hit% (7d)",
+       "momentum_desc":              "Momentum",
+       "hr_per_pa":                  "HR/PA%",
+       "bvp_pa":                     "BvP PA",
+       "bvp_hr":                     "BvP HR",
+       "bvp_iso":                    "BvP ISO",
+       "bvp_desc":                   "BvP Notes",
+       "platoon_desc":               "Platoon Matchup",
+       "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
+       "pitcher_hr_per_fb":          "Pitcher HR/FB%",
+       "park_hr_factor":             "Park HR Factor",
+       "hr_weather_boost":           "Weather Boost",
+       "wind_context":               "Wind",
+       "temp_f":                     "Temp (°F)",
+   }
 
-    output_cols = {
-        "value_rank":                 "Rank",
-        "player_name":                "Batter",
-        "batter_hand":                "Bats",
-        "batter_team":                "Team",
-        "opp_pitcher_name":           "Opposing Pitcher",
-        "pitcher_hand":               "Throws",
-        "opp_pitcher_team":           "Pitcher Team",
-        "park_name":                  "Park",
-        "score":                      "HR Score",
-        "consensus_odds":             "Consensus Odds",
-        "confidence":                 "Confidence",
-        "why":                        "Why They're Here",
-        "batting_avg":                "Batting Avg",
-        "barrel_pct_7d":              "Barrel% (7d)",
-        "season_barrel_pct":          "Barrel% (Season)",
-        "iso":                        "ISO",
-        "avg_ev_7d":                  "Avg EV (7d)",
-        "avg_la_7d":                  "Avg Launch Angle (7d)",
-        "hard_hit_pct_7d":            "Hard Hit% (7d)",
-        "momentum_desc":              "Momentum",
-        "hr_per_pa":                  "HR/PA%",
-        "bvp_pa":                     "BvP PA",
-        "bvp_hr":                     "BvP HR",
-        "bvp_iso":                    "BvP ISO",
-        "bvp_desc":                   "BvP Notes",
-        "platoon_desc":               "Platoon Matchup",
-        "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
-        "pitcher_hr_per_fb":          "Pitcher HR/FB%",
-        "park_hr_factor":             "Park HR Factor",
-        "hr_weather_boost":           "Weather Boost",
-        "wind_context":               "Wind",
-        "temp_f":                     "Temp (°F)",
-    }
+   available = {k: v for k, v in output_cols.items() if k in value_df.columns}
+   return value_df[list(available.keys())].rename(columns=available)
 
-    available = {k: v for k, v in output_cols.items() if k in value_df.columns}
-    return value_df[list(available.keys())].rename(columns=available)
 
 
 def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
