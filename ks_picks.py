@@ -630,9 +630,6 @@ def prepare_picks(
             on="opposing_team", how="left"
         )
 
-        print(f"  After merge chase cols: {[c for c in df.columns if 'chase' in c.lower() or 'whiff' in c.lower()]}")
-        print(f"  Sample opp_chase_rate: {df['opp_chase_rate'].head(3).tolist() if 'opp_chase_rate' in df.columns else 'MISSING'}")
-
     if not parks_df.empty and "home_team" in df.columns:
         parks_df = parks_df.copy()
         parks_df.columns = [c.strip() for c in parks_df.columns]
@@ -996,8 +993,6 @@ def main() -> None:
     print(f"KS_Statcast: {len(ks_df)} pitchers")
     print(f"Today's probables: {len(pitchers_df)} pitchers")
     print(f"Team K Rates: {len(team_k_rates)} rows")
-    print(f"  Team K Rates raw columns: {team_k_rates.columns.tolist()}")
-    print(f"  Team K Rates shape: {team_k_rates.shape}")
 
     print(f"Parks: {len(parks_df)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
