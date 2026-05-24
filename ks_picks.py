@@ -548,160 +548,165 @@ def build_reason(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> str:
 
 
 def prepare_picks(
-   ks_df: pd.DataFrame,
-   pitchers_df: pd.DataFrame,
-   team_k_rates: pd.DataFrame,
-   parks_df: pd.DataFrame,
-   odds_df: pd.DataFrame,
-   game_times: dict,
-   lineup_k_stats: Dict[str, dict],
+    ks_df: pd.DataFrame,
+    pitchers_df: pd.DataFrame,
+    team_k_rates: pd.DataFrame,
+    parks_df: pd.DataFrame,
+    odds_df: pd.DataFrame,
+    game_times: dict,
+    lineup_k_stats: Dict[str, dict],
 ) -> pd.DataFrame:
 
-   if ks_df.empty:
-       print("No KS Statcast data.")
-       return pd.DataFrame()
+    if ks_df.empty:
+        print("No KS Statcast data.")
+        return pd.DataFrame()
 
-   df = ks_df.copy()
-   df.columns = [c.strip() for c in df.columns]
+    df = ks_df.copy()
+    df.columns = [c.strip() for c in df.columns]
 
-   if "ks_ip" in df.columns:
-       df["ip"] = df["ks_ip"].apply(safe_float)
+    if "ks_ip" in df.columns:
+        df["ip"] = df["ks_ip"].apply(safe_float)
 
-   if not pitchers_df.empty:
-       pitchers_df = pitchers_df.copy()
-       pitchers_df.columns = [c.strip() for c in pitchers_df.columns]
+    if not pitchers_df.empty:
+        pitchers_df = pitchers_df.copy()
+        pitchers_df.columns = [c.strip() for c in pitchers_df.columns]
 
-       if "pitcher_id" in pitchers_df.columns and "pitcher_id" in df.columns:
-           try:
-               df["pitcher_id"]          = df["pitcher_id"].astype("int64")
-               pitchers_df["pitcher_id"] = pitchers_df["pitcher_id"].astype("int64")
-           except Exception:
-               pass
-           today_ids = set(pitchers_df["pitcher_id"].dropna().unique())
-           before    = len(df)
-           df        = df[df["pitcher_id"].isin(today_ids)].copy()
-           print(f"Probable starter filter: {before - len(df)} removed, {len(df)} today's starters")
+        if "pitcher_id" in pitchers_df.columns and "pitcher_id" in df.columns:
+            try:
+                df["pitcher_id"]          = df["pitcher_id"].astype("int64")
+                pitchers_df["pitcher_id"] = pitchers_df["pitcher_id"].astype("int64")
+            except Exception:
+                pass
+            today_ids = set(pitchers_df["pitcher_id"].dropna().unique())
+            before    = len(df)
+            df        = df[df["pitcher_id"].isin(today_ids)].copy()
+            print(f"Probable starter filter: {before - len(df)} removed, {len(df)} today's starters")
 
-   if df.empty:
-       return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
 
-   if game_times and "home_team" in df.columns:
-       import pytz as _pytz
-       now_utc = datetime.now(_pytz.utc)
-       before  = len(df)
+    if game_times and "home_team" in df.columns:
+        import pytz as _pytz
+        now_utc = datetime.now(_pytz.utc)
+        before  = len(df)
 
-       def game_started(team):
-           gt = game_times.get(str(team).upper())
-           return gt is not None and now_utc >= gt
+        def game_started(team):
+            gt = game_times.get(str(team).upper())
+            return gt is not None and now_utc >= gt
 
-       df = df[~df["home_team"].apply(game_started)].copy()
-       removed = before - len(df)
-       if removed > 0:
-           print(f"Game time filter: {removed} removed, {len(df)} remaining")
+        df = df[~df["home_team"].apply(game_started)].copy()
+        removed = before - len(df)
+        if removed > 0:
+            print(f"Game time filter: {removed} removed, {len(df)} remaining")
 
-   if df.empty:
-       return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
 
-   if not team_k_rates.empty and "opposing_team" in df.columns:
-       team_k_rates = team_k_rates.copy()
-       team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
+    if not team_k_rates.empty and "opposing_team" in df.columns:
+        team_k_rates = team_k_rates.copy()
+        team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
 
-       merge_cols = ["team"]
-       if "team_k_pct" in team_k_rates.columns:
-           merge_cols.append("team_k_pct")
-       if "team_chase_rate" in team_k_rates.columns:
-           merge_cols.append("team_chase_rate")
-       if "team_whiff_rate" in team_k_rates.columns:
-           merge_cols.append("team_whiff_rate")
+        merge_cols = ["team"]
+        if "team_k_pct" in team_k_rates.columns:
+            merge_cols.append("team_k_pct")
+        if "team_chase_rate" in team_k_rates.columns:
+            merge_cols.append("team_chase_rate")
+        if "team_whiff_rate" in team_k_rates.columns:
+            merge_cols.append("team_whiff_rate")
 
-       rename_map = {
-           "team_k_pct":      "opp_team_k_pct",
-           "team_chase_rate": "opp_chase_rate",
-           "team_whiff_rate": "opp_whiff_rate",
-           "team":            "opposing_team",
-       }
+        rename_map = {
+            "team_k_pct":      "opp_team_k_pct",
+            "team_chase_rate": "opp_chase_rate",
+            "team_whiff_rate": "opp_whiff_rate",
+            "team":            "opposing_team",
+        }
 
-       df = df.merge(
-           team_k_rates[merge_cols].rename(columns=rename_map),
-           on="opposing_team", how="left"
-       )
+        print(f"  KS opposing teams: {df['opposing_team'].unique().tolist()}")
+        print(f"  Team K rates teams: {team_k_rates['team'].unique().tolist()}")
+        print(f"  Team K rates columns: {team_k_rates.columns.tolist()}")
 
-       print(f"  Team K rates columns after merge: {[c for c in df.columns if 'chase' in c.lower() or 'whiff' in c.lower()]}")
-       print(f"  Sample chase rate: {df['opp_chase_rate'].head(3).tolist() if 'opp_chase_rate' in df.columns else 'MISSING'}")
+        df = df.merge(
+            team_k_rates[merge_cols].rename(columns=rename_map),
+            on="opposing_team", how="left"
+        )
 
-   if not parks_df.empty and "home_team" in df.columns:
-       parks_df = parks_df.copy()
-       parks_df.columns = [c.strip() for c in parks_df.columns]
-       park_cols = [c for c in ["team", "park_hr_factor", "park_name"] if c in parks_df.columns]
-       if park_cols:
-           df = df.merge(
-               parks_df[park_cols],
-               left_on="home_team", right_on="team", how="left"
-           )
+        print(f"  After merge chase cols: {[c for c in df.columns if 'chase' in c.lower() or 'whiff' in c.lower()]}")
+        print(f"  Sample opp_chase_rate: {df['opp_chase_rate'].head(3).tolist() if 'opp_chase_rate' in df.columns else 'MISSING'}")
 
-   defaults = {
-       "opp_team_k_pct":   22.0,
-       "opp_chase_rate":  30.0,
-       "opp_whiff_rate":  22.0,
-       "park_hr_factor":   100.0,
-       "swstr_trend":      "",
-       "velo_trend":       "",
-       "opener_risk":      0.0,
-       "k_per_start_21d":  0.0,
-       "avg_ip_per_start": 5.5,
-       "fastball_velo":    93.0,
-       "chase_rate":       30.0,
-       "whip_proxy":       1.2,
-       "bb_pct_season":    8.0,
-   }
-   for col, val in defaults.items():
-       if col not in df.columns:
-           df[col] = val
-       else:
-           if isinstance(val, float):
-               df[col] = df[col].apply(lambda x: safe_float(x, val))
+    if not parks_df.empty and "home_team" in df.columns:
+        parks_df = parks_df.copy()
+        parks_df.columns = [c.strip() for c in parks_df.columns]
+        park_cols = [c for c in ["team", "park_hr_factor", "park_name"] if c in parks_df.columns]
+        if park_cols:
+            df = df.merge(
+                parks_df[park_cols],
+                left_on="home_team", right_on="team", how="left"
+            )
 
-   score_results          = df.apply(lambda r: compute_ks_score(r, lineup_k_stats), axis=1)
-   df["ks_score"]         = score_results.apply(lambda x: x[0])
-   df["score_breakdown"]  = score_results.apply(lambda x: x[1])
-   df["projected_k_calc"] = df.apply(lambda r: project_ks(r, lineup_k_stats), axis=1)
-   df["confidence"]       = df.apply(assign_confidence, axis=1)
-   df["reason"]           = df.apply(lambda r: build_reason(r, lineup_k_stats), axis=1)
+    defaults = {
+        "opp_team_k_pct":  22.0,
+        "opp_chase_rate":  30.0,
+        "opp_whiff_rate":  22.0,
+        "park_hr_factor":  100.0,
+        "swstr_trend":     "",
+        "velo_trend":      "",
+        "opener_risk":     0.0,
+        "k_per_start_21d": 0.0,
+        "avg_ip_per_start": 5.5,
+        "fastball_velo":   93.0,
+        "chase_rate":      30.0,
+        "whip_proxy":      1.2,
+        "bb_pct_season":   8.0,
+    }
+    for col, val in defaults.items():
+        if col not in df.columns:
+            df[col] = val
+        else:
+            if isinstance(val, float):
+                df[col] = df[col].apply(lambda x: safe_float(x, val))
 
-   def get_lineup_k_display(row):
-       opposing_team = str(row.get("opposing_team", "")).strip()
-       data          = lineup_k_stats.get(opposing_team, {})
-       if data.get("num_batters", 0) >= MIN_LINEUP_BATTERS:
-           return f"{data['avg_k_pct']:.1f}% ({data['num_batters']} batters)"
-       return ""
+    score_results          = df.apply(lambda r: compute_ks_score(r, lineup_k_stats), axis=1)
+    df["ks_score"]         = score_results.apply(lambda x: x[0])
+    df["score_breakdown"]  = score_results.apply(lambda x: x[1])
+    df["projected_k_calc"] = df.apply(lambda r: project_ks(r, lineup_k_stats), axis=1)
+    df["confidence"]       = df.apply(assign_confidence, axis=1)
+    df["reason"]           = df.apply(lambda r: build_reason(r, lineup_k_stats), axis=1)
 
-   df["opp_lineup_k_pct"] = df.apply(get_lineup_k_display, axis=1)
+    def get_lineup_k_display(row):
+        opposing_team = str(row.get("opposing_team", "")).strip()
+        data          = lineup_k_stats.get(opposing_team, {})
+        if data.get("num_batters", 0) >= MIN_LINEUP_BATTERS:
+            return f"{data['avg_k_pct']:.1f}% ({data['num_batters']} batters)"
+        return ""
 
-   if not odds_df.empty:
-       odds_df = odds_df.copy()
-       odds_df.columns = [c.strip() for c in odds_df.columns]
+    df["opp_lineup_k_pct"] = df.apply(get_lineup_k_display, axis=1)
 
-       if "pitcher_name" in odds_df.columns:
-           odds_df["pitcher_name_norm"] = odds_df["pitcher_name"].apply(normalize_name)
+    if not odds_df.empty:
+        odds_df = odds_df.copy()
+        odds_df.columns = [c.strip() for c in odds_df.columns]
 
-       if "pitcher_name" in df.columns:
-           df["pitcher_name_norm"] = df["pitcher_name"].apply(normalize_name)
+        if "pitcher_name" in odds_df.columns:
+            odds_df["pitcher_name_norm"] = odds_df["pitcher_name"].apply(normalize_name)
 
-       odds_cols = [c for c in ["pitcher_name_norm", "k_line", "over_odds", "under_odds"] if c in odds_df.columns]
-       if "pitcher_name_norm" in odds_cols:
-           odds_slim = odds_df[odds_cols].rename(columns={
-               "over_odds":  "ks_over_odds",
-               "under_odds": "ks_under_odds",
-           })
-           df = df.merge(odds_slim, on="pitcher_name_norm", how="left")
-   else:
-       df["k_line"]        = np.nan
-       df["ks_over_odds"]  = np.nan
-       df["ks_under_odds"] = np.nan
+        if "pitcher_name" in df.columns:
+            df["pitcher_name_norm"] = df["pitcher_name"].apply(normalize_name)
 
-   df["prop_signal"] = df.apply(calc_prop_signal, axis=1)
+        odds_cols = [c for c in ["pitcher_name_norm", "k_line", "over_odds", "under_odds"] if c in odds_df.columns]
+        if "pitcher_name_norm" in odds_cols:
+            odds_slim = odds_df[odds_cols].rename(columns={
+                "over_odds":  "ks_over_odds",
+                "under_odds": "ks_under_odds",
+            })
+            df = df.merge(odds_slim, on="pitcher_name_norm", how="left")
+    else:
+        df["k_line"]        = np.nan
+        df["ks_over_odds"]  = np.nan
+        df["ks_under_odds"] = np.nan
 
-   return df
+    df["prop_signal"] = df.apply(calc_prop_signal, axis=1)
+
+    return df
+
 
 
 def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
