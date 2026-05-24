@@ -625,10 +625,6 @@ def prepare_picks(
             "team":            "opposing_team",
         }
 
-        print(f"  KS opposing teams: {df['opposing_team'].unique().tolist()}")
-        print(f"  Team K rates teams: {team_k_rates['team'].unique().tolist()}")
-        print(f"  Team K rates columns: {team_k_rates.columns.tolist()}")
-
         df = df.merge(
             team_k_rates[merge_cols].rename(columns=rename_map),
             on="opposing_team", how="left"
