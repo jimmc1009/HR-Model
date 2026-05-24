@@ -1928,7 +1928,7 @@ def main() -> None:
     if not picks.empty and "Batter" in picks.columns:
         exclude_from_ev = set(picks["Batter"].dropna().tolist())
 
-    ev_section = build_ev_subsection(combined, exclude_from_ev, odds_lookup=odds_lookup if odds_lookup else {})
+    ev_section = build_value_plays(combined, exclude_from_ev, odds_lookup=odds_lookup if odds_lookup else {})
 
     print(f"Built {len(picks)} main picks")
     print(f"Built {len(ev_section)} Value plays")
