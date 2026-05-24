@@ -1000,6 +1000,9 @@ def main() -> None:
     print(f"KS_Statcast: {len(ks_df)} pitchers")
     print(f"Today's probables: {len(pitchers_df)} pitchers")
     print(f"Team K Rates: {len(team_k_rates)} rows")
+    print(f"  Team K Rates raw columns: {team_k_rates.columns.tolist()}")
+    print(f"  Team K Rates shape: {team_k_rates.shape}")
+
     print(f"Parks: {len(parks_df)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
     print(f"Projected Lineups: {len(projected_lineups)} rows")
