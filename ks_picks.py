@@ -381,8 +381,8 @@ def compute_ks_score(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> tuple:
         s_opp_k   = score_opp_lineup_k_pct(avg_k_pct, num_batters)
     else:
         s_opp_k     = score_opp_team_k_pct(safe_float(row.get("opp_team_k_pct", 22.0), 22.0))
-        s_opp_chase = score_opp_team_chase(safe_float(row.get("team_chase_rate", 0.0), 0.0))
-        s_opp_whiff = score_opp_team_whiff(safe_float(row.get("team_whiff_rate", 0.0), 0.0))
+        s_opp_chase = score_opp_team_chase(safe_float(row.get("opp_chase_rate", 0.0), 0.0))
+        s_opp_whiff = score_opp_team_whiff(safe_float(row.get("opp_whiff_rate", 0.0), 0.0))
 
     total = round(
         s_k_pct + s_swstr + s_chase + s_k9 + s_velo +
@@ -627,7 +627,7 @@ def prepare_picks(
        )
 
        print(f"  Team K rates columns after merge: {[c for c in df.columns if 'chase' in c.lower() or 'whiff' in c.lower()]}")
-       print(f"  Sample chase rate: {df['team_chase_rate'].head(3).tolist() if 'team_chase_rate' in df.columns else 'MISSING'}")
+       print(f"  Sample chase rate: {df['opp_chase_rate'].head(3).tolist() if 'opp_chase_rate' in df.columns else 'MISSING'}")
 
    if not parks_df.empty and "home_team" in df.columns:
        parks_df = parks_df.copy()
