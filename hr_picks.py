@@ -1129,10 +1129,16 @@ def build_value_plays(combined: pd.DataFrame, exclude_names: set, odds_lookup: d
             combined[col] = 0.0
 
     # Core filter — model likes them, books don't
-    value_df = combined[
-        (combined["score"] >= 11.0) &
-        (combined["consensus_odds"] >= 500)
-    ].copy()
+    combined = combined.copy()
+        combined["consensus_odds"] = combined["player_name"].apply(
+            lambda n: odds_lookup.get(normalize_name(str(n)), 0)
+        )
+
+        value_df = combined[
+            (combined["score"] >= 11.0) &
+            (combined["consensus_odds"] >= 500)
+        ].copy()
+
 
     if value_df.empty:
         print("No value plays found today.")
