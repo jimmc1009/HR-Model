@@ -616,8 +616,8 @@ def prepare_picks(
 
        rename_map = {
            "team_k_pct":      "opp_team_k_pct",
-           "team_chase_rate": "team_chase_rate",
-           "team_whiff_rate": "team_whiff_rate",
+           "team_chase_rate": "opp_chase_rate",
+           "team_whiff_rate": "opp_whiff_rate",
            "team":            "opposing_team",
        }
 
@@ -641,8 +641,8 @@ def prepare_picks(
 
    defaults = {
        "opp_team_k_pct":   22.0,
-       "team_chase_rate":  30.0,
-       "team_whiff_rate":  22.0,
+       "opp_chase_rate":  30.0,
+       "opp_whiff_rate":  22.0,
        "park_hr_factor":   100.0,
        "swstr_trend":      "",
        "velo_trend":       "",
