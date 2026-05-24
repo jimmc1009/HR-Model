@@ -1011,8 +1011,9 @@ def write_dataframe_to_sheet(
             lambda x: "" if (isinstance(x, float) and (np.isnan(x) or np.isinf(x))) else x
         )
     df = df.fillna("")
-    values = [df.columns.tolist()] + df.astype(str).values.tolist()
-    ws.update(values)
+    values = [df.columns.tolist()] + df.values.tolist()
+    ws.update(values, value_input_option="USER_ENTERED")
+
 
 
 def get_today_teams() -> Set[str]:
