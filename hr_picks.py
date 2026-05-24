@@ -1111,136 +1111,111 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
     return top10[list(available.keys())].rename(columns=available), odds_lookup
 
 
-def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str], odds_lookup: dict = None) -> pd.DataFrame:
+def build_value_plays(combined: pd.DataFrame, exclude_names: set, odds_lookup: dict = None) -> pd.DataFrame:
     if combined.empty:
         return pd.DataFrame()
 
     combined = combined.copy()
+
+    # Remove players already in main top 10
     if "player_name" in combined.columns and exclude_names:
-        before   = len(combined)
         combined = combined[~combined["player_name"].isin(exclude_names)].copy()
-        excluded = before - len(combined)
-        if excluded > 0:
-            print(f"EV section: excluded {excluded} players already in top 10")
 
     # Coerce needed columns
-    for col in ["avg_ev_7d", "avg_la_7d", "avg_la_5d", "avg_la_10d", "season_barrel_pct",
-                "barrel_pct_5d", "barrel_pct_10d", "hard_hit_pct_7d", "iso",
-                "pitcher_barrel_pct", "bbe_5d", "bbe_7d", "bbe_10d"]:
+    for col in ["score", "consensus_odds"]:
         if col in combined.columns:
             combined[col] = combined[col].apply(safe_float)
         else:
             combined[col] = 0.0
 
-    combined["ev_recent"]    = combined["avg_ev_7d"]
-    combined["la_5d"]        = combined["avg_la_5d"]
-    combined["la_10d"]       = combined["avg_la_10d"]
-    combined["la_7d"]        = combined["avg_la_7d"]
-    combined["bar_5d"]       = combined["barrel_pct_5d"]
-    combined["bar_10d"]      = combined["barrel_pct_10d"]
-    combined["la_delta"]     = combined["la_5d"] - combined["la_10d"]
-    combined["barrel_delta"] = combined["bar_5d"] - combined["bar_10d"]
-
-    # ── Breakout candidate criteria ───────────────────────────────────────
-    ev_df = combined[
-        # Power confirmed
-        (combined["ev_recent"] >= 92) &
-        (combined["season_barrel_pct"] >= 8) &
-        (combined["iso"] >= 0.175) &
-        # Elevation trending UP
-        (combined["la_delta"] >= 3.0) &
-        (combined["la_5d"] >= 15.0) &
-        # Recent hot contact
-        (combined["barrel_delta"] >= 0) &
-        (combined["hard_hit_pct_7d"] >= 45) &
-        (combined["bbe_5d"] >= 3) &
-        (combined["bbe_7d"] >= 5) &
-        # Hittable pitcher
-        (combined["pitcher_barrel_pct"] >= 9) &
-        # Not too deep in the lineup
-        (combined.get("avg_bat_order", pd.Series(9, index=combined.index)).apply(safe_float) <= 7)
+    # Core filter — model likes them, books don't
+    value_df = combined[
+        (combined["score"] >= 11.0) &
+        (combined["consensus_odds"] >= 500)
     ].copy()
 
-    # Odds gate — filter out longshots books don't respect
-    if odds_lookup and "player_name" in ev_df.columns:
+    if value_df.empty:
+        print("No value plays found today.")
+        return pd.DataFrame()
+
+    # Apply odds lookup if available
+    if odds_lookup and "player_name" in value_df.columns:
         def get_odds(row):
             norm = normalize_name(str(row.get("player_name", "")))
             return odds_lookup.get(norm, None)
-
-        ev_df["_ev_odds"] = ev_df.apply(get_odds, axis=1)
-        # Keep if odds exist and are <= +800, or if no odds data
-        ev_df = ev_df[
-            ev_df["_ev_odds"].isna() |
-            (ev_df["_ev_odds"] <= 800)
+        value_df["consensus_odds"] = value_df.apply(get_odds, axis=1)
+        value_df = value_df[
+            value_df["consensus_odds"].notna() &
+            (value_df["consensus_odds"] >= 500)
         ].copy()
 
-    if ev_df.empty:
-        print("No breakout candidates found today.")
+    if value_df.empty:
+        print("No value plays found today.")
         return pd.DataFrame()
 
-    # Sort by main HR score
-    ev_df = ev_df.sort_values("score", ascending=False)
-    ev_df["team_count"] = ev_df.groupby("batter_team").cumcount()
-    ev_df = ev_df[ev_df["team_count"] < MAX_PER_TEAM].head(3).copy()
-    ev_df = ev_df.drop(columns=["team_count"])
-    ev_df["ev_rank"] = range(1, len(ev_df) + 1)
+    # Sort by score, one per team, top 5
+    value_df = value_df.sort_values("score", ascending=False)
+    value_df["team_count"] = value_df.groupby("batter_team").cumcount()
+    value_df = value_df[value_df["team_count"] < 1].head(5).copy()
+    value_df = value_df.drop(columns=["team_count"])
+    value_df["value_rank"] = range(1, len(value_df) + 1)
 
-    print(f"Built {len(ev_df)} EV subsection picks")
+    print(f"Built {len(value_df)} value plays")
 
-    def build_ev_reason(row) -> str:
+    def build_value_reason(row) -> str:
         reasons = []
 
-        ev    = safe_float(row.get("avg_ev_7d"))
-        la_5  = safe_float(row.get("avg_la_5d"))
-        la_10 = safe_float(row.get("avg_la_10d"))
-        reasons.append(f"💥 {ev:.1f} mph avg EV — raw power confirmed")
-        reasons.append(f"📐 LA trending up ({la_10:.1f}→{la_5:.1f}° last 5d) — elevation coming")
+        score = safe_float(row.get("score"))
+        odds  = safe_float(row.get("consensus_odds"))
+        reasons.append(f"📊 Model score {score:.1f} — books have at +{int(odds)}")
 
-        bar_s = safe_float(row.get("season_barrel_pct"))
-        bar_5 = safe_float(row.get("barrel_pct_5d"))
-        bar_10 = safe_float(row.get("barrel_pct_10d"))
-        reasons.append(f"💣 Barrel% trending up ({bar_10:.1f}→{bar_5:.1f}% last 5d, {bar_s:.1f}% season)")
+        barrel_7d = safe_float(row.get("barrel_pct_7d"))
+        if barrel_7d >= 12:
+            reasons.append(f"🔥 {barrel_7d:.1f}% barrel rate last 7 days")
 
-        hh_7d = safe_float(row.get("hard_hit_pct_7d"))
-        reasons.append(f"💪 {hh_7d:.1f}% hard hit rate last 7 days")
+        season_barrel = safe_float(row.get("season_barrel_pct"))
+        if season_barrel >= 9:
+            reasons.append(f"💣 {season_barrel:.1f}% season barrel%")
 
         iso = safe_float(row.get("iso"))
-        if iso >= 0.250:
-            reasons.append(f"⚡ Elite ISO {iso:.3f}")
-        elif iso >= 0.175:
-            reasons.append(f"⚡ ISO {iso:.3f} — power in profile")
+        if iso >= 0.175:
+            reasons.append(f"⚡ ISO {iso:.3f}")
 
         p_barrel = safe_float(row.get("pitcher_barrel_pct"))
-        reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels — hittable")
+        if p_barrel >= 9:
+            reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
 
-        momentum_desc = str(row.get("momentum_desc", ""))
-        if momentum_desc:
-            reasons.append(momentum_desc)
+        bvp_iso = safe_float(row.get("bvp_iso"))
+        bvp_pa  = safe_float(row.get("bvp_pa"))
+        bvp_hr  = safe_float(row.get("bvp_hr"))
+        if bvp_pa >= 5 and bvp_iso >= 0.150:
+            reasons.append(f"✅ ISO {bvp_iso:.3f} vs this pitcher in {int(bvp_pa)} PA" + (f", {int(bvp_hr)} HR" if bvp_hr > 0 else ""))
 
-        bvp_desc = str(row.get("bvp_desc", ""))
-        if bvp_desc:
-            reasons.append(bvp_desc)
+        park = safe_float(row.get("park_hr_factor"), 100)
+        if park >= 110:
+            reasons.append(f"🏟️ HR-friendly park (factor {park:.0f})")
 
-        platoon_desc = str(row.get("platoon_desc", ""))
-        if platoon_desc:
-            reasons.append(f"🔄 {platoon_desc}")
-
-        pull_desc = str(row.get("pull_park_desc", ""))
-        if pull_desc:
-            reasons.append(pull_desc)
-
-        wind_ctx = str(row.get("wind_context", ""))
-        boost    = safe_float(row.get("hr_weather_boost"))
+        boost = safe_float(row.get("hr_weather_boost"))
         if boost >= 1.0:
-            reasons.append(f"🌬️ {wind_ctx}")
+            reasons.append(f"🌬️ Favorable weather")
 
-        reasons.append("⬆️ Everything aligning — elevation trending, power confirmed, hittable pitcher")
+        platoon = str(row.get("platoon_desc", ""))
+        if platoon and "advantage" in platoon.lower():
+            reasons.append(f"🔄 {platoon}")
+
+        momentum = str(row.get("momentum_desc", ""))
+        if momentum:
+            reasons.append(momentum)
+
+        if not reasons:
+            reasons.append("High model score at value odds")
+
         return " | ".join(reasons)
 
-    ev_df["why"] = ev_df.apply(build_ev_reason, axis=1)
+    value_df["why"] = value_df.apply(build_value_reason, axis=1)
 
     output_cols = {
-        "ev_rank":                    "Rank",
+        "value_rank":                 "Rank",
         "player_name":                "Batter",
         "batter_hand":                "Bats",
         "batter_team":                "Team",
@@ -1249,33 +1224,33 @@ def build_ev_subsection(combined: pd.DataFrame, exclude_names: Set[str], odds_lo
         "opp_pitcher_team":           "Pitcher Team",
         "park_name":                  "Park",
         "score":                      "HR Score",
+        "consensus_odds":             "Consensus Odds",
         "confidence":                 "Confidence",
         "why":                        "Why They're Here",
         "batting_avg":                "Batting Avg",
-        "avg_ev_7d":                  "Avg EV (7d)",
-        "avg_la_5d":                  "LA (5d)",
-        "avg_la_10d":                 "LA (10d)",
-        "avg_la_7d":                  "Avg Launch Angle (7d)",
-        "avg_launch_angle":           "Avg Launch Angle (Season)",
-        "hard_hit_pct_7d":            "Hard Hit% (7d)",
-        "barrel_pct_5d":              "Barrel% (5d)",
-        "barrel_pct_10d":             "Barrel% (10d)",
+        "barrel_pct_7d":              "Barrel% (7d)",
         "season_barrel_pct":          "Barrel% (Season)",
+        "iso":                        "ISO",
+        "avg_ev_7d":                  "Avg EV (7d)",
+        "avg_la_7d":                  "Avg Launch Angle (7d)",
+        "hard_hit_pct_7d":            "Hard Hit% (7d)",
         "momentum_desc":              "Momentum",
         "hr_per_pa":                  "HR/PA%",
-        "iso":                        "ISO",
+        "bvp_pa":                     "BvP PA",
+        "bvp_hr":                     "BvP HR",
+        "bvp_iso":                    "BvP ISO",
+        "bvp_desc":                   "BvP Notes",
+        "platoon_desc":               "Platoon Matchup",
         "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":          "Pitcher HR/FB%",
-        "pull_park_desc":             "Pull Park Matchup",
-        "platoon_desc":               "Platoon Matchup",
-        "bvp_desc":                   "BvP Notes",
         "park_hr_factor":             "Park HR Factor",
+        "hr_weather_boost":           "Weather Boost",
         "wind_context":               "Wind",
         "temp_f":                     "Temp (°F)",
     }
 
-    available = {k: v for k, v in output_cols.items() if k in ev_df.columns}
-    return ev_df[list(available.keys())].rename(columns=available)
+    available = {k: v for k, v in output_cols.items() if k in value_df.columns}
+    return value_df[list(available.keys())].rename(columns=available)
 
 
 def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
@@ -1442,7 +1417,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
             })
 
     build_log_rows(picks,      "Main")
-    build_log_rows(ev_section, "EV")
+    build_log_rows(ev_section, "Value")
 
     if not new_rows:
         print("No picks to log.")
@@ -1853,7 +1828,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame,
     main_row_count    = len(picks_clean)
     ev_start_row      = len(all_values) + 2
     all_values.append([])
-    all_values.append(["⚡  HIGH EXIT VELOCITY — LAUNCH ANGLE UPSIDE PICKS"])
+    all_values.append(["💎  VALUE PLAYS — HIGH MODEL SCORE, LONG ODDS"])
     ev_col_header_row = ev_start_row + 1
     ev_data_row_count = 0
 
@@ -1953,10 +1928,10 @@ def main() -> None:
     if not picks.empty and "Batter" in picks.columns:
         exclude_from_ev = set(picks["Batter"].dropna().tolist())
 
-    ev_section = build_ev_subsection(combined, exclude_from_ev, odds_lookup=odds_lookup if odds_lookup else {})
+    ev_section = build_value_plays(combined, exclude_from_ev, odds_lookup=odds_lookup if odds_lookup else {})
 
     print(f"Built {len(picks)} main picks")
-    print(f"Built {len(ev_section)} EV subsection picks")
+    print(f"Built {len(ev_section)} Value plays")
 
     if picks.empty:
         print("WARNING: No picks generated.")
@@ -1966,8 +1941,8 @@ def main() -> None:
     print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score", "Consensus Odds"]].to_string(index=False))
 
     if not ev_section.empty:
-        print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Bats", "Team", "Avg EV (7d)", "Avg Launch Angle (7d)", "Batting Avg", "Confidence"]].to_string(index=False))
+        print("\nValue Plays - High Score, Long Odds:")
+        print(ev_section[["Rank", "Batter", "Bats", "Team", "HR Score", "Consensus Odds", "Batting Avg", "Confidence"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(gc, sheet_id, picks, ev_section)
     print("Written to Top_HR_Picks")
