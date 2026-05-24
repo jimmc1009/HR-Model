@@ -647,9 +647,6 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
         print(f"  Zone sample values: {df['zone'].dropna().head(5).tolist()}")
 
     if "batting_team" not in df.columns:
-
-
-    if "batting_team" not in df.columns:
         if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
             df = df.copy()
             df["batting_team"] = df.apply(
