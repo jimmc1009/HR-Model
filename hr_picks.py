@@ -1417,7 +1417,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
             })
 
     build_log_rows(picks,      "Main")
-    build_log_rows(ev_section, "EV")
+    build_log_rows(ev_section, "Value")
 
     if not new_rows:
         print("No picks to log.")
@@ -1931,7 +1931,7 @@ def main() -> None:
     ev_section = build_ev_subsection(combined, exclude_from_ev, odds_lookup=odds_lookup if odds_lookup else {})
 
     print(f"Built {len(picks)} main picks")
-    print(f"Built {len(ev_section)} EV subsection picks")
+    print(f"Built {len(ev_section)} Value plays")
 
     if picks.empty:
         print("WARNING: No picks generated.")
@@ -1941,8 +1941,8 @@ def main() -> None:
     print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score", "Consensus Odds"]].to_string(index=False))
 
     if not ev_section.empty:
-        print("\nHigh EV / Launch Angle Upside:")
-        print(ev_section[["Rank", "Batter", "Bats", "Team", "Avg EV (7d)", "Avg Launch Angle (7d)", "Batting Avg", "Confidence"]].to_string(index=False))
+        print("\nValue Plays - High Score, Long Odds:")
+        print(ev_section[["Rank", "Batter", "Bats", "Team", "HR Score", "Consensus Odds", "Batting Avg", "Confidence"]].to_string(index=False))
 
     main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(gc, sheet_id, picks, ev_section)
     print("Written to Top_HR_Picks")
