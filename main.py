@@ -425,9 +425,8 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame()
 
-    # Use all pitches — deduplicate to one row per batter per game
-    # Don't filter by events.notna() since that misses games where
-    # a batter's PA-ending event is null in Statcast
+    # Deduplicate directly on full pitch data — do NOT filter by events.notna()
+    # which would drop games where PA-ending event is null in Statcast
     game_df = df.drop_duplicates(
         subset=[c for c in ["game_pk", "batter"] if c in df.columns]
     ).copy()
@@ -481,7 +480,6 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
     return starts[["batter_id", "batting_team", "batter_games_vs_lhp", "batter_games_vs_rhp",
                     "team_games_vs_lhp", "team_games_vs_rhp",
                     "lhp_start_rate", "rhp_start_rate"]]
-
 
 
 def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -638,6 +636,86 @@ def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
     bvp = bvp.rename(columns={"pitcher": "pitcher_id"})
 
     return bvp[["batter", "pitcher_id", "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate"]]
+
+
+def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    if "batting_team" not in df.columns:
+        if {"inning_topbot", "home_team", "away_team"}.issubset(df.columns):
+            df = df.copy()
+            df["batting_team"] = df.apply(
+                lambda r: str(r["away_team"]).strip()
+                if str(r["inning_topbot"]).lower().startswith("top")
+                else str(r["home_team"]).strip(), axis=1,
+            )
+        else:
+            print("  WARNING: Cannot determine batting team for team K stats")
+            return pd.DataFrame()
+
+    # ── K% ────────────────────────────────────────────────────────────────
+    pa_df = df[df["events"].astype("string").str.lower().isin(PA_EVENTS)].copy()
+    pa_df = pa_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
+    )
+    pa_df["is_k"] = pa_df["events"].astype("string").str.lower().isin(
+        {"strikeout", "strikeout_double_play"}
+    ).astype(int)
+
+    k_stats = pa_df.groupby("batting_team").agg(
+        team_pa=("is_k", "count"),
+        team_k=("is_k", "sum"),
+    ).reset_index()
+    k_stats["team_k_pct"] = (
+        k_stats["team_k"] / k_stats["team_pa"].replace(0, np.nan) * 100
+    ).round(1)
+
+    # ── Chase rate and whiff rate ──────────────────────────────────────────
+    if "zone" in df.columns and "description" in df.columns:
+        pitch_df = df[df["description"].astype("string").str.lower().isin({
+            "swinging_strike", "swinging_strike_blocked", "foul", "foul_tip",
+            "hit_into_play", "hit_into_play_no_out", "hit_into_play_score",
+            "ball", "called_strike", "blocked_ball"
+        })].copy()
+
+        pitch_df["zone_num"]     = pd.to_numeric(pitch_df["zone"], errors="coerce")
+        pitch_df["is_ozone"]     = pitch_df["zone_num"].between(11, 14)
+        pitch_df["is_swing"]     = pitch_df["description"].astype("string").str.lower().isin({
+            "swinging_strike", "swinging_strike_blocked", "foul", "foul_tip",
+            "hit_into_play", "hit_into_play_no_out", "hit_into_play_score"
+        })
+        pitch_df["is_chase"] = pitch_df["is_ozone"] & pitch_df["is_swing"]
+        pitch_df["is_miss"]  = pitch_df["description"].astype("string").str.lower().isin({
+            "swinging_strike", "swinging_strike_blocked"
+        })
+
+        chase_stats = pitch_df.groupby("batting_team").agg(
+            ozone_pitches=("is_ozone", "sum"),
+            chases=("is_chase", "sum"),
+            swings=("is_swing", "sum"),
+            misses=("is_miss", "sum"),
+        ).reset_index()
+
+        chase_stats["team_chase_rate"] = (
+            chase_stats["chases"] / chase_stats["ozone_pitches"].replace(0, np.nan) * 100
+        ).round(1)
+        chase_stats["team_whiff_rate"] = (
+            chase_stats["misses"] / chase_stats["swings"].replace(0, np.nan) * 100
+        ).round(1)
+
+        k_stats = k_stats.merge(
+            chase_stats[["batting_team", "team_chase_rate", "team_whiff_rate"]],
+            on="batting_team", how="left"
+        )
+    else:
+        k_stats["team_chase_rate"] = np.nan
+        k_stats["team_whiff_rate"] = np.nan
+
+    k_stats = k_stats.rename(columns={"batting_team": "team"})
+    k_stats = k_stats[["team", "team_k_pct", "team_chase_rate", "team_whiff_rate"]]
+    print(f"Built team K stats for {len(k_stats)} teams")
+    return k_stats
 
 
 def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
@@ -997,7 +1075,7 @@ def main() -> None:
     raw_df["game_date"] = pd.to_datetime(raw_df["game_date"])
     print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
 
-    # ── Build batter features ──────────────────────────────────────
+    # ── Build batter features ──────────────────────────────────────────────
     batter_df = build_batter_features(raw_df, today_teams)
     print(f"Built {len(batter_df)} batter rows")
 
@@ -1031,7 +1109,14 @@ def main() -> None:
         write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_2026", batter_df)
         print("Written to Batter_Statcast_2026")
 
-    # ── Build BvP history ──────────────────────────────────────────
+    # ── Build team K stats ─────────────────────────────────────────────────
+    print("Building team K stats...")
+    team_k_df = build_team_k_stats(raw_df)
+    if not team_k_df.empty:
+        write_dataframe_to_sheet(gc, sheet_id, "Team_K_Rates", team_k_df)
+        print(f"Written {len(team_k_df)} rows to Team_K_Rates")
+
+    # ── Build BvP history ──────────────────────────────────────────────────
     print("Building batter vs pitcher history...")
     bvp_df = build_vs_pitcher_stats(raw_df)
     if not bvp_df.empty:
@@ -1046,7 +1131,7 @@ def main() -> None:
     else:
         print("No BvP data to write.")
 
-    # ── Active rosters ─────────────────────────────────────────────
+    # ── Active rosters ─────────────────────────────────────────────────────
     print("Fetching active rosters...")
     active_roster_ids = get_active_roster_ids()
     if active_roster_ids:
@@ -1056,7 +1141,7 @@ def main() -> None:
     else:
         print("No active roster data to write.")
 
-    # ── Confirmed lineups ──────────────────────────────────────────
+    # ── Confirmed lineups ──────────────────────────────────────────────────
     print("Fetching confirmed lineups...")
     lineups = get_today_confirmed_lineups()
     if lineups:
