@@ -425,8 +425,6 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame()
 
-    # Deduplicate directly on full pitch data — do NOT filter by events.notna()
-    # which would drop games where PA-ending event is null in Statcast
     game_df = df.drop_duplicates(
         subset=[c for c in ["game_pk", "batter"] if c in df.columns]
     ).copy()
@@ -572,6 +570,72 @@ def build_hrrbi_extra_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def build_vs_pitcher_stats(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    pa_df = df[df["events"].notna()].copy()
+    pa_df = pa_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
+    )
+
+    ab_df = df[df["events"].astype("string").str.lower().isin(AB_EVENTS)].copy()
+    ab_df = ab_df.drop_duplicates(
+        subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in ab_df.columns]
+    )
+
+    bbe = filter_bbe(df)
+    if bbe.empty:
+        return pd.DataFrame()
+
+    bbe = add_flags(bbe)
+
+    tb_map = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+    bbe["total_bases"] = bbe["events"].astype("string").str.lower().map(tb_map).fillna(0)
+    bbe["is_hit"]      = bbe["events"].astype("string").str.lower().isin(
+        {"single", "double", "triple", "home_run"}
+    )
+
+    pa_counts = (
+        pa_df.groupby(["batter", "pitcher"])
+        .size()
+        .reset_index(name="bvp_pa")
+    )
+    ab_counts = (
+        ab_df.groupby(["batter", "pitcher"])
+        .size()
+        .reset_index(name="bvp_ab")
+    )
+
+    bvp = (
+        bbe.groupby(["batter", "pitcher"], dropna=False)
+        .agg(
+            bvp_bbe=("launch_speed", "size"),
+            bvp_hr=("is_hr", "sum"),
+            bvp_barrel=("is_barrel", "sum"),
+            bvp_tb=("total_bases", "sum"),
+            bvp_hits=("is_hit", "sum"),
+        )
+        .reset_index()
+    )
+
+    bvp = bvp.merge(pa_counts, on=["batter", "pitcher"], how="left")
+    bvp = bvp.merge(ab_counts, on=["batter", "pitcher"], how="left")
+    bvp["bvp_pa"] = bvp["bvp_pa"].fillna(0)
+    bvp["bvp_ab"] = bvp["bvp_ab"].fillna(0)
+    bvp = bvp[bvp["bvp_pa"] >= MIN_BBE_VS_PITCHER].copy()
+
+    if bvp.empty:
+        return pd.DataFrame()
+
+    bvp["bvp_iso"]        = ((bvp["bvp_tb"] - bvp["bvp_hits"]) / bvp["bvp_ab"].replace(0, np.nan)).round(3)
+    bvp["bvp_barrel_pct"] = (bvp["bvp_barrel"] / bvp["bvp_bbe"].replace(0, np.nan) * 100).round(2)
+    bvp["bvp_hr_rate"]    = (bvp["bvp_hr"] / bvp["bvp_pa"].replace(0, np.nan) * 100).round(2)
+    bvp = bvp.rename(columns={"pitcher": "pitcher_id"})
+
+    return bvp[["batter", "pitcher_id", "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate"]]
+
+
 def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -607,16 +671,11 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Chase rate and whiff rate ──────────────────────────────────────────
     if "zone" in df.columns and "description" in df.columns:
-        sample_desc = df["description"].dropna().unique()[:10].tolist()
-        print(f"  Description sample: {sample_desc}")
-
         pitch_df = df[df["description"].astype("string").str.lower().isin({
             "swinging_strike", "swinging_strike_blocked", "foul", "foul_tip",
             "hit_into_play", "hit_into_play_no_out", "hit_into_play_score",
             "ball", "called_strike", "blocked_ball"
         })].copy()
-
-        print(f"  Pitch df rows after description filter: {len(pitch_df)}")
 
         pitch_df["zone_num"]  = pd.to_numeric(pitch_df["zone"], errors="coerce")
         pitch_df["is_ozone"]  = pitch_df["zone_num"].between(11, 14)
@@ -636,10 +695,6 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
             misses=("is_miss", "sum"),
         ).reset_index()
 
-        print(f"  Chase stats rows: {len(chase_stats)}")
-        if not chase_stats.empty:
-            print(f"  Sample chase stats: {chase_stats.head(3).to_dict('records')}")
-
         chase_stats["team_chase_rate"] = (
             chase_stats["chases"] / chase_stats["ozone_pitches"].replace(0, np.nan) * 100
         ).round(1)
@@ -658,9 +713,7 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
     k_stats = k_stats.rename(columns={"batting_team": "team"})
     k_stats = k_stats[["team", "team_k_pct", "team_chase_rate", "team_whiff_rate"]]
     print(f"Built team K stats for {len(k_stats)} teams")
-    print(f"  Sample: {k_stats.head(3).to_dict('records')}")
     return k_stats
-
 
 
 def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFrame:
