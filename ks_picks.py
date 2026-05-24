@@ -75,16 +75,15 @@ def with_retry(func, retries: int = 4, wait: int = 25):
 
 def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
     try:
-        sh   = with_retry(lambda: gc.open_by_key(sheet_id))
-        ws   = sh.worksheet(name)
-        data = with_retry(lambda: ws.get_all_records())
-        return pd.DataFrame(data)
-    except gspread.WorksheetNotFound:
-        print(f"WARNING: Sheet '{name}' not found.")
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"WARNING: Could not read sheet '{name}': {e}")
-        return pd.DataFrame()
+        sh         = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws         = sh.worksheet(name)
+        all_values = with_retry(lambda: ws.get_all_values())
+        if not all_values or len(all_values) < 2:
+            return pd.DataFrame()
+        headers = all_values[0]
+        rows    = all_values[1:]
+        return pd.DataFrame(rows, columns=headers)
+
 
 
 def safe_float(val, default=0.0) -> float:
