@@ -1828,7 +1828,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame,
     main_row_count    = len(picks_clean)
     ev_start_row      = len(all_values) + 2
     all_values.append([])
-    all_values.append(["⚡  HIGH EXIT VELOCITY — LAUNCH ANGLE UPSIDE PICKS"])
+    all_values.append(["💎  VALUE PLAYS — HIGH MODEL SCORE, LONG ODDS"])
     ev_col_header_row = ev_start_row + 1
     ev_data_row_count = 0
 
