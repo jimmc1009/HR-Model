@@ -83,7 +83,12 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
         headers = all_values[0]
         rows    = all_values[1:]
         return pd.DataFrame(rows, columns=headers)
-
+    except gspread.WorksheetNotFound:
+        print(f"WARNING: Sheet '{name}' not found.")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"WARNING: Could not read sheet '{name}': {e}")
+        return pd.DataFrame()
 
 
 def safe_float(val, default=0.0) -> float:
