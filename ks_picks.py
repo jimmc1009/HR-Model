@@ -75,10 +75,14 @@ def with_retry(func, retries: int = 4, wait: int = 25):
 
 def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
     try:
-        sh   = with_retry(lambda: gc.open_by_key(sheet_id))
-        ws   = sh.worksheet(name)
-        data = with_retry(lambda: ws.get_all_records())
-        return pd.DataFrame(data)
+        sh         = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws         = sh.worksheet(name)
+        all_values = with_retry(lambda: ws.get_all_values())
+        if not all_values or len(all_values) < 2:
+            return pd.DataFrame()
+        headers = all_values[0]
+        rows    = all_values[1:]
+        return pd.DataFrame(rows, columns=headers)
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
         return pd.DataFrame()
@@ -191,11 +195,30 @@ def score_avg_ip(v: float) -> float:
 
 
 def score_opp_team_k_pct(v: float) -> float:
-    if v >= 28.0: return  1.0
-    if v >= 24.0: return  0.6
+    if v >= 28.0: return  1.5
+    if v >= 25.0: return  1.0
+    if v >= 22.0: return  0.5
     if v >= 20.0: return  0.2
-    if v <= 16.0: return -0.6
-    if v <= 18.0: return -0.3
+    if v <= 16.0: return -1.0
+    if v <= 18.0: return -0.5
+    return 0.0
+
+
+def score_opp_team_chase(v: float) -> float:
+    if v <= 0: return 0.0
+    if v >= 34.0: return  1.0
+    if v >= 31.0: return  0.5
+    if v <= 26.0: return -0.5
+    if v <= 28.0: return -0.2
+    return 0.0
+
+
+def score_opp_team_whiff(v: float) -> float:
+    if v <= 0: return 0.0
+    if v >= 27.0: return  1.0
+    if v >= 24.0: return  0.5
+    if v <= 18.0: return -0.5
+    if v <= 21.0: return -0.2
     return 0.0
 
 
@@ -352,34 +375,42 @@ def compute_ks_score(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> tuple:
     opposing_team = str(row.get("opposing_team", "")).strip()
     lineup_data   = lineup_k_stats.get(opposing_team, {})
     num_batters   = lineup_data.get("num_batters", 0)
-    s_opp_k       = 0.0
+
+    s_opp_k     = 0.0
+    s_opp_chase = 0.0
+    s_opp_whiff = 0.0
+
     if num_batters >= MIN_LINEUP_BATTERS:
         avg_k_pct = lineup_data.get("avg_k_pct", 0.0)
         s_opp_k   = score_opp_lineup_k_pct(avg_k_pct, num_batters)
     else:
-        s_opp_k   = score_opp_team_k_pct(safe_float(row.get("opp_team_k_pct", 22.0), 22.0))
+        s_opp_k     = score_opp_team_k_pct(safe_float(row.get("opp_team_k_pct", 22.0), 22.0))
+        s_opp_chase = score_opp_team_chase(safe_float(row.get("opp_chase_rate", 0.0), 0.0))
+        s_opp_whiff = score_opp_team_whiff(safe_float(row.get("opp_whiff_rate", 0.0), 0.0))
 
     total = round(
         s_k_pct + s_swstr + s_chase + s_k9 + s_velo +
-        s_k21 + s_avg_ip + s_opp_k + s_park +
-        s_trends + s_opener + s_whip + s_bb_pct,
+        s_k21 + s_avg_ip + s_opp_k + s_opp_chase + s_opp_whiff +
+        s_park + s_trends + s_opener + s_whip + s_bb_pct,
         2
     )
 
     parts = []
-    if s_k_pct:  parts.append(f"K%:{s_k_pct:+.1f}")
-    if s_swstr:  parts.append(f"SwStr:{s_swstr:+.1f}")
-    if s_chase:  parts.append(f"Chase:{s_chase:+.1f}")
-    if s_k9:     parts.append(f"K/9:{s_k9:+.1f}")
-    if s_velo:   parts.append(f"Velo:{s_velo:+.1f}")
-    if s_k21:    parts.append(f"21d:{s_k21:+.1f}")
-    if s_avg_ip: parts.append(f"IP:{s_avg_ip:+.1f}")
-    if s_whip:   parts.append(f"WHIP:{s_whip:+.1f}")
-    if s_bb_pct: parts.append(f"BB%:{s_bb_pct:+.1f}")
-    if s_opp_k:  parts.append(f"OppK:{s_opp_k:+.1f}")
-    if s_park:   parts.append(f"Park:{s_park:+.1f}")
-    if s_trends: parts.append(f"Trend:{s_trends:+.1f}")
-    if s_opener: parts.append(f"Opener:{s_opener:+.1f}")
+    if s_k_pct:      parts.append(f"K%:{s_k_pct:+.1f}")
+    if s_swstr:      parts.append(f"SwStr:{s_swstr:+.1f}")
+    if s_chase:      parts.append(f"Chase:{s_chase:+.1f}")
+    if s_k9:         parts.append(f"K/9:{s_k9:+.1f}")
+    if s_velo:       parts.append(f"Velo:{s_velo:+.1f}")
+    if s_k21:        parts.append(f"21d:{s_k21:+.1f}")
+    if s_avg_ip:     parts.append(f"IP:{s_avg_ip:+.1f}")
+    if s_whip:       parts.append(f"WHIP:{s_whip:+.1f}")
+    if s_bb_pct:     parts.append(f"BB%:{s_bb_pct:+.1f}")
+    if s_opp_k:      parts.append(f"OppK%:{s_opp_k:+.1f}")
+    if s_opp_chase:  parts.append(f"OppChase:{s_opp_chase:+.1f}")
+    if s_opp_whiff:  parts.append(f"OppWhiff:{s_opp_whiff:+.1f}")
+    if s_park:       parts.append(f"Park:{s_park:+.1f}")
+    if s_trends:     parts.append(f"Trend:{s_trends:+.1f}")
+    if s_opener:     parts.append(f"Opener:{s_opener:+.1f}")
 
     return total, " | ".join(parts)
 
@@ -495,6 +526,16 @@ def build_reason(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> str:
         elif opp_k <= 17:
             reasons.append(f"⚠️ Opp team K% {opp_k:.1f}% — contact-heavy lineup")
 
+        opp_chase = safe_float(row.get("team_chase_rate", 0.0))
+        if opp_chase >= 34:
+            reasons.append(f"🏃 Opp team chase rate {opp_chase:.1f}% — chases off zone")
+        elif opp_chase > 0 and opp_chase <= 26:
+            reasons.append(f"⚠️ Opp team chase rate {opp_chase:.1f}% — disciplined lineup")
+
+        opp_whiff = safe_float(row.get("team_whiff_rate", 0.0))
+        if opp_whiff >= 27:
+            reasons.append(f"💫 Opp team whiff rate {opp_whiff:.1f}% — swings and misses a lot")
+
     swstr_trend = str(row.get("swstr_trend", ""))
     if "up" in swstr_trend.lower():
         reasons.append("📈 SwStr% trending up")
@@ -568,22 +609,26 @@ def prepare_picks(
     if not team_k_rates.empty and "opposing_team" in df.columns:
         team_k_rates = team_k_rates.copy()
         team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
-        if "team" in team_k_rates.columns and "team_k_pct" in team_k_rates.columns:
-            df = df.merge(
-                team_k_rates[["team", "team_k_pct"]].rename(columns={
-                    "team_k_pct": "opp_team_k_pct",
-                    "team":       "opposing_team",
-                }),
-                on="opposing_team", how="left"
-            )
-        elif "team" in team_k_rates.columns and "k_pct" in team_k_rates.columns:
-            df = df.merge(
-                team_k_rates[["team", "k_pct"]].rename(columns={
-                    "k_pct": "opp_team_k_pct",
-                    "team":  "opposing_team",
-                }),
-                on="opposing_team", how="left"
-            )
+
+        merge_cols = ["team"]
+        if "team_k_pct" in team_k_rates.columns:
+            merge_cols.append("team_k_pct")
+        if "team_chase_rate" in team_k_rates.columns:
+            merge_cols.append("team_chase_rate")
+        if "team_whiff_rate" in team_k_rates.columns:
+            merge_cols.append("team_whiff_rate")
+
+        rename_map = {
+            "team_k_pct":      "opp_team_k_pct",
+            "team_chase_rate": "opp_chase_rate",
+            "team_whiff_rate": "opp_whiff_rate",
+            "team":            "opposing_team",
+        }
+
+        df = df.merge(
+            team_k_rates[merge_cols].rename(columns=rename_map),
+            on="opposing_team", how="left"
+        )
 
     if not parks_df.empty and "home_team" in df.columns:
         parks_df = parks_df.copy()
@@ -596,17 +641,19 @@ def prepare_picks(
             )
 
     defaults = {
-        "opp_team_k_pct":   22.0,
-        "park_hr_factor":   100.0,
-        "swstr_trend":      "",
-        "velo_trend":       "",
-        "opener_risk":      0.0,
-        "k_per_start_21d":  0.0,
+        "opp_team_k_pct":  22.0,
+        "opp_chase_rate":  30.0,
+        "opp_whiff_rate":  22.0,
+        "park_hr_factor":  100.0,
+        "swstr_trend":     "",
+        "velo_trend":      "",
+        "opener_risk":     0.0,
+        "k_per_start_21d": 0.0,
         "avg_ip_per_start": 5.5,
-        "fastball_velo":    93.0,
-        "chase_rate":       30.0,
-        "whip_proxy":       1.2,
-        "bb_pct_season":    8.0,
+        "fastball_velo":   93.0,
+        "chase_rate":      30.0,
+        "whip_proxy":      1.2,
+        "bb_pct_season":   8.0,
     }
     for col, val in defaults.items():
         if col not in df.columns:
@@ -656,6 +703,7 @@ def prepare_picks(
     df["prop_signal"] = df.apply(calc_prop_signal, axis=1)
 
     return df
+
 
 
 def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
@@ -710,6 +758,9 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "bb_pct_season":    "BB%",
         "avg_ip_per_start": "Avg IP/Start",
         "opp_lineup_k_pct": "Opp Lineup K%",
+        "opp_team_k_pct":   "Opp Team K%",
+        "team_chase_rate":  "Opp Chase Rate",
+        "team_whiff_rate":  "Opp Whiff Rate",
         "k_line":           "K Line",
         "ks_over_odds":     "Over Odds",
         "projected_k_calc": "Proj K",
@@ -807,7 +858,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
                 "fields": "userEnteredFormat(textFormat)",
             }})
 
-    col_widths = [45, 160, 55, 65, 300, 55, 65, 65, 60, 55, 90, 120, 65, 90, 60, 150, 300, 90]
+    col_widths = [45, 160, 55, 65, 300, 55, 65, 65, 60, 55, 90, 120, 80, 90, 90, 65, 90, 60, 150, 300, 90]
     for i, w in enumerate(col_widths[:n_cols]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -942,6 +993,7 @@ def main() -> None:
     print(f"KS_Statcast: {len(ks_df)} pitchers")
     print(f"Today's probables: {len(pitchers_df)} pitchers")
     print(f"Team K Rates: {len(team_k_rates)} rows")
+
     print(f"Parks: {len(parks_df)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
     print(f"Projected Lineups: {len(projected_lineups)} rows")

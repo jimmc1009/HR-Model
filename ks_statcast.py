@@ -1,7 +1,8 @@
 """
 ks_statcast.py
 Reads from Pitcher_Statcast_2026 (already populated by pitcher_statcast.py)
-and writes KS_Statcast + Team_K_Rates with columns needed by ks_picks.py.
+and writes KS_Statcast with columns needed by ks_picks.py.
+Team_K_Rates is built by main.py with full chase/whiff data.
 No Statcast pull — saves ~30 seconds per pipeline run.
 """
 
@@ -62,9 +63,13 @@ def get_gspread_client() -> gspread.Client:
 def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
     sh = gc.open_by_key(sheet_id)
     try:
-        ws   = sh.worksheet(name)
-        data = ws.get_all_records()
-        return pd.DataFrame(data)
+        ws         = sh.worksheet(name)
+        all_values = ws.get_all_values()
+        if not all_values or len(all_values) < 2:
+            return pd.DataFrame()
+        headers = all_values[0]
+        rows    = all_values[1:]
+        return pd.DataFrame(rows, columns=headers)
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
         return pd.DataFrame()
@@ -80,25 +85,6 @@ def write_sheet(gc: gspread.Client, sheet_id: str, name: str, df: pd.DataFrame) 
 
     df = df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
     ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
-
-
-def build_team_k_rates(batters: pd.DataFrame) -> pd.DataFrame:
-    if batters.empty or "k_pct" not in batters.columns or "team" not in batters.columns:
-        print("  WARNING: Cannot build team K rates — missing k_pct or team column")
-        return pd.DataFrame()
-
-    batters = batters.copy()
-    batters["k_pct"] = pd.to_numeric(batters["k_pct"], errors="coerce")
-    batters = batters[batters["k_pct"].notna() & (batters["team"].astype(str).str.strip() != "")]
-
-    team_k = (
-        batters.groupby("team")["k_pct"]
-        .mean()
-        .reset_index(name="team_k_pct")
-    )
-    team_k["team_k_pct"] = team_k["team_k_pct"].round(1)
-    print(f"  Team K rates: {len(team_k)} teams")
-    return team_k
 
 
 def main() -> None:
@@ -140,15 +126,9 @@ def main() -> None:
     write_sheet(gc, sheet_id, "KS_Statcast", ks_df)
     print("Written to KS_Statcast")
 
-    print("Reading HRRBI_Statcast for team K rates...")
-    batters = read_sheet(gc, sheet_id, "HRRBI_Statcast")
-    if not batters.empty:
-        team_k = build_team_k_rates(batters)
-        if not team_k.empty:
-            write_sheet(gc, sheet_id, "Team_K_Rates", team_k)
-            print("Written to Team_K_Rates")
-    else:
-        print("  WARNING: HRRBI_Statcast empty — Team_K_Rates not updated")
+    # Team_K_Rates is now built by main.py with full chase/whiff data
+    # Do not overwrite it here
+    print("Team_K_Rates built by main.py — skipping.")
 
 
 if __name__ == "__main__":
