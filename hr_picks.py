@@ -43,7 +43,6 @@ BVP_WEIGHT           = 0.9
 MIN_BATTING_AVG      = 0.200
 MAX_PER_TEAM         = 2
 MAX_PER_GAME         = 2
-MIN_START_RATE       = 0.40
 
 # ── Bet filter criteria ────────────────────────────────────────────────────
 MIN_SCORE_FLOOR      = 11.0
@@ -638,30 +637,6 @@ def prepare_combined(
             print(f"IL filter: {before - len(batters)} players removed, {len(batters)} remaining")
     else:
         print("Active roster unavailable — IL filter skipped.")
-
-    # ── Handedness starts filter ───────────────────────────────────────────
-    if "pitcher_hand" in pitchers.columns and "lhp_start_rate" in batters.columns:
-        temp_merge = batters.merge(
-            pitchers[["batter_team", "pitcher_hand"]].drop_duplicates(),
-            on="batter_team", how="left"
-        )
-
-        def handedness_filter(row) -> bool:
-            p_hand = str(row.get("pitcher_hand", "")).strip().upper()
-            if p_hand == "L":
-                rate = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
-            elif p_hand == "R":
-                rate = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
-            else:
-                return True
-            return rate >= MIN_START_RATE
-
-        mask   = temp_merge.apply(handedness_filter, axis=1)
-        before = len(batters)
-        batters = batters[mask.values].copy()
-        print(f"Handedness filter: {before - len(batters)} platoon sits removed, {len(batters)} remaining")
-    else:
-        print("Handedness filter skipped — start rate data not available")
 
     # ── Lineup filter ──────────────────────────────────────────────────────
     if not lineups.empty and "player_id" in lineups.columns and "team" in lineups.columns:
