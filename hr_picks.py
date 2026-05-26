@@ -42,10 +42,13 @@ BVP_WEIGHT           = 0.9
 
 MIN_BATTING_AVG      = 0.200
 MAX_PER_TEAM         = 2
-MAX_PER_GAME = 2
-MAX_CHALK_PICKS      = 3
-CHALK_ODDS_THRESHOLD = 310
+MAX_PER_GAME         = 2
 MIN_START_RATE       = 0.40
+
+# ── Bet filter criteria ────────────────────────────────────────────────────
+MIN_SCORE_FLOOR      = 11.0
+MAX_CHALK_ODDS       = 300    # ≤ +300 qualifies as chalk
+MIN_VALUE_ODDS       = 500    # ≥ +500 qualifies as value
 
 COLOR_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
@@ -57,7 +60,8 @@ COLOR_SILVER    = {"red": 0.753, "green": 0.753, "blue": 0.753}
 COLOR_BRONZE    = {"red": 0.804, "green": 0.498, "blue": 0.196}
 COLOR_GREEN     = {"red": 0.180, "green": 0.800, "blue": 0.443}
 COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
-COLOR_EV_HEADER = {"red": 0.100, "green": 0.100, "blue": 0.100}
+COLOR_CHALK     = {"red": 0.200, "green": 0.600, "blue": 0.200}
+COLOR_VALUE     = {"red": 0.576, "green": 0.439, "blue": 0.859}
 
 
 def with_retry(func, retries: int = 4, wait: int = 25):
@@ -267,7 +271,6 @@ def compute_momentum_score(row: pd.Series) -> tuple:
     score = 0.0
     parts = []
 
-    # ── EV trend: 5d vs 10d ──────────────────────────────────────────────
     if ev_5d > 0 and ev_10d > 0:
         ev_delta = ev_5d - ev_10d
         score   += ev_delta / 3.0
@@ -276,7 +279,6 @@ def compute_momentum_score(row: pd.Series) -> tuple:
         elif ev_delta <= -2.0:
             parts.append(f"📉 EV trending down ({ev_10d:.1f}→{ev_5d:.1f} mph)")
 
-    # ── Barrel % trend: 5d vs 10d ────────────────────────────────────────
     if bar_5d >= 0 and bar_10d >= 0:
         barrel_delta = bar_5d - bar_10d
         score       += barrel_delta / 8.0
@@ -285,7 +287,6 @@ def compute_momentum_score(row: pd.Series) -> tuple:
         elif barrel_delta <= -8.0:
             parts.append(f"📉 Barrel% trending down ({bar_10d:.1f}→{bar_5d:.1f}%)")
 
-    # ── Hard hit % trend: 5d vs 10d ──────────────────────────────────────
     if hh_5d > 0 and hh_10d > 0:
         hh_delta = hh_5d - hh_10d
         score   += hh_delta / 15.0
@@ -294,21 +295,17 @@ def compute_momentum_score(row: pd.Series) -> tuple:
         elif hh_delta <= -12.0:
             parts.append(f"📉 Hard hit% dropping ({hh_10d:.1f}→{hh_5d:.1f}% last 5d)")
 
-    # ── Launch angle trend: 5d vs 10d ────────────────────────────────────
-    # Optimal HR launch angle is 25-35 degrees
-    # Reward movement toward that range, penalize movement away
     if la_5d != 0 and la_10d != 0:
         optimal_la = 28.0
         dist_5d    = abs(la_5d  - optimal_la)
         dist_10d   = abs(la_10d - optimal_la)
-        la_delta   = dist_10d - dist_5d  # positive = moving toward optimal
+        la_delta   = dist_10d - dist_5d
         score     += la_delta / 15.0
         if la_delta >= 8.0:
             parts.append(f"📐 Launch angle moving toward optimal ({la_10d:.1f}→{la_5d:.1f}°)")
         elif la_delta <= -8.0:
             parts.append(f"📐 Launch angle moving away from optimal ({la_10d:.1f}→{la_5d:.1f}°)")
 
-    # ── AVG trend: 14d vs season ─────────────────────────────────────────
     if pa_14d >= 20 and avg_season > 0 and avg_14d > 0:
         avg_delta = avg_14d - avg_season
         if avg_delta >= 0.060:
@@ -324,7 +321,6 @@ def compute_momentum_score(row: pd.Series) -> tuple:
             score -= 0.4
             parts.append(f"📉 AVG trending down (.{int(avg_season*1000)} → .{int(avg_14d*1000)} last 14d)")
 
-    # ── Hot/cold streak flags ─────────────────────────────────────────────
     if hot in ("1", "true", "yes"):
         score += 0.3
         if not any("trending up" in p or "surging" in p for p in parts):
@@ -335,7 +331,6 @@ def compute_momentum_score(row: pd.Series) -> tuple:
             parts.append("❄️ On a cold streak")
 
     return round(score, 3), " | ".join(parts)
-
 
 
 def compute_bvp_score(row: pd.Series) -> tuple:
@@ -782,11 +777,11 @@ def prepare_combined(
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "hr_7d", "season_hr", "season_fb", "season_hard_hit",
-        "lhp_start_rate", "rhp_start_rate","hard_hit_pct_5d", "hard_hit_pct_10d",
+        "lhp_start_rate", "rhp_start_rate", "hard_hit_pct_5d", "hard_hit_pct_10d",
         "avg_la_5d", "avg_la_10d",
         "avg_14d", "pa_14d",
         "hot_streak", "cold_streak",
-        ]
+    ]
 
     dynamic_cols = [c for c in combined.columns if c.startswith("pitcher_iso_allowed_") or c.startswith("pitcher_hr_rate_allowed_") or c.startswith("pitcher_barrel_pct_allowed_")]
     score_cols  += dynamic_cols
@@ -798,6 +793,8 @@ def prepare_combined(
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
 
     # ── Component scores ───────────────────────────────────────────────────
+    combined = combined.copy()
+
     platoon_results = combined.apply(compute_platoon_score, axis=1)
     combined["platoon_score"]   = platoon_results.apply(lambda x: x[0])
     combined["platoon_desc"]    = platoon_results.apply(lambda x: x[1])
@@ -938,82 +935,12 @@ def build_reason(row) -> str:
     return " | ".join(reasons)
 
 
-def apply_odds_diversity_cap(
-    sorted_df: pd.DataFrame,
-    odds_lookup: dict,
-) -> pd.DataFrame:
-    selected           = []
-    chalk_count        = 0
-    team_counts        = {}
-    game_counts        = {}
-    no_odds_candidates = []
-
-    # Pass 1 — players with odds data
-    for _, row in sorted_df.iterrows():
-        player_norm    = normalize_name(str(row.get("player_name", "")))
-        consensus_odds = odds_lookup.get(player_norm, None)
-
-        if consensus_odds is None:
-            no_odds_candidates.append(row)
-            continue
-
-        if len(selected) >= 10:
-            break
-
-        team       = str(row.get("batter_team", ""))
-        team_count = team_counts.get(team, 0)
-        if team_count >= MAX_PER_TEAM:
-            continue
-
-        is_chalk = consensus_odds <= CHALK_ODDS_THRESHOLD
-        if is_chalk and chalk_count >= MAX_CHALK_PICKS:
-            continue
-
-        home_team = str(row.get("home_team", row.get("away_team", "UNK")))
-        if game_counts.get(home_team, 0) >= MAX_PER_GAME:
-            continue
-
-        selected.append(row)
-        team_counts[team] = team_count + 1
-        game_counts[home_team] = game_counts.get(home_team, 0) + 1
-        if is_chalk:
-            chalk_count += 1
-
-    # Pass 2 — fill remaining slots with no-odds players
-    if len(selected) < 10:
-        for row in no_odds_candidates:
-            if len(selected) >= 10:
-                break
-
-            team       = str(row.get("batter_team", ""))
-            team_count = team_counts.get(team, 0)
-            if team_count >= MAX_PER_TEAM:
-                continue
-
-            selected.append(row)
-            team_counts[team] = team_count + 1
-
-        no_odds_used = len(selected) - sum(
-            1 for r in selected
-            if odds_lookup.get(normalize_name(str(r.get("player_name", "")))) is not None
-        )
-        if no_odds_used > 0:
-            print(f"  {no_odds_used} picks filled from no-odds candidates (fallback)")
-
-    if not selected:
-        return pd.DataFrame()
-
-    result = pd.DataFrame(selected)
-    result["rank"]           = range(1, len(result) + 1)
-    result["consensus_odds"] = result.apply(
-        lambda r: odds_lookup.get(normalize_name(str(r.get("player_name", ""))), None),
-        axis=1
-    )
-    return result
+def odds_qualifies(odds: int) -> bool:
+    """Return True if odds fall in our bet zones: ≤+300 or ≥+500."""
+    return odds <= MAX_CHALK_ODDS or odds >= MIN_VALUE_ODDS
 
 
-
-def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd.DataFrame:
+def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tuple:
     combined = combined.copy()
     combined["reason"] = combined.apply(build_reason, axis=1)
 
@@ -1027,24 +954,52 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
                 pass
         print(f"Odds lookup built: {len(odds_lookup)} players with odds data")
     else:
-        print("No odds data available — diversity cap skipped")
+        print("No odds data available")
 
-    combined_sorted = combined.sort_values("score", ascending=False)
+    # ── Map odds onto combined ─────────────────────────────────────────────
+    combined["consensus_odds"] = combined["player_name"].apply(
+        lambda n: odds_lookup.get(normalize_name(str(n)), None)
+    )
 
-    if odds_lookup:
-        top10 = apply_odds_diversity_cap(combined_sorted, odds_lookup)
-        chalk_in_picks = sum(
-            1 for _, r in top10.iterrows()
-            if odds_lookup.get(normalize_name(str(r.get("player_name", ""))), None) is not None
-            and odds_lookup.get(normalize_name(str(r.get("player_name", "")))) <= CHALK_ODDS_THRESHOLD
-        )
-        print(f"Diversity cap applied: {chalk_in_picks} chalk picks (≤+{CHALK_ODDS_THRESHOLD}) in top 10")
-    else:
-        combined_sorted["team_count"] = combined_sorted.groupby("batter_team").cumcount()
-        top10 = combined_sorted[combined_sorted["team_count"] < MAX_PER_TEAM].head(10).copy()
-        top10 = top10.drop(columns=["team_count"])
-        top10["rank"]           = range(1, len(top10) + 1)
-        top10["consensus_odds"] = None
+    # ── Score floor + odds filter ──────────────────────────────────────────
+    filtered = combined[combined["score"] >= MIN_SCORE_FLOOR].copy()
+
+    if not filtered.empty and odds_lookup:
+        filtered = filtered[filtered["consensus_odds"].apply(
+            lambda x: x is not None and odds_qualifies(int(x))
+        )].copy()
+
+    filtered = filtered.sort_values("score", ascending=False).reset_index(drop=True)
+
+    # ── Diversity cap ──────────────────────────────────────────────────────
+    selected    = []
+    team_counts = {}
+    game_counts = {}
+
+    for _, row in filtered.iterrows():
+        team      = str(row.get("batter_team", ""))
+        home_team = str(row.get("home_team", "UNK"))
+
+        if team_counts.get(team, 0) >= MAX_PER_TEAM:
+            continue
+        if game_counts.get(home_team, 0) >= MAX_PER_GAME:
+            continue
+
+        selected.append(row)
+        team_counts[team]      = team_counts.get(team, 0) + 1
+        game_counts[home_team] = game_counts.get(home_team, 0) + 1
+
+    if not selected:
+        picks = pd.DataFrame()
+        print("No qualifying picks today (score ≥11, odds ≤+300 or ≥+500).")
+        return picks, odds_lookup
+
+    picks = pd.DataFrame(selected).reset_index(drop=True)
+    picks["rank"] = range(1, len(picks) + 1)
+
+    chalk_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
+    value_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
+    print(f"Qualifying picks: {len(picks)} total ({chalk_count} chalk ≤+{MAX_CHALK_ODDS}, {value_count} value ≥+{MIN_VALUE_ODDS})")
 
     output_cols = {
         "rank":                       "Rank",
@@ -1107,141 +1062,8 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> pd
         "temp_f":                     "Temp (°F)",
     }
 
-    available = {k: v for k, v in output_cols.items() if k in top10.columns}
-    return top10[list(available.keys())].rename(columns=available), odds_lookup
-
-
-def build_value_plays(combined: pd.DataFrame, exclude_names: set, odds_lookup: dict = None) -> pd.DataFrame:
-   if combined.empty:
-       return pd.DataFrame()
-
-   combined = combined.copy()
-
-   # Remove players already in main top 10
-   if "player_name" in combined.columns and exclude_names:
-       combined = combined[~combined["player_name"].isin(exclude_names)].copy()
-
-   # Coerce needed columns
-   for col in ["score"]:
-       if col in combined.columns:
-           combined[col] = combined[col].apply(safe_float)
-       else:
-           combined[col] = 0.0
-
-   # Map odds from lookup onto combined
-   combined["consensus_odds"] = combined["player_name"].apply(
-       lambda n: odds_lookup.get(normalize_name(str(n)), 0) if odds_lookup else 0
-   )
-
-   # Core filter — model likes them, books don't
-   value_df = combined[
-       (combined["score"] >= 11.0) &
-       (combined["consensus_odds"] >= 500)
-   ].copy()
-
-   if value_df.empty:
-       print("No value plays found today.")
-       return pd.DataFrame()
-
-   # Sort by score, one per team, top 5
-   value_df = value_df.sort_values("score", ascending=False)
-   value_df["team_count"] = value_df.groupby("batter_team").cumcount()
-   value_df = value_df[value_df["team_count"] < 1].head(5).copy()
-   value_df = value_df.drop(columns=["team_count"])
-   value_df["value_rank"] = range(1, len(value_df) + 1)
-
-   print(f"Built {len(value_df)} value plays")
-
-   def build_value_reason(row) -> str:
-       reasons = []
-
-       score = safe_float(row.get("score"))
-       odds  = safe_float(row.get("consensus_odds"))
-       reasons.append(f"📊 Model score {score:.1f} — books have at +{int(odds)}")
-
-       barrel_7d = safe_float(row.get("barrel_pct_7d"))
-       if barrel_7d >= 12:
-           reasons.append(f"🔥 {barrel_7d:.1f}% barrel rate last 7 days")
-
-       season_barrel = safe_float(row.get("season_barrel_pct"))
-       if season_barrel >= 9:
-           reasons.append(f"💣 {season_barrel:.1f}% season barrel%")
-
-       iso = safe_float(row.get("iso"))
-       if iso >= 0.175:
-           reasons.append(f"⚡ ISO {iso:.3f}")
-
-       p_barrel = safe_float(row.get("pitcher_barrel_pct"))
-       if p_barrel >= 9:
-           reasons.append(f"🎯 Pitcher allows {p_barrel:.1f}% barrels")
-
-       bvp_iso = safe_float(row.get("bvp_iso"))
-       bvp_pa  = safe_float(row.get("bvp_pa"))
-       bvp_hr  = safe_float(row.get("bvp_hr"))
-       if bvp_pa >= 5 and bvp_iso >= 0.150:
-           reasons.append(f"✅ ISO {bvp_iso:.3f} vs this pitcher in {int(bvp_pa)} PA" + (f", {int(bvp_hr)} HR" if bvp_hr > 0 else ""))
-
-       park = safe_float(row.get("park_hr_factor"), 100)
-       if park >= 110:
-           reasons.append(f"🏟️ HR-friendly park (factor {park:.0f})")
-
-       boost = safe_float(row.get("hr_weather_boost"))
-       if boost >= 1.0:
-           reasons.append(f"🌬️ Favorable weather")
-
-       platoon = str(row.get("platoon_desc", ""))
-       if platoon and "advantage" in platoon.lower():
-           reasons.append(f"🔄 {platoon}")
-
-       momentum = str(row.get("momentum_desc", ""))
-       if momentum:
-           reasons.append(momentum)
-
-       if not reasons:
-           reasons.append("High model score at value odds")
-
-       return " | ".join(reasons)
-
-   value_df["why"] = value_df.apply(build_value_reason, axis=1)
-
-   output_cols = {
-       "value_rank":                 "Rank",
-       "player_name":                "Batter",
-       "batter_hand":                "Bats",
-       "batter_team":                "Team",
-       "opp_pitcher_name":           "Opposing Pitcher",
-       "pitcher_hand":               "Throws",
-       "opp_pitcher_team":           "Pitcher Team",
-       "park_name":                  "Park",
-       "score":                      "HR Score",
-       "consensus_odds":             "Consensus Odds",
-       "confidence":                 "Confidence",
-       "why":                        "Why They're Here",
-       "batting_avg":                "Batting Avg",
-       "barrel_pct_7d":              "Barrel% (7d)",
-       "season_barrel_pct":          "Barrel% (Season)",
-       "iso":                        "ISO",
-       "avg_ev_7d":                  "Avg EV (7d)",
-       "avg_la_7d":                  "Avg Launch Angle (7d)",
-       "hard_hit_pct_7d":            "Hard Hit% (7d)",
-       "momentum_desc":              "Momentum",
-       "hr_per_pa":                  "HR/PA%",
-       "bvp_pa":                     "BvP PA",
-       "bvp_hr":                     "BvP HR",
-       "bvp_iso":                    "BvP ISO",
-       "bvp_desc":                   "BvP Notes",
-       "platoon_desc":               "Platoon Matchup",
-       "pitcher_barrel_pct":         "Pitcher Barrel% Allowed",
-       "pitcher_hr_per_fb":          "Pitcher HR/FB%",
-       "park_hr_factor":             "Park HR Factor",
-       "hr_weather_boost":           "Weather Boost",
-       "wind_context":               "Wind",
-       "temp_f":                     "Temp (°F)",
-   }
-
-   available = {k: v for k, v in output_cols.items() if k in value_df.columns}
-   return value_df[list(available.keys())].rename(columns=available)
-
+    available = {k: v for k, v in output_cols.items() if k in picks.columns}
+    return picks[list(available.keys())].rename(columns=available), odds_lookup
 
 
 def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
@@ -1319,7 +1141,7 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
     print("Picks_Log updated with resolved outcomes.")
 
 
-def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_section: pd.DataFrame) -> None:
+def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
     sh        = gc.open_by_key(sheet_id)
 
@@ -1335,12 +1157,9 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
 
     new_rows = []
 
-    def build_log_rows(df: pd.DataFrame, section: str) -> None:
-        if df.empty:
-            return
-        for _, row in df.iterrows():
+    if not picks.empty:
+        for _, row in picks.iterrows():
             new_rows.append({
-                # ── Identity ──────────────────────────────────────────
                 "date":                      today_str,
                 "rank":                      str(row.get("Rank", "")),
                 "player_name":               str(row.get("Batter", "")),
@@ -1353,10 +1172,9 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
                 "consensus_odds":            str(row.get("Consensus Odds", "")),
                 "confidence":                str(row.get("Confidence", "")),
                 "hit_hr":                    "Pending",
-                "section":                   section,
+                "section":                   "Main",
                 "odds":                      "",
                 "bet_placed":                "",
-                # ── Batter features ───────────────────────────────────
                 "batting_avg":               str(row.get("Batting Avg", "")),
                 "barrel_pct_7d":             str(row.get("Barrel% (7d)", "")),
                 "season_barrel_pct":         str(row.get("Barrel% (Season)", "")),
@@ -1375,7 +1193,6 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
                 "pull_rate":                 str(row.get("Pull Rate%", "")),
                 "lhp_start_rate":            str(row.get("LHP Start Rate", "")),
                 "rhp_start_rate":            str(row.get("RHP Start Rate", "")),
-                # ── Pitcher features ──────────────────────────────────
                 "pitcher_barrel_pct":        str(row.get("Pitcher Barrel% Allowed", "")),
                 "pitcher_hr_per_fb":         str(row.get("Pitcher HR/FB% Allowed", "")),
                 "pitcher_barrel_vs_lhh":     str(row.get("Pitcher Barrel% vs LHH", "")),
@@ -1388,7 +1205,6 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
                 "top_pitch_2_pct":           str(row.get("Top Pitch 2 %", "")),
                 "top_pitch_3":               str(row.get("Top Pitch 3", "")),
                 "top_pitch_3_pct":           str(row.get("Top Pitch 3 %", "")),
-                # ── Context ───────────────────────────────────────────
                 "park_hr_factor":            str(row.get("Park HR Factor", "")),
                 "lf_dist":                   str(row.get("LF Distance", "")),
                 "lf_height":                 str(row.get("LF Wall Height", "")),
@@ -1407,11 +1223,11 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_
                 "bvp_notes":                 str(row.get("BvP Notes", "")),
             })
 
-    build_log_rows(picks,      "Main")
-    build_log_rows(ev_section, "Value")
-
     if not new_rows:
-        print("No picks to log.")
+        print("No qualifying picks to log today.")
+        if not existing.empty:
+            ws.clear()
+            ws.update([existing.columns.tolist()] + existing.astype(str).values.tolist())
         return
 
     new_df = pd.DataFrame(new_rows)
@@ -1521,7 +1337,6 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         avg_score = round(sub_df["hr_score"].mean(), 2) if not sub_df["hr_score"].isna().all() else 0.0
         score_rows.append({"label": label, "total_picks": total, "hr_count": hits, "hit_rate_pct": round(hits / total * 100, 1), "avg_score": avg_score, "_bold": bold})
 
-    # Performance section
     add_perf("🏆  Overall", scored, bold=True)
 
     perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
@@ -1534,17 +1349,21 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         sub = scored[scored["confidence"] == tier]
         if not sub.empty: add_perf(f"   {tier}", sub)
 
-    perf_rows.append({"label": "── By Section ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
-    for section in scored["section"].dropna().unique():
-        sub = scored[scored["section"] == section]
-        if not sub.empty: add_perf(f"   {section}", sub)
+    perf_rows.append({"label": "── By Odds Zone ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
+    if "consensus_odds" in scored.columns:
+        scored["odds_zone_num"] = pd.to_numeric(scored["consensus_odds"], errors="coerce")
+        for label, sub in [
+            ("   ≤ +300 (Chalk)",   scored[scored["odds_zone_num"] <= 300]),
+            ("   +500 to +699",     scored[(scored["odds_zone_num"] >= 500) & (scored["odds_zone_num"] < 700)]),
+            ("   +700+",            scored[scored["odds_zone_num"] >= 700]),
+        ]:
+            if not sub.empty: add_perf(label, sub)
 
     perf_rows.append({"label": "── Rolling ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     max_date = scored["date"].max()
     add_perf("   Last 7 Days",  scored[scored["date"] >= max_date - pd.Timedelta(days=7)])
     add_perf("   Last 30 Days", scored[scored["date"] >= max_date - pd.Timedelta(days=30)])
 
-    # ROI section
     if not bet_picks.empty:
         bet_picks["date"] = pd.to_datetime(bet_picks["date"], errors="coerce")
         bet_picks["rank"] = pd.to_numeric(bet_picks["rank"], errors="coerce")
@@ -1553,33 +1372,22 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         for tier in ["High", "Medium", "Low"]:
             sub = bet_picks[bet_picks["confidence"] == tier]
             if not sub.empty: add_roi(f"   {tier}", sub)
-        roi_rows.append({"label": "── By Rank ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
-        for rank in range(1, 11):
-            sub = bet_picks[bet_picks["rank"] == rank]
-            if not sub.empty: add_roi(f"   Rank {rank}", sub)
-        roi_rows.append({"label": "── By Section ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
-        for section in bet_picks["section"].dropna().unique():
-            sub = bet_picks[bet_picks["section"] == section]
-            if not sub.empty: add_roi(f"   {section}", sub)
-        roi_rows.append({"label": "── By Juice ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
+        roi_rows.append({"label": "── By Odds Zone ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         bet_picks["odds_num_bet"] = pd.to_numeric(
             bet_picks["odds"].apply(lambda x: str(x).replace("+", "").strip()),
             errors="coerce"
         )
         for label, sub in [
-            ("   +200 to +299", bet_picks[(bet_picks["odds_num_bet"] >= 200) & (bet_picks["odds_num_bet"] < 300)]),
-            ("   +300 to +399", bet_picks[(bet_picks["odds_num_bet"] >= 300) & (bet_picks["odds_num_bet"] < 400)]),
-            ("   +400 to +499", bet_picks[(bet_picks["odds_num_bet"] >= 400) & (bet_picks["odds_num_bet"] < 500)]),
-            ("   +500 to +699", bet_picks[(bet_picks["odds_num_bet"] >= 500) & (bet_picks["odds_num_bet"] < 700)]),
-            ("   +700+",        bet_picks[bet_picks["odds_num_bet"] >= 700]),
+            ("   ≤ +300 (Chalk)",   bet_picks[bet_picks["odds_num_bet"] <= 300]),
+            ("   +500 to +699",     bet_picks[(bet_picks["odds_num_bet"] >= 500) & (bet_picks["odds_num_bet"] < 700)]),
+            ("   +700+",            bet_picks[bet_picks["odds_num_bet"] >= 700]),
         ]:
-            if not sub.empty: add_roi(f"{label}", sub)
+            if not sub.empty: add_roi(label, sub)
         roi_rows.append({"label": "── Rolling ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         max_bet = bet_picks["date"].max()
         add_roi("   Last 7 Days",  bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=7)])
         add_roi("   Last 30 Days", bet_picks[bet_picks["date"] >= max_bet - pd.Timedelta(days=30)])
 
-    # Score tier section
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
     for label, sub in [
@@ -1764,27 +1572,12 @@ def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     ws_id = ws.id
     sh.batch_update({"requests": [{
         "repeatCell": {
-            "range": {
-                "sheetId": ws_id,
-                "startRowIndex": 0,
-                "endRowIndex": 1,
-                "startColumnIndex": 0,
-                "endColumnIndex": 10,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
-                    "textFormat": {
-                        "foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600},
-                        "bold": False,
-                        "fontFamily": "Roboto",
-                        "fontSize": 10,
-                    },
-                    "verticalAlignment": "MIDDLE",
-                    "horizontalAlignment": "LEFT",
-                    "wrapStrategy": "OVERFLOW_CELL",
-                }
-            },
+            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 10},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
+                "textFormat": {"foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600}, "bold": False, "fontFamily": "Roboto", "fontSize": 10},
+                "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "OVERFLOW_CELL",
+            }},
             "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
         }
     }]})
@@ -1800,7 +1593,7 @@ def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame, ev_section: pd.DataFrame) -> tuple:
+def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> int:
     sh = gc.open_by_key(sheet_id)
     try:
         ws = sh.worksheet("Top_HR_Picks")
@@ -1808,64 +1601,49 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame,
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=55)
 
-    picks_clean = clean_for_sheets(picks)
-    ev_clean    = clean_for_sheets(ev_section)
-    all_values  = []
+    if picks.empty:
+        ws.update([["No qualifying picks today — score ≥11 with odds ≤+300 or ≥+500"]])
+        return 0
 
-    all_values.append(picks_clean.columns.tolist())
+    picks_clean = clean_for_sheets(picks)
+    all_values  = [picks_clean.columns.tolist()]
     for _, row in picks_clean.iterrows():
         all_values.append(row.astype(str).tolist())
 
-    main_row_count    = len(picks_clean)
-    ev_start_row      = len(all_values) + 2
-    all_values.append([])
-    all_values.append(["💎  VALUE PLAYS — HIGH MODEL SCORE, LONG ODDS"])
-    ev_col_header_row = ev_start_row + 1
-    ev_data_row_count = 0
-
-    if not ev_clean.empty:
-        all_values.append(ev_clean.columns.tolist())
-        for _, row in ev_clean.iterrows():
-            all_values.append(row.astype(str).tolist())
-        ev_data_row_count = len(ev_clean)
-
     ws.update(all_values)
-    return main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row
+    return len(picks_clean)
 
 
-def format_picks_sheet(gc: gspread.Client, sheet_id: str, main_row_count: int, ev_data_row_count: int, ev_start_row: int, ev_col_header_row: int) -> None:
+def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> None:
+    if row_count == 0:
+        return
+
     print("Applying Carbon dark mode formatting...")
     sh    = gc.open_by_key(sheet_id)
     ws    = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
     main_cols  = 50
-    ev_cols    = 38
-    total_rows = ev_col_header_row + ev_data_row_count + 5
+    total_rows = row_count + 2
     reqs       = []
 
     reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows, "startColumnIndex": 0, "endColumnIndex": 55}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG, "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10}, "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)"}})
     reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_ACCENT_DIM, "textFormat": {"foregroundColor": COLOR_ACCENT, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
 
-    for i in range(main_row_count):
-        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}}, "fields": "userEnteredFormat(backgroundColor)"}})
+    for i in range(row_count):
+        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
+        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": bg}}, "fields": "userEnteredFormat(backgroundColor)"}})
 
-    medals = [(1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD), (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER), (3, {"red": 0.16, "green": 0.10, "blue": 0.04}, COLOR_BRONZE)]
+    # Gold/silver/bronze for top 3
+    medals = [(1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
+              (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER),
+              (3, {"red": 0.16, "green": 0.10, "blue": 0.04}, COLOR_BRONZE)]
     for rank, bg, fg in medals:
-        if main_row_count >= rank:
+        if row_count >= rank:
             reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": rank, "endRowIndex": rank + 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": bg, "textFormat": {"foregroundColor": fg, "bold": True, "fontSize": 10}}}, "fields": "userEnteredFormat(backgroundColor,textFormat)"}})
 
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": main_row_count + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": main_row_count + 1, "startColumnIndex": 8, "endColumnIndex": 9}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_start_row, "endRowIndex": ev_start_row + 1, "startColumnIndex": 0, "endColumnIndex": ev_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_ACCENT_DIM, "textFormat": {"foregroundColor": COLOR_ORANGE, "bold": True, "fontFamily": "Roboto", "fontSize": 12}, "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_col_header_row, "endRowIndex": ev_col_header_row + 1, "startColumnIndex": 0, "endColumnIndex": ev_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_EV_HEADER, "textFormat": {"foregroundColor": COLOR_ORANGE, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
-
-    for i in range(ev_data_row_count):
-        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_col_header_row + 1 + i, "endRowIndex": ev_col_header_row + 2 + i, "startColumnIndex": 0, "endColumnIndex": ev_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG}}, "fields": "userEnteredFormat(backgroundColor)"}})
-
-    if ev_data_row_count > 0:
-        for col_idx, font_size in [(0, 14), (8, 11)]:
-            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": ev_col_header_row + 1, "endRowIndex": ev_col_header_row + 1 + ev_data_row_count, "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": font_size, "foregroundColor": COLOR_ORANGE}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": row_count + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": row_count + 1, "startColumnIndex": 8, "endColumnIndex": 9}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
 
     reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}}, "fields": "gridProperties.frozenRowCount"}})
     reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 36}, "fields": "pixelSize"}})
@@ -1908,17 +1686,14 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
     new_rows = []
     for _, row in sorted_df.iterrows():
         new_rows.append({
-            # ── Identity ──────────────────────────────────────────────
             "date":                     today_str,
             "rank":                     str(row.get("all_scores_rank", "")),
             "player_name":              str(row.get("player_name", "")),
             "team":                     str(row.get("batter_team", "")),
             "pitcher_name":             str(row.get("opp_pitcher_name", "")),
             "pitcher_hand":             str(row.get("pitcher_hand", "")),
-            # ── Model output ──────────────────────────────────────────
             "hr_score":                 str(row.get("score", "")),
             "consensus_odds":           str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
-            # ── Core power metrics ────────────────────────────────────
             "barrel_pct_7d":            str(row.get("barrel_pct_7d", "")),
             "season_barrel_pct":        str(row.get("season_barrel_pct", "")),
             "barrel_pct_5d":            str(row.get("barrel_pct_5d", "")),
@@ -1932,22 +1707,18 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "hr_per_pa":                str(row.get("hr_per_pa", "")),
             "hr_per_fb":                str(row.get("hr_per_fb", "")),
             "pull_rate":                str(row.get("pull_rate", "")),
-            # ── Matchup ───────────────────────────────────────────────
             "platoon_matchup":          str(row.get("platoon_desc", "")),
             "pitch_matchup":            str(row.get("pitch_matchup_desc", "")),
             "pull_park_matchup":        str(row.get("pull_park_desc", "")),
-            # ── Pitcher vulnerability ─────────────────────────────────
             "pitcher_barrel_pct":       str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":        str(row.get("pitcher_hr_per_fb", "")),
             "pitcher_barrel_vs_lhh":    str(row.get("pitcher_vs_lhh_barrel_pct", "")),
             "pitcher_barrel_vs_rhh":    str(row.get("pitcher_vs_rhh_barrel_pct", "")),
-            # ── Context ───────────────────────────────────────────────
             "park_hr_factor":           str(row.get("park_hr_factor", "")),
             "weather_boost":            str(row.get("hr_weather_boost", "")),
             "wind":                     str(row.get("wind_context", "")),
             "temp_f":                   str(row.get("temp_f", "")),
             "momentum":                 str(row.get("momentum_desc", "")),
-            # ── Outcome ───────────────────────────────────────────────
             "hit_hr":                   "Pending",
         })
 
@@ -1999,35 +1770,21 @@ def main() -> None:
         print("WARNING: No combined data — check all sheets have data.")
         return
 
-    picks, odds_lookup = build_main_picks(combined, odds_df) 
+    picks, odds_lookup = build_main_picks(combined, odds_df)
 
-    exclude_from_ev: Set[str] = set()
-    if not picks.empty and "Batter" in picks.columns:
-        exclude_from_ev = set(picks["Batter"].dropna().tolist())
+    print(f"\nQualifying HR Picks (score ≥{MIN_SCORE_FLOOR}, odds ≤+{MAX_CHALK_ODDS} or ≥+{MIN_VALUE_ODDS}):")
+    if not picks.empty:
+        print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score", "Consensus Odds"]].to_string(index=False))
+    else:
+        print("No qualifying picks today.")
 
-    ev_section = build_value_plays(combined, exclude_from_ev, odds_lookup=odds_lookup if odds_lookup else {})
-
-    print(f"Built {len(picks)} main picks")
-    print(f"Built {len(ev_section)} Value plays")
-
-    if picks.empty:
-        print("WARNING: No picks generated.")
-        return
-
-    print("\nTop 10 HR Picks:")
-    print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score", "Consensus Odds"]].to_string(index=False))
-
-    if not ev_section.empty:
-        print("\nValue Plays - High Score, Long Odds:")
-        print(ev_section[["Rank", "Batter", "Bats", "Team", "HR Score", "Consensus Odds", "Batting Avg", "Confidence"]].to_string(index=False))
-
-    main_row_count, ev_data_row_count, ev_start_row, ev_col_header_row = write_picks_to_sheet(gc, sheet_id, picks, ev_section)
+    row_count = write_picks_to_sheet(gc, sheet_id, picks)
     print("Written to Top_HR_Picks")
 
-    format_picks_sheet(gc, sheet_id, main_row_count=main_row_count, ev_data_row_count=ev_data_row_count, ev_start_row=ev_start_row, ev_col_header_row=ev_col_header_row)
+    format_picks_sheet(gc, sheet_id, row_count)
 
     resolve_pending_picks(gc, sheet_id)
-    log_todays_picks(gc, sheet_id, picks, ev_section)
+    log_todays_picks(gc, sheet_id, picks)
     log_all_scores(gc, sheet_id, combined)
     time.sleep(10)
     update_scorecard(gc, sheet_id)

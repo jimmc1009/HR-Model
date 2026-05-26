@@ -16,8 +16,8 @@ from google.oauth2.service_account import Credentials
 import pytz
 
 SCOPES = [
-   "https://www.googleapis.com/auth/spreadsheets",
-   "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 DASHBOARD_SHEET = "Today's Top Picks"
@@ -33,524 +33,459 @@ COLOR_DARK_RED  = {"red": 0.550, "green": 0.050, "blue": 0.050}
 COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT   = {"red": 0.500, "green": 0.500, "blue": 0.500}
 COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
-COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
 COLOR_PURPLE    = {"red": 0.576, "green": 0.439, "blue": 0.859}
 
 
 def get_gspread_client() -> gspread.Client:
-   raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-   info     = json.loads(raw_json)
-   creds    = Credentials.from_service_account_info(info, scopes=SCOPES)
-   return gspread.authorize(creds)
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info     = json.loads(raw_json)
+    creds    = Credentials.from_service_account_info(info, scopes=SCOPES)
+    return gspread.authorize(creds)
 
 
 def with_retry(func, retries: int = 4, wait: int = 25):
-   for attempt in range(retries):
-       try:
-           return func()
-       except APIError as e:
-           if "429" in str(e) and attempt < retries - 1:
-               print(f"  Rate limit hit — waiting {wait}s...")
-               time.sleep(wait)
-           else:
-               raise
-       except Exception as e:
-           if attempt < retries - 1:
-               time.sleep(wait)
-           else:
-               raise
+    for attempt in range(retries):
+        try:
+            return func()
+        except APIError as e:
+            if "429" in str(e) and attempt < retries - 1:
+                print(f"  Rate limit hit — waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(wait)
+            else:
+                raise
 
 
 def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
-   try:
-       sh         = with_retry(lambda: gc.open_by_key(sheet_id))
-       ws         = sh.worksheet(name)
-       all_values = with_retry(lambda: ws.get_all_values())
-       if not all_values:
-           return pd.DataFrame()
-       start = 1 if "Last Run" in str(all_values[0]) else 0
-       if start >= len(all_values):
-           return pd.DataFrame()
-       headers = all_values[start]
-       rows    = all_values[start + 1:]
-       return pd.DataFrame(rows, columns=headers)
-   except gspread.WorksheetNotFound:
-       print(f"WARNING: Sheet '{name}' not found.")
-       return pd.DataFrame()
-   except Exception as e:
-       print(f"WARNING: Could not read sheet '{name}': {e}")
-       return pd.DataFrame()
+    try:
+        sh         = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws         = sh.worksheet(name)
+        all_values = with_retry(lambda: ws.get_all_values())
+        if not all_values:
+            return pd.DataFrame()
+        start = 1 if "Last Run" in str(all_values[0]) else 0
+        if start >= len(all_values):
+            return pd.DataFrame()
+        headers = all_values[start]
+        rows    = all_values[start + 1:]
+        return pd.DataFrame(rows, columns=headers)
+    except gspread.WorksheetNotFound:
+        print(f"WARNING: Sheet '{name}' not found.")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"WARNING: Could not read sheet '{name}': {e}")
+        return pd.DataFrame()
 
 
 def has_signal(signal: str) -> bool:
-   s = str(signal).strip()
-   return s not in ("", "—", "nan") and len(s) > 1
+    s = str(signal).strip()
+    return s not in ("", "—", "nan") and len(s) > 1
 
 
 def safe_val(row, col: str, default: str = "") -> str:
-   try:
-       if col not in row.index:
-           return default
-       val = row[col]
-       if isinstance(val, pd.Series):
-           val = val.iloc[0]
-       if val is None or (isinstance(val, float) and np.isnan(val)):
-           return default
-       return str(val).strip()
-   except Exception:
-       return default
+    try:
+        if col not in row.index:
+            return default
+        val = row[col]
+        if isinstance(val, pd.Series):
+            val = val.iloc[0]
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return default
+        return str(val).strip()
+    except Exception:
+        return default
 
 
 def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame):
-   N = 6
+    N = 6
 
-   def pad(row):
-       return list(row) + [""] * (N - len(row))
+    def pad(row):
+        return list(row) + [""] * (N - len(row))
 
-   E    = pad([])
-   rows = []
+    E    = pad([])
+    rows = []
 
-   # ── HOME RUN PICKS ────────────────────────────────────────────────────
-   rows.append((pad(["🏠  HOME RUN PICKS"]), "section_header_hr"))
-   rows.append((pad(["Rank", "Batter", "Team"]), "col_header_hr"))
+    # ── HOME RUN PICKS ────────────────────────────────────────────────────
+    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥11, Odds ≤+300 or ≥+500"]), "section_header_hr"))
+    rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", ""]), "col_header_hr"))
 
-   if hr_df.empty:
-       rows.append((pad(["—", "No picks available", ""]), "no_plays"))
-   else:
-       hr_clean = hr_df.copy()
-       hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
-       hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
-           "Last Run|Batter|High EV|Launch|⚡|Breakout|VALUE PLAYS|💎", na=False
-       )]
-       hr_clean = hr_clean[
-           pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce").between(1, 10)
-       ]
-       hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
-       top10    = hr_clean.head(10)
+    if hr_df.empty:
+        rows.append((pad(["—", "No qualifying picks today", ""]), "no_plays"))
+    else:
+        hr_clean = hr_df.copy()
+        hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
+        hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
+            "Last Run|Batter|No qualifying", na=False
+        )]
+        hr_clean = hr_clean[
+            pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce") >= 1
+        ]
+        hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
 
-       for i in range(len(top10)):
-           rank = str(int(pd.to_numeric(top10.iloc[i, 0], errors="coerce")))
-           try:
-               batter = str(top10.iloc[i, 1]).strip()
-           except Exception:
-               batter = ""
-           try:
-               team = str(top10.iloc[i, 3]).strip()
-           except Exception:
-               team = ""
-           if not batter or batter == "nan":
-               continue
-           rows.append((pad([rank, batter, team]), "data_hr"))
+        if hr_clean.empty:
+            rows.append((pad(["—", "No qualifying picks today", ""]), "no_plays"))
+        else:
+            cols = hr_clean.columns.tolist()
+            for i in range(len(hr_clean)):
+                rank = str(int(pd.to_numeric(hr_clean.iloc[i, 0], errors="coerce")))
+                try:
+                    batter = str(hr_clean.iloc[i, 1]).strip()
+                except Exception:
+                    batter = ""
+                try:
+                    team = str(hr_clean.iloc[i, 3]).strip()
+                except Exception:
+                    team = ""
+                try:
+                    hr_score = str(hr_clean.iloc[i, cols.index("HR Score")]).strip() if "HR Score" in cols else ""
+                except Exception:
+                    hr_score = ""
+                try:
+                    odds = str(hr_clean.iloc[i, cols.index("Consensus Odds")]).strip() if "Consensus Odds" in cols else ""
+                    if odds and odds not in ("", "nan"):
+                        odds = f"+{odds}" if not odds.startswith("+") else odds
+                except Exception:
+                    odds = ""
+                if not batter or batter == "nan":
+                    continue
+                rows.append((pad([rank, batter, team, hr_score, odds, ""]), "data_hr"))
 
-   rows.append((E[:], "spacer"))
+    rows.append((E[:], "spacer"))
 
-   # ── VALUE PLAYS ───────────────────────────────────────────────────────
-   rows.append((pad(["💎  VALUE PLAYS — HIGH MODEL SCORE, LONG ODDS"]), "section_header_ev"))
-   rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", ""]), "col_header_ev"))
+    # ── PITCHER STRIKEOUT PLAYS ───────────────────────────────────────────
+    rows.append((pad(["⚾  PITCHER STRIKEOUT PLAYS"]), "section_header_ks"))
+    rows.append((pad(["Rank", "Pitcher", "Team", "K Line", "Over Odds", "Signal"]), "col_header_ks"))
 
-   if hr_df.empty:
-       rows.append((pad(["—", "No value plays today"]), "no_plays"))
-   else:
-       main_clean = hr_df.copy()
-       main_clean = main_clean[main_clean.iloc[:, 1].astype(str).str.strip() != ""]
-       main_clean = main_clean[~main_clean.iloc[:, 1].astype(str).str.contains(
-           "Last Run|Batter|High EV|Launch|⚡|Breakout|VALUE PLAYS|💎", na=False
-       )]
-       main_clean = main_clean[
-           pd.to_numeric(main_clean.iloc[:, 0], errors="coerce").between(1, 10)
-       ]
-       main_clean  = main_clean.drop_duplicates(subset=[main_clean.columns[0]], keep="first")
-       top10_names = set(main_clean.iloc[:, 1].astype(str).str.strip().tolist())
+    if ks_df.empty:
+        rows.append((pad(["—", "No plays today"]), "no_plays"))
+    else:
+        sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_df.columns), None)
+        plays   = ks_df[ks_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
 
-       ev_clean = hr_df.copy()
-       ev_clean = ev_clean[ev_clean.iloc[:, 1].astype(str).str.strip() != ""]
-       ev_clean = ev_clean[~ev_clean.iloc[:, 1].astype(str).str.contains(
-           "Last Run|Batter|High EV|Launch|⚡|Breakout|VALUE PLAYS|💎", na=False
-       )]
-       ev_clean = ev_clean[~ev_clean.iloc[:, 1].astype(str).str.strip().isin(top10_names)]
-       ev_clean = ev_clean[
-           pd.to_numeric(ev_clean.iloc[:, 0], errors="coerce").between(1, 5)
-       ]
-       ev_clean = ev_clean.drop_duplicates(subset=[ev_clean.columns[0]], keep="first")
+        if plays.empty:
+            rows.append((pad(["—", "No plays today"]), "no_plays"))
+        else:
+            for i in range(len(plays)):
+                row       = plays.iloc[i]
+                rank      = safe_val(row, "Rank", str(i + 1))
+                pitcher   = safe_val(row, "Pitcher")
+                team      = safe_val(row, "Team")
+                k_line    = safe_val(row, "K Line")
+                over_odds = safe_val(row, "Over Odds")
+                signal    = safe_val(row, sig_col)
+                rows.append((pad([rank, pitcher, team, k_line, over_odds, signal]), "data_ks"))
 
-       if ev_clean.empty:
-           rows.append((pad(["—", "No value plays today"]), "no_plays"))
-       else:
-           cols = ev_clean.columns.tolist()
-           for i in range(len(ev_clean)):
-               rank = str(int(pd.to_numeric(ev_clean.iloc[i, 0], errors="coerce")))
-               try:
-                   batter = str(ev_clean.iloc[i, 1]).strip()
-               except Exception:
-                   batter = ""
-               try:
-                   team = str(ev_clean.iloc[i, 3]).strip()
-               except Exception:
-                   team = ""
-               try:
-                   hr_score = str(ev_clean.iloc[i, cols.index("HR Score")]).strip() if "HR Score" in cols else ""
-               except Exception:
-                   hr_score = ""
-               try:
-                   odds = str(ev_clean.iloc[i, cols.index("Consensus Odds")]).strip() if "Consensus Odds" in cols else ""
-                   if odds and odds not in ("", "nan"):
-                       odds = f"+{odds}" if not odds.startswith("+") else odds
-               except Exception:
-                   odds = ""
-               if not batter or batter == "nan":
-                   continue
-               rows.append((pad([rank, batter, team, hr_score, odds, "💎"]), "data_ev"))
+    rows.append((E[:], "spacer"))
 
-   rows.append((E[:], "spacer"))
+    # ── H+R+RBI PLAYS ─────────────────────────────────────────────────────
+    rows.append((pad(["📊  H+R+RBI PLAYS"]), "section_header_hrrbi"))
+    rows.append((pad(["Rank", "Player", "Team", "Line", "Over Odds", "Signal"]), "col_header_hrrbi"))
 
-   # ── PITCHER STRIKEOUT PLAYS ───────────────────────────────────────────
-   rows.append((pad(["⚾  PITCHER STRIKEOUT PLAYS"]), "section_header_ks"))
-   rows.append((pad(["Rank", "Pitcher", "Team", "K Line", "Over Odds", "Signal"]), "col_header_ks"))
+    if hrrbi_df.empty:
+        rows.append((pad(["—", "No plays today"]), "no_plays"))
+    else:
+        sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in hrrbi_df.columns), None)
+        plays   = hrrbi_df[hrrbi_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
 
-   if ks_df.empty:
-       rows.append((pad(["—", "No plays today"]), "no_plays"))
-   else:
-       sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_df.columns), None)
-       plays   = ks_df[ks_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
+        if plays.empty:
+            rows.append((pad(["—", "No plays today"]), "no_plays"))
+        else:
+            for i in range(len(plays)):
+                row       = plays.iloc[i]
+                rank      = safe_val(row, "Rank", str(i + 1))
+                player    = safe_val(row, "Batter") or safe_val(row, "Player", "")
+                team      = safe_val(row, "Team")
+                line      = safe_val(row, "Line")
+                over_odds = safe_val(row, "Over Odds")
+                signal    = safe_val(row, sig_col)
+                rows.append((pad([rank, player, team, line, over_odds, signal]), "data_hrrbi"))
 
-       if plays.empty:
-           rows.append((pad(["—", "No plays today"]), "no_plays"))
-       else:
-           for i in range(len(plays)):
-               row       = plays.iloc[i]
-               rank      = safe_val(row, "Rank", str(i + 1))
-               pitcher   = safe_val(row, "Pitcher")
-               team      = safe_val(row, "Team")
-               k_line    = safe_val(row, "K Line")
-               over_odds = safe_val(row, "Over Odds")
-               signal    = safe_val(row, sig_col)
-               rows.append((pad([rank, pitcher, team, k_line, over_odds, signal]), "data_ks"))
-
-   rows.append((E[:], "spacer"))
-
-   # ── H+R+RBI PLAYS ─────────────────────────────────────────────────────
-   rows.append((pad(["📊  H+R+RBI PLAYS"]), "section_header_hrrbi"))
-   rows.append((pad(["Rank", "Player", "Team", "Line", "Over Odds", "Signal"]), "col_header_hrrbi"))
-
-   if hrrbi_df.empty:
-       rows.append((pad(["—", "No plays today"]), "no_plays"))
-   else:
-       sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in hrrbi_df.columns), None)
-       plays   = hrrbi_df[hrrbi_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
-
-       if plays.empty:
-           rows.append((pad(["—", "No plays today"]), "no_plays"))
-       else:
-           for i in range(len(plays)):
-               row       = plays.iloc[i]
-               rank      = safe_val(row, "Rank", str(i + 1))
-               player    = safe_val(row, "Batter") or safe_val(row, "Player", "")
-               team      = safe_val(row, "Team")
-               line      = safe_val(row, "Line")
-               over_odds = safe_val(row, "Over Odds")
-               signal    = safe_val(row, sig_col)
-               rows.append((pad([rank, player, team, line, over_odds, signal]), "data_hrrbi"))
-
-   return rows
+    return rows
 
 
 def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
-   sh = with_retry(lambda: gc.open_by_key(sheet_id))
-   try:
-       ws = sh.worksheet(DASHBOARD_SHEET)
-       with_retry(lambda: ws.clear())
-   except gspread.WorksheetNotFound:
-       ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet(DASHBOARD_SHEET)
+        with_retry(lambda: ws.clear())
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
 
-   reqs_pre = [{"unmergeCells": {
-       "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
-                 "startColumnIndex": 0, "endColumnIndex": 6}
-   }}]
-   try:
-       with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
-   except Exception:
-       pass
+    reqs_pre = [{"unmergeCells": {
+        "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
+                  "startColumnIndex": 0, "endColumnIndex": 6}
+    }}]
+    try:
+        with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
+    except Exception:
+        pass
 
-   data = [row_data for row_data, _ in rows]
-   with_retry(lambda: ws.update(data, value_input_option="RAW"))
+    data = [row_data for row_data, _ in rows]
+    with_retry(lambda: ws.update(data, value_input_option="RAW"))
 
-   ws_id  = ws.id
-   n_cols = 6
-   reqs   = []
+    ws_id  = ws.id
+    n_cols = 6
+    reqs   = []
 
-   reqs.append({"repeatCell": {
-       "range": {
-           "sheetId": ws_id, "startRowIndex": 0,
-           "endRowIndex": len(rows) + 5,
-           "startColumnIndex": 0, "endColumnIndex": n_cols,
-       },
-       "cell": {"userEnteredFormat": {
-           "backgroundColor": COLOR_BG,
-           "textFormat": {
-               "foregroundColor": COLOR_WHITE,
-               "fontFamily": "Roboto", "fontSize": 11, "bold": False,
-           },
-           "verticalAlignment": "MIDDLE",
-           "horizontalAlignment": "LEFT",
-           "wrapStrategy": "CLIP",
-       }},
-       "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
-   }})
+    reqs.append({"repeatCell": {
+        "range": {
+            "sheetId": ws_id, "startRowIndex": 0,
+            "endRowIndex": len(rows) + 5,
+            "startColumnIndex": 0, "endColumnIndex": n_cols,
+        },
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_BG,
+            "textFormat": {
+                "foregroundColor": COLOR_WHITE,
+                "fontFamily": "Roboto", "fontSize": 11, "bold": False,
+            },
+            "verticalAlignment": "MIDDLE",
+            "horizontalAlignment": "LEFT",
+            "wrapStrategy": "CLIP",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
+    }})
 
-   data_row_count = {"hr": 0, "ks": 0, "hrrbi": 0, "ev": 0}
+    data_row_count = {"hr": 0, "ks": 0, "hrrbi": 0}
 
-   for row_idx, (row_data, row_type) in enumerate(rows):
-       r = row_idx
+    for row_idx, (row_data, row_type) in enumerate(rows):
+        r = row_idx
 
-       if row_type.startswith("section_header"):
-           if "ev" in row_type:
-               color      = COLOR_PURPLE
-               text_color = COLOR_WHITE
-           elif "ks" in row_type:
-               color      = COLOR_TEAL
-               text_color = COLOR_WHITE
-           elif "hrrbi" in row_type:
-               color      = COLOR_BLUE
-               text_color = COLOR_WHITE
-           else:
-               color      = COLOR_GOLD
-               text_color = COLOR_BLACK
+        if row_type.startswith("section_header"):
+            if "ks" in row_type:
+                color      = COLOR_TEAL
+                text_color = COLOR_WHITE
+            elif "hrrbi" in row_type:
+                color      = COLOR_BLUE
+                text_color = COLOR_WHITE
+            else:
+                color      = COLOR_GOLD
+                text_color = COLOR_BLACK
 
-           reqs.append({"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": 0, "endColumnIndex": n_cols},
-               "cell": {"userEnteredFormat": {
-                   "backgroundColor": color,
-                   "textFormat": {
-                       "foregroundColor": text_color, "bold": True,
-                       "fontFamily": "Roboto", "fontSize": 12,
-                   },
-                   "horizontalAlignment": "LEFT",
-                   "verticalAlignment": "MIDDLE",
-                   "wrapStrategy": "CLIP",
-               }},
-               "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-           }})
-           reqs.append({"mergeCells": {
-               "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": 0, "endColumnIndex": n_cols},
-               "mergeType": "MERGE_ALL",
-           }})
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": n_cols},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": color,
+                    "textFormat": {
+                        "foregroundColor": text_color, "bold": True,
+                        "fontFamily": "Roboto", "fontSize": 12,
+                    },
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "CLIP",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            }})
+            reqs.append({"mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": n_cols},
+                "mergeType": "MERGE_ALL",
+            }})
 
-       elif row_type.startswith("col_header"):
-           reqs.append({"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": 0, "endColumnIndex": n_cols},
-               "cell": {"userEnteredFormat": {
-                   "backgroundColor": COLOR_HEADER_BG,
-                   "textFormat": {
-                       "foregroundColor": COLOR_SUBTEXT, "bold": True,
-                       "fontFamily": "Roboto", "fontSize": 9,
-                   },
-                   "horizontalAlignment": "LEFT",
-                   "verticalAlignment": "MIDDLE",
-                   "wrapStrategy": "CLIP",
-               }},
-               "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-           }})
+        elif row_type.startswith("col_header"):
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": n_cols},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_HEADER_BG,
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT, "bold": True,
+                        "fontFamily": "Roboto", "fontSize": 9,
+                    },
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "CLIP",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            }})
 
-       elif row_type.startswith("data"):
-           section = row_type.split("_")[1]
-           count   = data_row_count.get(section, 0)
-           bg      = COLOR_BG if count % 2 == 0 else COLOR_BG_ALT
-           data_row_count[section] = count + 1
+        elif row_type.startswith("data"):
+            section = row_type.split("_")[1]
+            count   = data_row_count.get(section, 0)
+            bg      = COLOR_BG if count % 2 == 0 else COLOR_BG_ALT
+            data_row_count[section] = count + 1
 
-           reqs.append({"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": 0, "endColumnIndex": n_cols},
-               "cell": {"userEnteredFormat": {
-                   "backgroundColor": bg,
-                   "textFormat": {
-                       "foregroundColor": COLOR_WHITE,
-                       "fontFamily": "Roboto Mono", "fontSize": 11,
-                   },
-                   "horizontalAlignment": "LEFT",
-                   "verticalAlignment": "MIDDLE",
-                   "wrapStrategy": "CLIP",
-               }},
-               "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-           }})
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": n_cols},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": bg,
+                    "textFormat": {
+                        "foregroundColor": COLOR_WHITE,
+                        "fontFamily": "Roboto Mono", "fontSize": 11,
+                    },
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "CLIP",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            }})
 
-           reqs.append({"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": 0, "endColumnIndex": 1},
-               "cell": {"userEnteredFormat": {
-                   "textFormat": {
-                       "foregroundColor": COLOR_SUBTEXT,
-                       "fontFamily": "Roboto", "fontSize": 11, "bold": True,
-                   },
-                   "horizontalAlignment": "CENTER",
-                   "verticalAlignment": "MIDDLE",
-               }},
-               "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
-           }})
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": 1},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT,
+                        "fontFamily": "Roboto", "fontSize": 11, "bold": True,
+                    },
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                }},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
+            }})
 
-           if row_type in ("data_ks", "data_hrrbi"):
-               signal_val = str(row_data[5]).upper()
-               if "OVER" in signal_val and "UNDER" not in signal_val:
-                   sig_bg   = COLOR_GREEN
-                   sig_text = COLOR_WHITE
-               elif "UNDER" in signal_val:
-                   sig_bg   = COLOR_DARK_RED
-                   sig_text = COLOR_WHITE
-               else:
-                   sig_bg   = bg
-                   sig_text = COLOR_SUBTEXT
+            if row_type in ("data_ks", "data_hrrbi"):
+                signal_val = str(row_data[5]).upper()
+                if "OVER" in signal_val and "UNDER" not in signal_val:
+                    sig_bg   = COLOR_GREEN
+                    sig_text = COLOR_WHITE
+                elif "UNDER" in signal_val:
+                    sig_bg   = COLOR_DARK_RED
+                    sig_text = COLOR_WHITE
+                else:
+                    sig_bg   = bg
+                    sig_text = COLOR_SUBTEXT
 
-               reqs.append({"repeatCell": {
-                   "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                             "startColumnIndex": 5, "endColumnIndex": 6},
-                   "cell": {"userEnteredFormat": {
-                       "backgroundColor": sig_bg,
-                       "textFormat": {
-                           "foregroundColor": sig_text, "bold": True,
-                           "fontFamily": "Roboto", "fontSize": 11,
-                       },
-                       "horizontalAlignment": "CENTER",
-                       "verticalAlignment": "MIDDLE",
-                   }},
-                   "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
-               }})
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 5, "endColumnIndex": 6},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": sig_bg,
+                        "textFormat": {
+                            "foregroundColor": sig_text, "bold": True,
+                            "fontFamily": "Roboto", "fontSize": 11,
+                        },
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
 
-           if row_type == "data_ev":
-               reqs.append({"repeatCell": {
-                   "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                             "startColumnIndex": 5, "endColumnIndex": 6},
-                   "cell": {"userEnteredFormat": {
-                       "textFormat": {
-                           "foregroundColor": COLOR_PURPLE, "bold": True,
-                           "fontFamily": "Roboto", "fontSize": 11,
-                       },
-                       "horizontalAlignment": "CENTER",
-                       "verticalAlignment": "MIDDLE",
-                   }},
-                   "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
-               }})
+        elif row_type == "no_plays":
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": n_cols},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_BG_ALT,
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT, "italic": True,
+                        "fontFamily": "Roboto", "fontSize": 11,
+                    },
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "CLIP",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            }})
 
-       elif row_type == "no_plays":
-           reqs.append({"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                         "startColumnIndex": 0, "endColumnIndex": n_cols},
-               "cell": {"userEnteredFormat": {
-                   "backgroundColor": COLOR_BG_ALT,
-                   "textFormat": {
-                       "foregroundColor": COLOR_SUBTEXT, "italic": True,
-                       "fontFamily": "Roboto", "fontSize": 11,
-                   },
-                   "horizontalAlignment": "LEFT",
-                   "verticalAlignment": "MIDDLE",
-                   "wrapStrategy": "CLIP",
-               }},
-               "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-           }})
+    col_widths = [55, 180, 70, 90, 110, 120]
+    for i, w in enumerate(col_widths):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w},
+            "fields": "pixelSize",
+        }})
 
-   col_widths = [55, 180, 70, 90, 110, 120]
-   for i, w in enumerate(col_widths):
-       reqs.append({"updateDimensionProperties": {
-           "range": {"sheetId": ws_id, "dimension": "COLUMNS",
-                     "startIndex": i, "endIndex": i + 1},
-           "properties": {"pixelSize": w},
-           "fields": "pixelSize",
-       }})
+    for row_idx, (_, row_type) in enumerate(rows):
+        if row_type.startswith("section_header"):
+            h = 40
+        elif row_type == "spacer":
+            h = 14
+        elif row_type.startswith("col_header"):
+            h = 24
+        else:
+            h = 32
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "ROWS",
+                      "startIndex": row_idx, "endIndex": row_idx + 1},
+            "properties": {"pixelSize": h},
+            "fields": "pixelSize",
+        }})
 
-   for row_idx, (_, row_type) in enumerate(rows):
-       if row_type.startswith("section_header"):
-           h = 40
-       elif row_type == "spacer":
-           h = 14
-       elif row_type.startswith("col_header"):
-           h = 24
-       else:
-           h = 32
-       reqs.append({"updateDimensionProperties": {
-           "range": {"sheetId": ws_id, "dimension": "ROWS",
-                     "startIndex": row_idx, "endIndex": row_idx + 1},
-           "properties": {"pixelSize": h},
-           "fields": "pixelSize",
-       }})
+    reqs.append({"updateSheetProperties": {
+        "properties": {
+            "sheetId": ws_id,
+            "gridProperties": {"frozenRowCount": 0},
+            "tabColorStyle": {"rgbColor": COLOR_GOLD},
+        },
+        "fields": "gridProperties.frozenRowCount,tabColorStyle",
+    }})
 
-   reqs.append({"updateSheetProperties": {
-       "properties": {
-           "sheetId": ws_id,
-           "gridProperties": {"frozenRowCount": 0},
-           "tabColorStyle": {"rgbColor": COLOR_GOLD},
-       },
-       "fields": "gridProperties.frozenRowCount,tabColorStyle",
-   }})
-
-   try:
-       with_retry(lambda: sh.batch_update({"requests": reqs}))
-       print("Dashboard formatting applied.")
-   except APIError as e:
-       print(f"Dashboard formatting failed: {e}")
+    try:
+        with_retry(lambda: sh.batch_update({"requests": reqs}))
+        print("Dashboard formatting applied.")
+    except APIError as e:
+        print(f"Dashboard formatting failed: {e}")
 
 
 def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
-   et     = pytz.timezone("America/New_York")
-   now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
-   sh     = with_retry(lambda: gc.open_by_key(sheet_id))
-   try:
-       ws    = sh.worksheet(DASHBOARD_SHEET)
-       ws_id = ws.id
-       with_retry(lambda: ws.insert_row(
-           [f"Last Updated: {now_et}", "", "", "", "", ""], index=1
-       ))
-       reqs = [
-           {"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                         "startColumnIndex": 0, "endColumnIndex": 6},
-               "cell": {"userEnteredFormat": {
-                   "backgroundColor": COLOR_HEADER_BG,
-                   "textFormat": {
-                       "foregroundColor": COLOR_SUBTEXT,
-                       "fontFamily": "Roboto", "fontSize": 9,
-                       "italic": True, "bold": False,
-                   },
-                   "verticalAlignment": "MIDDLE",
-                   "wrapStrategy": "CLIP",
-               }},
-               "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
-           }},
-           {"updateDimensionProperties": {
-               "range": {"sheetId": ws_id, "dimension": "ROWS",
-                         "startIndex": 0, "endIndex": 1},
-               "properties": {"pixelSize": 20},
-               "fields": "pixelSize",
-           }},
-       ]
-       with_retry(lambda: sh.batch_update({"requests": reqs}))
-   except Exception as e:
-       print(f"Dashboard timestamp failed: {e}")
-   print(f"Dashboard timestamp written: {now_et}")
+    et     = pytz.timezone("America/New_York")
+    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+    sh     = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws    = sh.worksheet(DASHBOARD_SHEET)
+        ws_id = ws.id
+        with_retry(lambda: ws.insert_row(
+            [f"Last Updated: {now_et}", "", "", "", "", ""], index=1
+        ))
+        reqs = [
+            {"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 6},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_HEADER_BG,
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT,
+                        "fontFamily": "Roboto", "fontSize": 9,
+                        "italic": True, "bold": False,
+                    },
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "CLIP",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+            }},
+            {"updateDimensionProperties": {
+                "range": {"sheetId": ws_id, "dimension": "ROWS",
+                          "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 20},
+                "fields": "pixelSize",
+            }},
+        ]
+        with_retry(lambda: sh.batch_update({"requests": reqs}))
+    except Exception as e:
+        print(f"Dashboard timestamp failed: {e}")
+    print(f"Dashboard timestamp written: {now_et}")
 
 
 def main() -> None:
-   time.sleep(5)
-   sheet_id = os.environ["GOOGLE_SHEET_ID"]
-   gc       = get_gspread_client()
+    time.sleep(5)
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    gc       = get_gspread_client()
 
-   print("Reading picks sheets for dashboard...")
-   hr_df    = read_sheet(gc, sheet_id, "Top_HR_Picks")
-   time.sleep(2)
-   ks_df    = read_sheet(gc, sheet_id, "Top_KS_Picks")
-   time.sleep(2)
-   hrrbi_df = read_sheet(gc, sheet_id, "Top_HRRBI_Picks")
+    print("Reading picks sheets for dashboard...")
+    hr_df    = read_sheet(gc, sheet_id, "Top_HR_Picks")
+    time.sleep(2)
+    ks_df    = read_sheet(gc, sheet_id, "Top_KS_Picks")
+    time.sleep(2)
+    hrrbi_df = read_sheet(gc, sheet_id, "Top_HRRBI_Picks")
 
-   print(f"HR picks: {len(hr_df)} rows")
-   print(f"KS picks: {len(ks_df)} rows")
-   print(f"HRRBI picks: {len(hrrbi_df)} rows")
+    print(f"HR picks: {len(hr_df)} rows")
+    print(f"KS picks: {len(ks_df)} rows")
+    print(f"HRRBI picks: {len(hrrbi_df)} rows")
 
-   rows = build_rows(hr_df, ks_df, hrrbi_df)
-   write_dashboard(gc, sheet_id, rows)
-   time.sleep(3)
-   write_timestamp(gc, sheet_id)
-   print("Dashboard written to 'Today's Top Picks'")
+    rows = build_rows(hr_df, ks_df, hrrbi_df)
+    write_dashboard(gc, sheet_id, rows)
+    time.sleep(3)
+    write_timestamp(gc, sheet_id)
+    print("Dashboard written to 'Today's Top Picks'")
 
 
 if __name__ == "__main__":
-   main()
+    main()
