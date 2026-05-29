@@ -1760,12 +1760,13 @@ def main() -> None:
 
     resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks)
-    combined["consensus_odds"] = combined["player_name"].map(odds_lookup).fillna("")  # ← add this
+    combined["consensus_odds"] = combined["player_name"].apply(
+        lambda n: odds_lookup.get(normalize_name(str(n)), "")
+    )
     log_all_scores(gc, sheet_id, combined)
     time.sleep(10)
     update_scorecard(gc, sheet_id)
     write_last_run_timestamp(gc, sheet_id)
-
 
 
 if __name__ == "__main__":
