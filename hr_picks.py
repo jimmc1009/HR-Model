@@ -206,11 +206,11 @@ def score_pitcher_hard_hit_pct(v: float) -> float:
 
 
 def score_park_factor(v: float) -> float:
-    if v >= 20:  return 0.5
-    if v >= 10:  return 0.3
-    if v >= 0:   return 0.1
+    if v >= 20:  return 0.25
+    if v >= 10:  return 0.15
+    if v >= 0:   return 0.05
     if v >= -10: return -0.1
-    return -0.3
+    return -0.15
 
 
 def score_pitcher_quality_penalty(
