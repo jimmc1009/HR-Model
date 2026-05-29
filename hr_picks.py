@@ -37,7 +37,7 @@ PLATOON_BONUS_WEIGHT = 0.8
 PITCH_MATCHUP_WEIGHT = 1.2
 WEATHER_WEIGHT       = 1.2
 PULL_PARK_WEIGHT     = 0.6
-MOMENTUM_WEIGHT      = 0.8
+MOMENTUM_WEIGHT      = 0.4
 BVP_WEIGHT           = 0.9
 
 MIN_BATTING_AVG      = 0.200
@@ -206,11 +206,11 @@ def score_pitcher_hard_hit_pct(v: float) -> float:
 
 
 def score_park_factor(v: float) -> float:
-    if v >= 20:  return 0.5
-    if v >= 10:  return 0.3
-    if v >= 0:   return 0.1
+    if v >= 20:  return 0.25
+    if v >= 10:  return 0.15
+    if v >= 0:   return 0.05
     if v >= -10: return -0.1
-    return -0.3
+    return -0.15
 
 
 def score_pitcher_quality_penalty(
@@ -1760,12 +1760,13 @@ def main() -> None:
 
     resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks)
-    combined["consensus_odds"] = combined["player_name"].map(odds_lookup).fillna("")  # ← add this
+    combined["consensus_odds"] = combined["player_name"].apply(
+        lambda n: odds_lookup.get(normalize_name(str(n)), "")
+    )
     log_all_scores(gc, sheet_id, combined)
     time.sleep(10)
     update_scorecard(gc, sheet_id)
     write_last_run_timestamp(gc, sheet_id)
-
 
 
 if __name__ == "__main__":
