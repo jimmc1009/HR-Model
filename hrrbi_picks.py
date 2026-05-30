@@ -25,13 +25,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-LEAGUE_AVG_BA        = 0.248
-LEAGUE_AVG_OBP       = 0.318
-LEAGUE_AVG_WOBA      = 0.318
+LEAGUE_AVG_BA        = 0.243
+LEAGUE_AVG_OBP       = 0.313
+LEAGUE_AVG_WOBA      = 0.313
 LEAGUE_AVG_ISO       = 0.155
 LEAGUE_AVG_EV_7D     = 89.0
 LEAGUE_AVG_HH_7D     = 40.0
-LEAGUE_AVG_BARREL_7D = 11.0
+LEAGUE_AVG_BARREL_7D = 8.0
 
 MIN_PA               = 80
 MIN_BBE_7D           = 5
