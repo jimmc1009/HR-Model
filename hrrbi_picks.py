@@ -37,10 +37,10 @@ MIN_PA               = 80
 MIN_BBE_7D           = 5
 MIN_BATTING_AVG      = 0.220
 MAX_PER_TEAM         = 2
-TOP_N                = 10
+TOP_N                = 15
 
 # Signal filters
-MIN_ODDS_FOR_SIGNAL  = 100   # must be +100 or better
+MIN_ODDS_FOR_SIGNAL  = -110   # must be -110 or better
 MAX_LINE_FOR_SIGNAL  = 1.5   # only 1.5 lines
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
