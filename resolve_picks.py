@@ -202,7 +202,6 @@ def resolve_ks_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
         print("KS_Picks_Log missing win column.")
         return log
 
-    # Add ks_score column if missing from older log entries
     if "ks_score" not in log.columns:
         log["ks_score"] = ""
 
@@ -314,6 +313,151 @@ def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
     return log
 
 
+def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
+    today_str = date.today().strftime("%Y-%m-%d")
+    log       = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
+
+    if log.empty:
+        print("HR_All_Scores is empty.")
+        return
+
+    if "hit_hr" not in log.columns:
+        print("HR_All_Scores missing hit_hr column.")
+        return
+
+    pending = log[
+        (log["hit_hr"].astype(str).str.strip() == "Pending") &
+        (log["date"].astype(str).str.strip() != today_str) &
+        (log["date"].astype(str).str.strip() != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending HR_All_Scores to resolve.")
+        return
+
+    pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
+    print(f"Resolving {len(pending)} pending HR_All_Scores across {len(pending_dates)} dates...")
+
+    hr_lookup = set()
+    for game_date in pending_dates:
+        print(f"  Fetching HR results for {game_date}...")
+        game_pks = get_games_for_date(game_date)
+        for pk in game_pks:
+            try:
+                url  = f"https://statsapi.mlb.com/api/v1/game/{pk}/boxscore"
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                for side in ["home", "away"]:
+                    batters  = data.get("teams", {}).get(side, {}).get("batters", [])
+                    players  = data.get("teams", {}).get(side, {}).get("players", {})
+                    for pid in batters:
+                        player_key  = f"ID{pid}"
+                        player_data = players.get(player_key, {})
+                        full_name   = player_data.get("person", {}).get("fullName", "")
+                        stats       = player_data.get("stats", {}).get("batting", {})
+                        home_runs   = int(stats.get("homeRuns", 0))
+                        if full_name and home_runs > 0:
+                            hr_lookup.add((game_date, normalize_name(full_name)))
+            except Exception as e:
+                print(f"  WARNING: Could not fetch HR data for game {pk}: {e}")
+        time.sleep(0.5)
+
+    resolved = 0
+    for idx, row in log.iterrows():
+        if str(row.get("hit_hr", "")).strip() != "Pending":
+            continue
+        row_date = str(row.get("date", "")).strip()
+        if row_date == today_str or not row_date:
+            continue
+
+        player_norm = normalize_name(str(row.get("player_name", "")))
+        log.at[idx, "hit_hr"] = "Yes" if (row_date, player_norm) in hr_lookup else "No"
+        resolved += 1
+
+    yes_count = (log["hit_hr"] == "Yes").sum()
+    no_count  = (log["hit_hr"] == "No").sum()
+    print(f"Resolved {resolved} HR_All_Scores. Yes: {yes_count} | No: {no_count}")
+
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("HR_All_Scores")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="HR_All_Scores", rows=10000, cols=40)
+
+    log = log.fillna("").replace([np.inf, -np.inf], "")
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
+    print("HR_All_Scores updated.")
+
+
+def resolve_ks_all_scores(gc: gspread.Client, sheet_id: str) -> None:
+    today_str = date.today().strftime("%Y-%m-%d")
+    log       = read_sheet_raw(gc, sheet_id, "KS_All_Scores")
+
+    if log.empty:
+        print("KS_All_Scores is empty.")
+        return
+
+    if "actual_ks" not in log.columns:
+        print("KS_All_Scores missing actual_ks column.")
+        return
+
+    pending = log[
+        (log["actual_ks"].astype(str).str.strip() == "Pending") &
+        (log["date"].astype(str).str.strip() != today_str) &
+        (log["date"].astype(str).str.strip() != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending KS_All_Scores to resolve.")
+        return
+
+    pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
+    print(f"Resolving {len(pending)} pending KS_All_Scores across {len(pending_dates)} dates...")
+
+    ks_results = build_ks_results(pending_dates)
+
+    resolved = 0
+    for idx, row in log.iterrows():
+        if str(row.get("actual_ks", "")).strip() != "Pending":
+            continue
+        row_date = str(row.get("date", "")).strip()
+        if row_date == today_str or not row_date:
+            continue
+
+        pitcher_norm = normalize_name(str(row.get("pitcher_name", "")))
+        k_line       = safe_float(row.get("k_line", 0))
+        actual_ks    = ks_results.get((row_date, pitcher_norm))
+
+        if actual_ks is not None:
+            log.at[idx, "actual_ks"] = str(actual_ks)
+            if k_line > 0:
+                log.at[idx, "over_hit"]  = "Yes" if actual_ks > k_line else "No"
+                log.at[idx, "under_hit"] = "Yes" if actual_ks < k_line else "No"
+            else:
+                log.at[idx, "over_hit"]  = "No Line"
+                log.at[idx, "under_hit"] = "No Line"
+        else:
+            log.at[idx, "actual_ks"]  = "Not Found"
+            log.at[idx, "over_hit"]   = "Not Found"
+            log.at[idx, "under_hit"]  = "Not Found"
+        resolved += 1
+
+    print(f"Resolved {resolved} KS_All_Scores rows.")
+
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("KS_All_Scores")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="KS_All_Scores", rows=10000, cols=25)
+
+    log = log.fillna("").replace([np.inf, -np.inf], "")
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
+    print("KS_All_Scores updated.")
+
+
 # ── Scorecard ─────────────────────────────────────────────────────────────
 
 def build_scorecard(
@@ -384,7 +528,6 @@ def build_scorecard(
             sub = scored[scored[signal_col].astype(str) == str(sig)]
             if not sub.empty: add_row(f"   {sig}", sub)
 
-    # Score tier breakdown — only for KS which has ks_score column
     if has_score_tiers and not scored["score_num"].isna().all():
         add_row("── By Score Tier ──", pd.DataFrame(), bold=True, header=True)
         for label, sub in [
@@ -559,85 +702,6 @@ def build_scorecard(
     print(f"{sheet_name} updated.")
 
 
-def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
-    today_str = date.today().strftime("%Y-%m-%d")
-    log       = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
-
-    if log.empty:
-        print("HR_All_Scores is empty.")
-        return
-
-    if "hit_hr" not in log.columns:
-        print("HR_All_Scores missing hit_hr column.")
-        return
-
-    pending = log[
-        (log["hit_hr"].astype(str).str.strip() == "Pending") &
-        (log["date"].astype(str).str.strip() != today_str) &
-        (log["date"].astype(str).str.strip() != "")
-    ].copy()
-
-    if pending.empty:
-        print("No pending HR_All_Scores to resolve.")
-        return
-
-    pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
-    print(f"Resolving {len(pending)} pending HR_All_Scores across {len(pending_dates)} dates...")
-
-    # Build HR lookup from MLB Stats API
-    hr_lookup = set()
-    for game_date in pending_dates:
-        print(f"  Fetching HR results for {game_date}...")
-        game_pks = get_games_for_date(game_date)
-        for pk in game_pks:
-            try:
-                url  = f"https://statsapi.mlb.com/api/v1/game/{pk}/boxscore"
-                resp = requests.get(url, timeout=15)
-                resp.raise_for_status()
-                data = resp.json()
-                for side in ["home", "away"]:
-                    batters  = data.get("teams", {}).get(side, {}).get("batters", [])
-                    players  = data.get("teams", {}).get(side, {}).get("players", {})
-                    for pid in batters:
-                        player_key  = f"ID{pid}"
-                        player_data = players.get(player_key, {})
-                        full_name   = player_data.get("person", {}).get("fullName", "")
-                        stats       = player_data.get("stats", {}).get("batting", {})
-                        home_runs   = int(stats.get("homeRuns", 0))
-                        if full_name and home_runs > 0:
-                            hr_lookup.add((game_date, normalize_name(full_name)))
-            except Exception as e:
-                print(f"  WARNING: Could not fetch HR data for game {pk}: {e}")
-        time.sleep(0.5)
-
-    resolved = 0
-    for idx, row in log.iterrows():
-        if str(row.get("hit_hr", "")).strip() != "Pending":
-            continue
-        row_date = str(row.get("date", "")).strip()
-        if row_date == today_str or not row_date:
-            continue
-
-        player_norm = normalize_name(str(row.get("player_name", "")))
-        log.at[idx, "hit_hr"] = "Yes" if (row_date, player_norm) in hr_lookup else "No"
-        resolved += 1
-
-    yes_count = (log["hit_hr"] == "Yes").sum()
-    no_count  = (log["hit_hr"] == "No").sum()
-    print(f"Resolved {resolved} HR_All_Scores. Yes: {yes_count} | No: {no_count}")
-
-    sh = with_retry(lambda: gc.open_by_key(sheet_id))
-    try:
-        ws = sh.worksheet("HR_All_Scores")
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="HR_All_Scores", rows=10000, cols=40)
-
-    log = log.fillna("").replace([np.inf, -np.inf], "")
-    with_retry(lambda: ws.clear())
-    with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
-    print("HR_All_Scores updated.")
-
-
 def main() -> None:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
@@ -647,6 +711,13 @@ def main() -> None:
     print("=" * 50)
     resolve_hr_all_scores(gc, sheet_id)
     time.sleep(5)
+
+    print("=" * 50)
+    print("Resolving KS All Scores...")
+    print("=" * 50)
+    resolve_ks_all_scores(gc, sheet_id)
+    time.sleep(5)
+
     print("=" * 50)
     print("Resolving KS picks...")
     print("=" * 50)
@@ -693,4 +764,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
