@@ -1051,10 +1051,8 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
 
 def main() -> None:
     time.sleep(10)
-
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
-
     print("Reading KS data from Google Sheets...")
     ks_df             = read_sheet(gc, sheet_id, "KS_Statcast")
     time.sleep(2)
@@ -1069,55 +1067,42 @@ def main() -> None:
     projected_lineups = read_sheet(gc, sheet_id, "Projected_Lineups")
     time.sleep(2)
     batters_df        = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
-
     print(f"KS_Statcast: {len(ks_df)} pitchers")
     print(f"Today's probables: {len(pitchers_df)} pitchers")
     print(f"Team K Rates: {len(team_k_rates)} rows")
-
     print(f"Parks: {len(parks_df)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
     print(f"Projected Lineups: {len(projected_lineups)} rows")
     print(f"Batter Statcast: {len(batters_df)} rows")
-
     print("Building opposing lineup K% stats...")
     lineup_k_stats = build_opp_lineup_k_stats(projected_lineups, batters_df)
     if lineup_k_stats:
         print(f"  Lineup K% available for {len(lineup_k_stats)} opposing teams")
     else:
         print("  No lineup K% data — falling back to team K rates")
-
     print("Fetching game start times...")
     game_times = get_todays_game_times()
     print(f"  Found {len(game_times)} game times")
-
     picks = prepare_picks(
         ks_df, pitchers_df, team_k_rates, parks_df,
         odds_df, game_times, lineup_k_stats,
     )
-
     if picks.empty:
         print("WARNING: No KS picks generated.")
         return
-
-    log_all_scores(gc, sheet_id, picks)  # ← log BEFORE diversity cap
+    log_all_scores(gc, sheet_id, picks)
     time.sleep(5)
-
     picks = apply_diversity_cap(picks)
-
     if picks.empty:
         print("WARNING: No KS picks after diversity cap.")
         return
-
     print(f"\nTop {len(picks)} Pitcher K Picks:")
     print(picks[["rank", "pitcher_name", "ks_score", "score_breakdown",
                  "projected_k_calc", "k_line", "prop_signal", "confidence"]].to_string(index=False))
-
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
     log_picks(gc, sheet_id, picks)
     time.sleep(5)
-    log_all_scores(gc, sheet_id, picks)  # ← add this
-    time.sleep(5)    
     write_timestamp(gc, sheet_id)
 
 
