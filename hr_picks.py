@@ -946,8 +946,10 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     filtered = combined[combined["score"] >= MIN_SCORE_FLOOR].copy()
 
     if not filtered.empty and odds_lookup:
-        filtered = filtered[filtered["consensus_odds"].apply(
-            lambda x: x is not None and odds_qualifies(int(x))
+        filtered = filtered[filtered.apply(
+            lambda row: row.get("consensus_odds") is not None and
+            odds_qualifies(int(row["consensus_odds"]), safe_float(row["score"])),
+            axis=1
         )].copy()
 
     filtered = filtered.sort_values("score", ascending=False).reset_index(drop=True)
