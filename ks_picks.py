@@ -609,6 +609,9 @@ def prepare_picks(
     if not team_k_rates.empty and "opposing_team" in df.columns:
         team_k_rates = team_k_rates.copy()
         team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
+        print(f"Team K Rates columns: {list(team_k_rates.columns)}")
+        print(f"Team K Rates sample: {team_k_rates.head(2).to_string()}")
+
 
         merge_cols = ["team"]
         if "k_pct" in team_k_rates.columns:
@@ -630,7 +633,6 @@ def prepare_picks(
             team_k_rates[merge_cols].rename(columns=rename_map),
             on="opposing_team", how="left"
         )
-        print(f"Team K merge check: {df[['opposing_team','opp_team_k_pct']].head(5).to_string()}")
 
 
     if not parks_df.empty and "home_team" in df.columns:
