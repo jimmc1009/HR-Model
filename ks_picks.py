@@ -630,6 +630,8 @@ def prepare_picks(
             team_k_rates[merge_cols].rename(columns=rename_map),
             on="opposing_team", how="left"
         )
+        print(f"Team K merge check: {df[['opposing_team','opp_team_k_pct']].head(5).to_string()}")
+
 
     if not parks_df.empty and "home_team" in df.columns:
         parks_df = parks_df.copy()
