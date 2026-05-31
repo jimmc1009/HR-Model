@@ -110,7 +110,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     rows = []
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥11, Odds ≤+300 or ≥+500"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥11 (≤+300 or ≥+500) | Score ≥12 (+301-499)"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", ""]), "col_header_hr"))
 
     if hr_df.empty:
