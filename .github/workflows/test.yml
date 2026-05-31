@@ -28,6 +28,7 @@ on:
           - migrate_ks
           - hr_odds_backtest
           - hr_analysis
+          - ks_analysis
 
 jobs:
   test:
@@ -200,4 +201,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_analysis.py
+
+      - name: Run ks_analysis.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_ks' ||
+          inputs.script == 'ks_analysis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python ks_analysis.py
 
