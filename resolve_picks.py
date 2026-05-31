@@ -399,8 +399,8 @@ def resolve_ks_all_scores(gc: gspread.Client, sheet_id: str) -> None:
         print("KS_All_Scores is empty.")
         return
 
-    if "actual_ks" not in log.columns:
-        print("KS_All_Scores missing actual_ks column.")
+    if "actual_ks" not in log.columns or "date" not in log.columns:
+        print("KS_All_Scores missing required columns — skipping resolution.")
         return
 
     pending = log[
