@@ -609,6 +609,7 @@ def prepare_picks(
     if not team_k_rates.empty and "opposing_team" in df.columns:
         team_k_rates = team_k_rates.copy()
         team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
+        
 
         merge_cols = ["team"]
         if "team_k_pct" in team_k_rates.columns:
@@ -629,6 +630,7 @@ def prepare_picks(
             team_k_rates[merge_cols].rename(columns=rename_map),
             on="opposing_team", how="left"
         )
+
 
     if not parks_df.empty and "home_team" in df.columns:
         parks_df = parks_df.copy()

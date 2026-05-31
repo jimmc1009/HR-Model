@@ -45,9 +45,10 @@ MAX_PER_TEAM         = 2
 MAX_PER_GAME         = 2
 
 # ── Bet filter criteria ────────────────────────────────────────────────────
-MIN_SCORE_FLOOR      = 11.0
-MAX_CHALK_ODDS       = 300    # ≤ +300 qualifies as chalk
-MIN_VALUE_ODDS       = 500    # ≥ +500 qualifies as value
+MIN_SCORE_FLOOR       = 11.0
+MAX_CHALK_ODDS        = 300
+MIN_VALUE_ODDS        = 500
+MID_RANGE_SCORE_FLOOR = 12.0
 
 COLOR_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
@@ -910,9 +911,14 @@ def build_reason(row) -> str:
     return " | ".join(reasons)
 
 
-def odds_qualifies(odds: int) -> bool:
-    """Return True if odds fall in our bet zones: ≤+300 or ≥+500."""
-    return odds <= MAX_CHALK_ODDS or odds >= MIN_VALUE_ODDS
+def odds_qualifies(odds: int, score: float = 0.0) -> bool:
+    if odds <= MAX_CHALK_ODDS:
+        return True
+    if odds >= MIN_VALUE_ODDS:
+        return True
+    if 300 < odds < 500 and score >= MID_RANGE_SCORE_FLOOR:
+        return True
+    return False
 
 
 def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tuple:
@@ -940,8 +946,10 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     filtered = combined[combined["score"] >= MIN_SCORE_FLOOR].copy()
 
     if not filtered.empty and odds_lookup:
-        filtered = filtered[filtered["consensus_odds"].apply(
-            lambda x: x is not None and odds_qualifies(int(x))
+        filtered = filtered[filtered.apply(
+            lambda row: row.get("consensus_odds") is not None and
+            odds_qualifies(int(row["consensus_odds"]), safe_float(row["score"])),
+            axis=1
         )].copy()
 
     filtered = filtered.sort_values("score", ascending=False).reset_index(drop=True)
@@ -972,9 +980,10 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     picks = pd.DataFrame(selected).reset_index(drop=True)
     picks["rank"] = range(1, len(picks) + 1)
 
-    chalk_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
-    value_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
-    print(f"Qualifying picks: {len(picks)} total ({chalk_count} chalk ≤+{MAX_CHALK_ODDS}, {value_count} value ≥+{MIN_VALUE_ODDS})")
+    chalk_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
+    mid_count     = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and 300 < int(r["consensus_odds"]) < 500)
+    value_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
+    print(f"Qualifying picks: {len(picks)} total ({chalk_count} chalk ≤+{MAX_CHALK_ODDS}, {mid_count} mid +301-499, {value_count} value ≥+{MIN_VALUE_ODDS})")
 
     output_cols = {
         "rank":                       "Rank",
@@ -1545,17 +1554,38 @@ def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
 
     ws_id = ws.id
-    sh.batch_update({"requests": [{
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 10},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
-                "textFormat": {"foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600}, "bold": False, "fontFamily": "Roboto", "fontSize": 10},
-                "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "OVERFLOW_CELL",
-            }},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
-        }
-    }]})
+    sh.batch_update({"requests": [
+        {
+            "repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
+                    "textFormat": {"foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600},
+                                   "bold": False, "fontFamily": "Roboto", "fontSize": 11},
+                    "verticalAlignment": "MIDDLE",
+                    "horizontalAlignment": "LEFT",
+                    "wrapStrategy": "OVERFLOW_CELL",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {"sheetId": ws_id, "dimension": "ROWS",
+                          "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 36},
+                "fields": "pixelSize",
+            }
+        },
+    ]})
     print(f"Last run timestamp written: {now_et}")
 
 
