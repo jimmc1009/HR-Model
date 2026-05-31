@@ -969,12 +969,90 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     print(f"KS timestamp written: {now_et}")
 
 
+def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
+    today_str = date.today().strftime("%Y-%m-%d")
+    sh        = with_retry(lambda: gc.open_by_key(sheet_id))
+
+    try:
+        ws         = sh.worksheet("KS_All_Scores")
+        all_values = with_retry(lambda: ws.get_all_values())
+        if all_values and len(all_values) > 1:
+            headers  = all_values[0]
+            rows     = all_values[1:]
+            existing = pd.DataFrame(rows, columns=headers)
+        else:
+            existing = pd.DataFrame()
+    except gspread.WorksheetNotFound:
+        ws       = sh.add_worksheet(title="KS_All_Scores", rows=10000, cols=25)
+        existing = pd.DataFrame()
+
+    if not existing.empty and "date" in existing.columns:
+        existing = existing[existing["date"] != today_str].copy()
+
+    if picks.empty:
+        print("No scored pitchers to log to KS_All_Scores.")
+        return
+
+    sorted_df = picks.sort_values("ks_score", ascending=False).reset_index(drop=True)
+    sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
+
+    new_rows = []
+    for _, row in sorted_df.iterrows():
+        team = str(row.get("pitching_team", row.get("pitcher_team", row.get("team", ""))))
+        new_rows.append({
+            "date":             today_str,
+            "rank":             str(row.get("all_scores_rank", "")),
+            "pitcher_name":     str(row.get("pitcher_name", "")),
+            "team":             team,
+            "opposing_team":    str(row.get("opposing_team", "")),
+            "ks_score":         str(row.get("ks_score", "")),
+            "score_breakdown":  str(row.get("score_breakdown", "")),
+            "k_line":           str(row.get("k_line", "")),
+            "over_odds":        str(row.get("ks_over_odds", "")),
+            "under_odds":       str(row.get("ks_under_odds", "")),
+            "projected_ks":     str(row.get("projected_k_calc", "")),
+            "prop_signal":      str(row.get("prop_signal", "")),
+            "k_pct_season":     str(row.get("k_pct_season", "")),
+            "swstr_pct":        str(row.get("swstr_pct", "")),
+            "chase_rate":       str(row.get("chase_rate", "")),
+            "k_per_9":          str(row.get("k_per_9", "")),
+            "fastball_velo":    str(row.get("fastball_velo", "")),
+            "avg_ip_per_start": str(row.get("avg_ip_per_start", "")),
+            "k_per_start_21d":  str(row.get("k_per_start_21d", "")),
+            "whip_proxy":       str(row.get("whip_proxy", "")),
+            "bb_pct_season":    str(row.get("bb_pct_season", "")),
+            "opp_team_k_pct":   str(row.get("opp_team_k_pct", "")),
+            "opp_chase_rate":   str(row.get("opp_chase_rate", "")),
+            "opp_whiff_rate":   str(row.get("opp_whiff_rate", "")),
+            "confidence":       str(row.get("confidence", "")),
+            "actual_ks":        "Pending",
+            "over_hit":         "Pending",
+            "under_hit":        "Pending",
+        })
+
+    if not new_rows:
+        print("No rows to log to KS_All_Scores.")
+        return
+
+    new_df = pd.DataFrame(new_rows)
+
+    if not existing.empty:
+        for col in new_df.columns:
+            if col not in existing.columns:
+                existing[col] = ""
+
+    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
+
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
+    print(f"Logged {len(new_rows)} scored pitchers to KS_All_Scores")
+
+
 def main() -> None:
     time.sleep(10)
-
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
-
     print("Reading KS data from Google Sheets...")
     ks_df             = read_sheet(gc, sheet_id, "KS_Statcast")
     time.sleep(2)
@@ -989,46 +1067,38 @@ def main() -> None:
     projected_lineups = read_sheet(gc, sheet_id, "Projected_Lineups")
     time.sleep(2)
     batters_df        = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
-
     print(f"KS_Statcast: {len(ks_df)} pitchers")
     print(f"Today's probables: {len(pitchers_df)} pitchers")
     print(f"Team K Rates: {len(team_k_rates)} rows")
-
     print(f"Parks: {len(parks_df)} rows")
     print(f"KS Odds: {len(odds_df)} rows")
     print(f"Projected Lineups: {len(projected_lineups)} rows")
     print(f"Batter Statcast: {len(batters_df)} rows")
-
     print("Building opposing lineup K% stats...")
     lineup_k_stats = build_opp_lineup_k_stats(projected_lineups, batters_df)
     if lineup_k_stats:
         print(f"  Lineup K% available for {len(lineup_k_stats)} opposing teams")
     else:
         print("  No lineup K% data — falling back to team K rates")
-
     print("Fetching game start times...")
     game_times = get_todays_game_times()
     print(f"  Found {len(game_times)} game times")
-
     picks = prepare_picks(
         ks_df, pitchers_df, team_k_rates, parks_df,
         odds_df, game_times, lineup_k_stats,
     )
-
     if picks.empty:
         print("WARNING: No KS picks generated.")
         return
-
+    log_all_scores(gc, sheet_id, picks)
+    time.sleep(5)
     picks = apply_diversity_cap(picks)
-
     if picks.empty:
         print("WARNING: No KS picks after diversity cap.")
         return
-
     print(f"\nTop {len(picks)} Pitcher K Picks:")
     print(picks[["rank", "pitcher_name", "ks_score", "score_breakdown",
                  "projected_k_calc", "k_line", "prop_signal", "confidence"]].to_string(index=False))
-
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
     log_picks(gc, sheet_id, picks)

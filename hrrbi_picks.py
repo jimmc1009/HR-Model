@@ -25,22 +25,22 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-LEAGUE_AVG_BA        = 0.248
-LEAGUE_AVG_OBP       = 0.318
-LEAGUE_AVG_WOBA      = 0.318
+LEAGUE_AVG_BA        = 0.243
+LEAGUE_AVG_OBP       = 0.313
+LEAGUE_AVG_WOBA      = 0.313
 LEAGUE_AVG_ISO       = 0.155
 LEAGUE_AVG_EV_7D     = 89.0
 LEAGUE_AVG_HH_7D     = 40.0
-LEAGUE_AVG_BARREL_7D = 11.0
+LEAGUE_AVG_BARREL_7D = 8.0
 
 MIN_PA               = 80
 MIN_BBE_7D           = 5
 MIN_BATTING_AVG      = 0.220
 MAX_PER_TEAM         = 2
-TOP_N                = 10
+TOP_N                = 15
 
 # Signal filters
-MIN_ODDS_FOR_SIGNAL  = 100   # must be +100 or better
+MIN_ODDS_FOR_SIGNAL  = -110   # must be -110 or better
 MAX_LINE_FOR_SIGNAL  = 1.5   # only 1.5 lines
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
