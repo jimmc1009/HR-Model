@@ -980,9 +980,10 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     picks = pd.DataFrame(selected).reset_index(drop=True)
     picks["rank"] = range(1, len(picks) + 1)
 
-    chalk_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
-    value_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
-    print(f"Qualifying picks: {len(picks)} total ({chalk_count} chalk ≤+{MAX_CHALK_ODDS}, {value_count} value ≥+{MIN_VALUE_ODDS})")
+    chalk_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
+    mid_count     = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and 300 < int(r["consensus_odds"]) < 500)
+    value_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
+    print(f"Qualifying picks: {len(picks)} total ({chalk_count} chalk ≤+{MAX_CHALK_ODDS}, {mid_count} mid +301-499, {value_count} value ≥+{MIN_VALUE_ODDS})")
 
     output_cols = {
         "rank":                       "Rank",
