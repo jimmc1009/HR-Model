@@ -948,7 +948,8 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     if not filtered.empty and odds_lookup:
         filtered = filtered[filtered.apply(
             lambda row: row.get("consensus_odds") is not None and
-            odds_qualifies(int(row["consensus_odds"]), safe_float(row["score"])),
+            str(row.get("consensus_odds", "")).strip() not in ("", "nan", "None") and
+            odds_qualifies(int(float(row["consensus_odds"])), safe_float(row["score"])),
             axis=1
         )].copy()
 
