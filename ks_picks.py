@@ -614,20 +614,19 @@ def prepare_picks(
 
 
         merge_cols = ["team"]
-        if "k_pct" in team_k_rates.columns:
-            merge_cols.append("k_pct")
+        if "team_k_pct" in team_k_rates.columns:
+            merge_cols.append("team_k_pct")
         if "team_chase_rate" in team_k_rates.columns:
             merge_cols.append("team_chase_rate")
         if "team_whiff_rate" in team_k_rates.columns:
             merge_cols.append("team_whiff_rate")
 
         rename_map = {
-            "k_pct":           "opp_team_k_pct",
+            "team_k_pct":      "opp_team_k_pct",
             "team_chase_rate": "opp_chase_rate",
             "team_whiff_rate": "opp_whiff_rate",
             "team":            "opposing_team",
         }
-
 
         df = df.merge(
             team_k_rates[merge_cols].rename(columns=rename_map),
