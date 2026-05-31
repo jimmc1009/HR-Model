@@ -1554,17 +1554,38 @@ def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
 
     ws_id = ws.id
-    sh.batch_update({"requests": [{
-        "repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 10},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
-                "textFormat": {"foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600}, "bold": False, "fontFamily": "Roboto", "fontSize": 10},
-                "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "OVERFLOW_CELL",
-            }},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
-        }
-    }]})
+    sh.batch_update({"requests": [
+        {
+            "repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
+                    "textFormat": {"foregroundColor": {"red": 0.600, "green": 0.600, "blue": 0.600},
+                                   "bold": False, "fontFamily": "Roboto", "fontSize": 11},
+                    "verticalAlignment": "MIDDLE",
+                    "horizontalAlignment": "LEFT",
+                    "wrapStrategy": "OVERFLOW_CELL",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 10},
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {"sheetId": ws_id, "dimension": "ROWS",
+                          "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 36},
+                "fields": "pixelSize",
+            }
+        },
+    ]})
     print(f"Last run timestamp written: {now_et}")
 
 
