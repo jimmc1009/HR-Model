@@ -609,9 +609,7 @@ def prepare_picks(
     if not team_k_rates.empty and "opposing_team" in df.columns:
         team_k_rates = team_k_rates.copy()
         team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
-        print(f"Team K Rates columns: {list(team_k_rates.columns)}")
-        print(f"Team K Rates sample: {team_k_rates.head(2).to_string()}")
-
+        
 
         merge_cols = ["team"]
         if "team_k_pct" in team_k_rates.columns:
