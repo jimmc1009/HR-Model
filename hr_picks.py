@@ -911,9 +911,14 @@ def build_reason(row) -> str:
     return " | ".join(reasons)
 
 
-def odds_qualifies(odds: int) -> bool:
-    """Return True if odds fall in our bet zones: ≤+300 or ≥+500."""
-    return odds <= MAX_CHALK_ODDS or odds >= MIN_VALUE_ODDS
+def odds_qualifies(odds: int, score: float = 0.0) -> bool:
+    if odds <= MAX_CHALK_ODDS:
+        return True
+    if odds >= MIN_VALUE_ODDS:
+        return True
+    if 300 < odds < 500 and score >= MID_RANGE_SCORE_FLOOR:
+        return True
+    return False
 
 
 def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tuple:
