@@ -833,7 +833,7 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
             "team":        str(row.get("batter_team", "")),
             "line":        str(row.get("hrrbi_line", "")),
             "prop_signal": str(row.get("prop_signal", "")),
-            "over_odds":   str(row.get("hrrbi_over_odds", "")),
+            "over_odds":   str(int(float(row.get("hrrbi_over_odds", 0)))) if str(row.get("hrrbi_over_odds", "")).strip() not in ("", "nan", "None") else "",
             "confidence":  str(row.get("confidence", "")),
             "win":         "",
         })
