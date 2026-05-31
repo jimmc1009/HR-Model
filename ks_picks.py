@@ -1099,6 +1099,9 @@ def main() -> None:
         print("WARNING: No KS picks generated.")
         return
 
+    log_all_scores(gc, sheet_id, picks)  # ← log BEFORE diversity cap
+    time.sleep(5)
+
     picks = apply_diversity_cap(picks)
 
     if picks.empty:
