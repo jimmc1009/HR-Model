@@ -472,6 +472,8 @@ def build_scorecard(
     title: str,
     has_score_tiers: bool = False,
     score_col: str = "",
+    has_odds_zones: bool = False,
+    odds_col: str = "",
 ) -> None:
     if log.empty or "win" not in log.columns:
         print(f"{sheet_name}: empty or missing win column — skipping.")
@@ -490,6 +492,14 @@ def build_scorecard(
         scored["score_num"] = pd.to_numeric(scored[score_col], errors="coerce")
     else:
         scored["score_num"] = np.nan
+
+    if has_odds_zones and odds_col and odds_col in scored.columns:
+        scored["odds_num"] = pd.to_numeric(
+            scored[odds_col].astype(str).str.replace("+", "").str.replace(".0", "").str.strip(),
+            errors="coerce"
+        )
+    else:
+        scored["odds_num"] = np.nan
 
     rows = []
 
@@ -527,6 +537,16 @@ def build_scorecard(
                 continue
             sub = scored[scored[signal_col].astype(str) == str(sig)]
             if not sub.empty: add_row(f"   {sig}", sub)
+
+    if has_odds_zones and not scored["odds_num"].isna().all():
+        add_row("── By Odds Zone ──", pd.DataFrame(), bold=True, header=True)
+        for label, sub in [
+            ("   Minus Odds",   scored[scored["odds_num"] < 0]),
+            ("   +100 to +110", scored[(scored["odds_num"] >= 100) & (scored["odds_num"] <= 110)]),
+            ("   +111 to +120", scored[(scored["odds_num"] >= 111) & (scored["odds_num"] <= 120)]),
+            ("   +121 and above", scored[scored["odds_num"] >= 121]),
+        ]:
+            if not sub.empty: add_row(label, sub)
 
     if has_score_tiers and not scored["score_num"].isna().all():
         add_row("── By Score Tier ──", pd.DataFrame(), bold=True, header=True)
@@ -757,6 +777,8 @@ def main() -> None:
             title             = "H+R+RBI",
             has_score_tiers   = False,
             score_col         = "",
+            has_odds_zones    = True,
+            odds_col          = "over_odds",
         )
 
     print("Done.")
