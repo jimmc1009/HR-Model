@@ -128,31 +128,8 @@ def main() -> None:
     print(f"HRRBI_Statcast: {len(out)} batters")
     print("Written to HRRBI_Statcast")
 
-    # Also read team K rates for ks_statcast
-    time.sleep(2)
-    print("Reading HRRBI_Statcast for team K rates...")
-    ws_hrrbi = sh.worksheet("HRRBI_Statcast")
-    hrrbi_df = pd.DataFrame(with_retry(lambda: ws_hrrbi.get_all_records()))
-
-    if not hrrbi_df.empty and "team" in hrrbi_df.columns and "k_pct" in hrrbi_df.columns:
-        team_k = hrrbi_df.groupby("team")["k_pct"].mean().reset_index()
-        team_k.columns = ["team", "k_pct"]
-    elif not hrrbi_df.empty and "team" in hrrbi_df.columns and "k_pct_season" in hrrbi_df.columns:
-        team_k = hrrbi_df.groupby("team")["k_pct_season"].mean().reset_index()
-        team_k.columns = ["team", "k_pct"]
-    else:
-        print("  Could not compute team K rates — column missing")
-        team_k = pd.DataFrame()
-
-    if not team_k.empty:
-        try:
-            ws_k = sh.worksheet("Team_K_Rates")
-            with_retry(lambda: ws_k.clear())
-        except gspread.WorksheetNotFound:
-            ws_k = sh.add_worksheet(title="Team_K_Rates", rows=35, cols=5)
-        with_retry(lambda: ws_k.update([team_k.columns.tolist()] + team_k.astype(str).values.tolist()))
-        print(f"  Team K rates: {len(team_k)} teams")
-        print("Written to Team_K_Rates")
+    # Team_K_Rates is built by main.py with full pitch-level chase/whiff data — do not overwrite here.
+    print("Team_K_Rates built by main.py — skipping.")
 
 
 if __name__ == "__main__":
