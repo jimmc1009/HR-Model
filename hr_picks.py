@@ -34,12 +34,9 @@ MIN_BBE_7D_FULL      = 20
 MIN_BBE_7D_PARTIAL   = 5
 
 # ── Component weights ──────────────────────────────────────────────────────
-# CHANGED: Weather 1.2 → 0.3 (wrong direction per analysis, -39.7% separation)
-# CHANGED: Pitch matchup 1.2 → 1.2 (keep, insufficient data)
-# Platoon, pull/park, momentum, BVP unchanged
 PLATOON_BONUS_WEIGHT = 0.8
 PITCH_MATCHUP_WEIGHT = 1.2
-WEATHER_WEIGHT       = 0.3   # was 1.2 — data shows weather hurts prediction
+WEATHER_WEIGHT       = 0.3   # was 1.2 — data showed -39.7% separation (wrong direction)
 PULL_PARK_WEIGHT     = 0.6
 MOMENTUM_WEIGHT      = 0.4
 BVP_WEIGHT           = 0.9
@@ -49,10 +46,10 @@ MAX_PER_TEAM         = 2
 MAX_PER_GAME         = 2
 
 # ── Bet filter criteria ────────────────────────────────────────────────────
-MIN_SCORE_FLOOR       = 9.5
+MIN_SCORE_FLOOR       = 9.5    # was 11.0 — adjusted for lower max after weight reductions
+MID_RANGE_SCORE_FLOOR = 11.0   # was 12.0 — gates +301-499 zone
 MAX_CHALK_ODDS        = 300
 MIN_VALUE_ODDS        = 500
-MID_RANGE_SCORE_FLOOR = 11.0
 
 COLOR_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
@@ -122,13 +119,12 @@ def regress(value: float, league_avg: float, sample: float, full_sample: float) 
 
 
 # ── Batter scoring functions ───────────────────────────────────────────────
-# CHANGED: score_barrel_pct_7d max 2.0 → 2.5 (strongest separator at +43-46%)
 
 def score_barrel_pct_7d(v: float, bbe_7d: float) -> float:
     if bbe_7d < 5:
         return 0.0
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
-    if v >= 20: return 2.5   # was 2.0
+    if v >= 20: return 2.5   # was 2.0 — strongest predictor +43-46%
     if v >= 15: return 1.8   # was 1.5
     if v >= 10: return 1.0
     if v >= 6:  return 0.4
@@ -170,12 +166,11 @@ def score_hr_per_fb(v: float, pa: float) -> float:
     return 0.0
 
 
-# CHANGED: score_avg_ev_7d max 1.0 → 0.5 (only +1.8% separation, weak predictor)
 def score_avg_ev_7d(v: float, bbe_7d: float) -> float:
     if bbe_7d < 5:
         return 0.0
     v = regress(v, LEAGUE_AVG_EV_7D, bbe_7d, MIN_BBE_7D_FULL)
-    if v >= 97: return 0.5   # was 1.0
+    if v >= 97: return 0.5   # was 1.0 — only +1.8% separation
     if v >= 94: return 0.3   # was 0.6
     if v >= 91: return 0.15  # was 0.3
     return 0.0
@@ -192,18 +187,17 @@ def score_hard_hit_pct_7d(v: float, bbe_7d: float) -> float:
 
 
 # ── Pitcher scoring functions ──────────────────────────────────────────────
-# CHANGED: pitcher barrel max 1.5 → 1.0 (only +10.8% separation vs batter's +43%)
+
 def score_pitcher_barrel_pct(v: float) -> float:
-    if v >= 14: return 1.0   # was 1.5
+    if v >= 14: return 1.0   # was 1.5 — only +10.8% separation
     if v >= 11: return 0.75  # was 1.0
     if v >=  9: return 0.5   # was 0.6
     if v >=  7: return 0.25  # was 0.3
     return 0.0
 
 
-# CHANGED: pitcher HR/FB max 1.5 → 1.0 (only +9.9% separation)
 def score_pitcher_hr_per_fb(v: float) -> float:
-    if v >= 20: return 1.0   # was 1.5
+    if v >= 20: return 1.0   # was 1.5 — only +9.9% separation
     if v >= 15: return 0.7   # was 1.0
     if v >= 13: return 0.4   # was 0.6
     if v >= 10: return 0.2   # was 0.3
@@ -637,7 +631,6 @@ def prepare_combined(
     batters.columns = [c.strip() for c in batters.columns]
     batters = batters.rename(columns={"team": "batter_team"})
 
-    # ── IL filter ─────────────────────────────────────────────────────────
     if active_roster is not None and not active_roster.empty and "player_id" in active_roster.columns:
         active_ids    = set(active_roster["player_id"].astype(str).str.strip())
         batter_id_col = "batter_id" if "batter_id" in batters.columns else "batter"
@@ -650,7 +643,6 @@ def prepare_combined(
     else:
         print("Active roster unavailable — IL filter skipped.")
 
-    # ── Lineup filter ──────────────────────────────────────────────────────
     if not lineups.empty and "player_id" in lineups.columns and "team" in lineups.columns:
         confirmed_teams = set(lineups["team"].unique())
         lineup_ids      = set(lineups["player_id"].astype(str).str.strip())
@@ -698,7 +690,6 @@ def prepare_combined(
         print("No batter-pitcher matchups found.")
         return pd.DataFrame()
 
-    # ── BvP merge ──────────────────────────────────────────────────────────
     if not bvp.empty and "pitcher_id_num" in combined.columns:
         bvp = bvp.copy()
         bvp.columns = [c.strip() for c in bvp.columns]
@@ -715,7 +706,6 @@ def prepare_combined(
     else:
         print("No BvP data to merge.")
 
-    # ── Park merge ─────────────────────────────────────────────────────────
     if not parks.empty:
         park_cols = [c for c in ["park_home_team", "park_hr_factor", "park_name", "small_sample", "lf_dist", "lf_height", "rf_dist", "rf_height", "pull_boost_rhh", "pull_boost_lhh"] if c in parks.columns]
         combined  = combined.merge(parks[park_cols], left_on="home_team", right_on="park_home_team", how="left")
@@ -723,7 +713,6 @@ def prepare_combined(
         for col, val in [("park_hr_factor", 100.0), ("park_name", ""), ("small_sample", False), ("lf_dist", 331.0), ("lf_height", 9.0), ("rf_dist", 327.0), ("rf_height", 9.0), ("pull_boost_rhh", 0.0), ("pull_boost_lhh", 0.0)]:
             combined[col] = val
 
-    # ── Weather merge ──────────────────────────────────────────────────────
     if not weather.empty:
         combined = combined.merge(weather[["weather_home_team", "hr_weather_boost", "wind_context", "temp_f"]], left_on="home_team", right_on="weather_home_team", how="left")
         combined["hr_weather_boost"] = combined["hr_weather_boost"].fillna(0.0).apply(safe_float)
@@ -734,7 +723,6 @@ def prepare_combined(
         combined["wind_context"]     = ""
         combined["temp_f"]           = 72.0
 
-    # ── Batting average filter ─────────────────────────────────────────────
     if "batting_avg" in combined.columns:
         combined["batting_avg"] = combined["batting_avg"].apply(safe_float)
         before   = len(combined)
@@ -745,7 +733,6 @@ def prepare_combined(
         print("No batters remaining after filters.")
         return pd.DataFrame()
 
-    # ── Coerce numeric columns ─────────────────────────────────────────────
     score_cols = [
         "barrel_pct_7d", "season_barrel_pct", "hr_per_pa", "hr_per_fb", "iso",
         "avg_ev_7d", "hard_hit_pct_7d", "avg_launch_angle", "avg_la_7d",
@@ -765,8 +752,7 @@ def prepare_combined(
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "hr_7d", "season_hr", "season_fb", "season_hard_hit",
         "lhp_start_rate", "rhp_start_rate", "hard_hit_pct_5d", "hard_hit_pct_10d",
-        "avg_la_5d", "avg_la_10d",
-        "avg_14d", "pa_14d",
+        "avg_la_5d", "avg_la_10d", "avg_14d", "pa_14d",
         "hot_streak", "cold_streak",
     ]
 
@@ -779,7 +765,6 @@ def prepare_combined(
 
     combined["park_hr_factor_norm"] = combined["park_hr_factor"] - 100
 
-    # ── Component scores ───────────────────────────────────────────────────
     combined = combined.copy()
 
     platoon_results = combined.apply(compute_platoon_score, axis=1)
@@ -809,14 +794,12 @@ def prepare_combined(
     combined["weather_score"] = combined["hr_weather_boost"].clip(-2, 2) / 2
     combined["confidence"]    = combined.apply(assign_confidence, axis=1)
 
-    # ── Cap context scores ─────────────────────────────────────────────────
     combined["platoon_score_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
     combined["pitch_matchup_score_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.5)
     combined["pull_park_score_capped"]     = combined["pull_park_score"].clip(-1.0, 1.0)
     combined["momentum_score_capped"]      = combined["momentum_score"].clip(-1.0, 1.0)
     combined["bvp_score_capped"]           = combined["bvp_score"].clip(-0.5, 1.5)
 
-    # ── Absolute scoring with regression ──────────────────────────────────
     combined["score"] = (
         combined.apply(lambda r: score_barrel_pct_7d(safe_float(r["barrel_pct_7d"]), safe_float(r.get("bbe_7d", 0))), axis=1) +
         combined.apply(lambda r: score_season_barrel_pct(safe_float(r["season_barrel_pct"]), safe_float(r["pa"])), axis=1) +
@@ -983,15 +966,15 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
 
     if not selected:
         picks = pd.DataFrame()
-        print("No qualifying picks today (score ≥11, odds ≤+300 or ≥+500).")
+        print(f"No qualifying picks today (score ≥{MIN_SCORE_FLOOR}, odds ≤+{MAX_CHALK_ODDS} or ≥+{MIN_VALUE_ODDS}).")
         return picks, odds_lookup
 
     picks = pd.DataFrame(selected).reset_index(drop=True)
     picks["rank"] = range(1, len(picks) + 1)
 
-    chalk_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
-    mid_count     = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and 300 < int(r["consensus_odds"]) < 500)
-    value_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
+    chalk_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) <= MAX_CHALK_ODDS)
+    mid_count   = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and 300 < int(r["consensus_odds"]) < 500)
+    value_count = sum(1 for _, r in picks.iterrows() if r.get("consensus_odds") is not None and int(r["consensus_odds"]) >= MIN_VALUE_ODDS)
     print(f"Qualifying picks: {len(picks)} total ({chalk_count} chalk ≤+{MAX_CHALK_ODDS}, {mid_count} mid +301-499, {value_count} value ≥+{MIN_VALUE_ODDS})")
 
     output_cols = {
@@ -1073,7 +1056,11 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
         return
 
     today_str = date.today().strftime("%Y-%m-%d")
-    pending   = existing[(existing["hit_hr"] == "Pending") & (existing["date"] != today_str) & (existing["date"] != "")].copy()
+    pending   = existing[
+        (existing["hit_hr"] == "Pending") &
+        (existing["date"] != today_str) &
+        (existing["date"] != "")
+    ].copy()
 
     if pending.empty:
         print("No pending picks to resolve.")
@@ -1128,7 +1115,9 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
             existing.at[idx, "hit_hr"] = "Yes" if (pick_date, pick_name) in hr_lookup else "No"
         resolved_count += 1
 
-    print(f"Resolved {resolved_count} picks. Yes: {(existing['hit_hr'] == 'Yes').sum()} | No: {(existing['hit_hr'] == 'No').sum()}")
+    yes_count = sum(1 for _, r in existing.iterrows() if r["hit_hr"] == "Yes" and r["date"] in pending_dates)
+    no_count  = sum(1 for _, r in existing.iterrows() if r["hit_hr"] == "No"  and r["date"] in pending_dates)
+    print(f"Resolved {resolved_count} picks. Yes: {yes_count} | No: {no_count} (from pending dates only)")
     ws.clear()
     ws.update([existing.columns.tolist()] + existing.astype(str).values.tolist())
     print("Picks_Log updated with resolved outcomes.")
@@ -1149,7 +1138,6 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> 
         existing = existing[existing["date"] != today_str].copy()
 
     new_rows = []
-
     if not picks.empty:
         for _, row in picks.iterrows():
             new_rows.append({
@@ -1224,7 +1212,6 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> 
         return
 
     new_df = pd.DataFrame(new_rows)
-
     if not existing.empty:
         for col in new_df.columns:
             if col not in existing.columns:
@@ -1313,7 +1300,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         if sub_df.empty: return
         total = len(sub_df)
         hits  = int(sub_df["hit_hr_bool"].sum())
-        perf_rows.append({"label": label, "total_picks": total, "hr_count": hits, "hit_rate_pct": round(hits / total * 100, 1), "_bold": bold})
+        perf_rows.append({"label": label, "total_picks": total, "hr_count": hits,
+                          "hit_rate_pct": round(hits / total * 100, 1), "_bold": bold})
 
     def add_roi(label, sub_df, bold=False):
         if sub_df.empty: return
@@ -1321,17 +1309,22 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         hits         = int(sub_df["hit_hr_bool"].sum())
         units_profit = round(sub_df["unit_result"].sum(), 2)
         roi          = round(units_profit / total * 100, 1) if total > 0 else 0.0
-        roi_rows.append({"label": label, "bets_placed": total, "hr_count": hits, "hit_rate_pct": round(hits / total * 100, 1) if total > 0 else 0.0, "units_wagered": float(total), "units_profit": f"+{units_profit}" if units_profit >= 0 else str(units_profit), "roi_pct": f"+{roi}%" if roi >= 0 else f"{roi}%", "_bold": bold, "_roi_val": roi, "_profit_val": units_profit})
+        roi_rows.append({"label": label, "bets_placed": total, "hr_count": hits,
+                         "hit_rate_pct": round(hits / total * 100, 1) if total > 0 else 0.0,
+                         "units_wagered": float(total),
+                         "units_profit": f"+{units_profit}" if units_profit >= 0 else str(units_profit),
+                         "roi_pct": f"+{roi}%" if roi >= 0 else f"{roi}%",
+                         "_bold": bold, "_roi_val": roi, "_profit_val": units_profit})
 
     def add_score(label, sub_df, bold=False):
         if sub_df.empty: return
         total     = len(sub_df)
         hits      = int(sub_df["hit_hr_bool"].sum())
         avg_score = round(sub_df["hr_score"].mean(), 2) if not sub_df["hr_score"].isna().all() else 0.0
-        score_rows.append({"label": label, "total_picks": total, "hr_count": hits, "hit_rate_pct": round(hits / total * 100, 1), "avg_score": avg_score, "_bold": bold})
+        score_rows.append({"label": label, "total_picks": total, "hr_count": hits,
+                           "hit_rate_pct": round(hits / total * 100, 1), "avg_score": avg_score, "_bold": bold})
 
     add_perf("🏆  Overall", scored, bold=True)
-
     perf_rows.append({"label": "── By Rank ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "_bold": True, "_header": True})
     for rank in range(1, 11):
         sub = scored[scored["rank"] == rank]
@@ -1347,6 +1340,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         scored["odds_zone_num"] = pd.to_numeric(scored["consensus_odds"], errors="coerce")
         for label, sub in [
             ("   ≤ +300 (Chalk)",   scored[scored["odds_zone_num"] <= 300]),
+            ("   +301 to +499",     scored[(scored["odds_zone_num"] > 300) & (scored["odds_zone_num"] < 500)]),
             ("   +500 to +699",     scored[(scored["odds_zone_num"] >= 500) & (scored["odds_zone_num"] < 700)]),
             ("   +700+",            scored[scored["odds_zone_num"] >= 700]),
         ]:
@@ -1367,8 +1361,7 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             if not sub.empty: add_roi(f"   {tier}", sub)
         roi_rows.append({"label": "── By Odds Zone ──", "bets_placed": "", "hr_count": "", "hit_rate_pct": "", "units_wagered": "", "units_profit": "", "roi_pct": "", "_bold": True, "_header": True, "_roi_val": 0, "_profit_val": 0})
         bet_picks["odds_num_bet"] = pd.to_numeric(
-            bet_picks["odds"].apply(lambda x: str(x).replace("+", "").strip()),
-            errors="coerce"
+            bet_picks["odds"].apply(lambda x: str(x).replace("+", "").strip()), errors="coerce"
         )
         for label, sub in [
             ("   ≤ +300 (Chalk)",   bet_picks[bet_picks["odds_num_bet"] <= 300]),
@@ -1384,12 +1377,10 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_score("📈  All Scored Picks", scored, bold=True)
     score_rows.append({"label": "── By Score Tier ──", "total_picks": "", "hr_count": "", "hit_rate_pct": "", "avg_score": "", "_bold": True, "_header": True})
     for label, sub in [
-        ("   15+",      scored[scored["hr_score"] >= 15]),
-        ("   14+",      scored[scored["hr_score"] >= 14]),
         ("   13+",      scored[scored["hr_score"] >= 13]),
-        ("   12+",      scored[scored["hr_score"] >= 12]),
-        ("   11+",      scored[scored["hr_score"] >= 11]),
-        ("   Under 11", scored[scored["hr_score"] <  11]),
+        ("   11-13",    scored[(scored["hr_score"] >= 11) & (scored["hr_score"] < 13)]),
+        ("   9.5-11",   scored[(scored["hr_score"] >= 9.5) & (scored["hr_score"] < 11)]),
+        ("   Under 9.5",scored[scored["hr_score"] < 9.5]),
     ]:
         if not sub.empty: add_score(label, sub)
 
@@ -1410,7 +1401,8 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     perf_start = 2
 
     for r in perf_rows:
-        all_values.append([r.get("label", ""), str(r.get("total_picks", "")), str(r.get("hr_count", "")), f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else ""])
+        all_values.append([r.get("label", ""), str(r.get("total_picks", "")), str(r.get("hr_count", "")),
+                           f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else ""])
 
     all_values.append(["", "", "", ""])
     all_values.append(["", "", "", ""])
@@ -1421,7 +1413,9 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
         all_values.append(roi_headers)
         roi_data_start = len(all_values)
         for r in roi_rows:
-            all_values.append([r.get("label", ""), str(r.get("bets_placed", "")), str(r.get("hr_count", "")), f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "", str(r.get("units_wagered", "")), str(r.get("units_profit", "")), str(r.get("roi_pct", ""))])
+            all_values.append([r.get("label", ""), str(r.get("bets_placed", "")), str(r.get("hr_count", "")),
+                               f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
+                               str(r.get("units_wagered", "")), str(r.get("units_profit", "")), str(r.get("roi_pct", ""))])
     else:
         all_values.append(["💰  BETTING ROI — No bets placed yet", "", "", "", "", "", ""])
         roi_data_start = len(all_values)
@@ -1435,20 +1429,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     score_data_start = len(all_values)
 
     for r in score_rows:
-        all_values.append([r.get("label", ""), str(r.get("total_picks", "")), str(r.get("hr_count", "")), f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "", str(r.get("avg_score", ""))])
+        all_values.append([r.get("label", ""), str(r.get("total_picks", "")), str(r.get("hr_count", "")),
+                           f"{r['hit_rate_pct']}%" if r.get("hit_rate_pct", "") != "" else "",
+                           str(r.get("avg_score", ""))])
 
     ws.update(all_values)
     print("Scorecard updated.")
-
-
-def write_last_run_timestamp(gc, sheet_id: str) -> None:
-    """
-    No-op — timestamp is now written directly in write_picks_to_sheet as row 1.
-    Kept so main() call doesn't break.
-    """
-    print("Timestamp already written in write_picks_to_sheet — skipping.")
-    ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
-    print(f"Last run timestamp written: {now_et}")
 
 
 def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
@@ -1460,16 +1446,12 @@ def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def write_picks_to_sheet(gc, sheet_id: str, picks, row_count_ref: list) -> int:
+def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> int:
     """
     Writes timestamp row 1, headers row 2, data rows 3+.
-    Returns row count (data rows only, not counting timestamp or header).
-    Stores sheet ws_id in row_count_ref[0] for format_picks_sheet to reuse.
+    No insert_row call — everything written in one shot.
+    Returns number of data rows written.
     """
-    import pytz
-    from datetime import datetime
-    import numpy as np
-
     et     = pytz.timezone("America/New_York")
     now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
 
@@ -1477,33 +1459,37 @@ def write_picks_to_sheet(gc, sheet_id: str, picks, row_count_ref: list) -> int:
     try:
         ws = sh.worksheet("Top_HR_Picks")
         ws.clear()
-    except Exception:
+    except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=55)
 
     if picks.empty:
         ws.update([[f"⏱  Last Run: {now_et}"],
-                   ["No qualifying picks today — score ≥9.5 with odds ≤+300 or ≥+500"]])
+                   [f"No qualifying picks today — score ≥{MIN_SCORE_FLOOR} with odds ≤+{MAX_CHALK_ODDS} or ≥+{MIN_VALUE_ODDS}"]])
         return 0
 
-    picks_clean = clean_for_sheets(picks)
-    timestamp_row = [f"⏱  Last Run: {now_et}"] + [""] * (len(picks_clean.columns) - 1)
+    picks_clean   = clean_for_sheets(picks)
+    n_cols        = len(picks_clean.columns)
+    timestamp_row = [f"⏱  Last Run: {now_et}"] + [""] * (n_cols - 1)
     header_row    = picks_clean.columns.tolist()
     data_rows     = picks_clean.astype(str).values.tolist()
 
-    all_values = [timestamp_row, header_row] + data_rows
-    ws.update(all_values)
-
-    print(f"Written {len(data_rows)} picks to Top_HR_Picks (with timestamp row 1)")
+    ws.update([timestamp_row, header_row] + data_rows)
+    print(f"Written {len(data_rows)} picks to Top_HR_Picks (timestamp row 1, headers row 2)")
     return len(data_rows)
 
 
-def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
+def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
+    """No-op — timestamp is now written in write_picks_to_sheet as row 1."""
+    print("Timestamp written in write_picks_to_sheet — skipping separate timestamp write.")
+
+
+def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> None:
     """
     Formats Top_HR_Picks. Layout:
-      Row 1 (index 0): timestamp
-      Row 2 (index 1): headers
-      Rows 3+ (index 2+): data
-    All row indices shifted +1 vs original to account for timestamp row.
+      Row index 0: timestamp (grey, merged)
+      Row index 1: headers (blue accent)
+      Row index 2+: data rows
+    Freeze 2 rows (timestamp + header).
     """
     if row_count == 0:
         return
@@ -1513,12 +1499,11 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
     ws    = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    # row_count = data rows only; +2 for timestamp + header
-    total_rows = row_count + 2
+    total_rows = row_count + 2  # timestamp + header + data
     main_cols  = 50
     reqs       = []
 
-    # ── Base style for entire sheet ────────────────────────────────────────
+    # ── Base style ─────────────────────────────────────────────────────────
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": 55},
@@ -1572,7 +1557,7 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-    # ── Gold/silver/bronze medals (data rows start at index 2) ────────────
+    # ── Gold/silver/bronze (data starts at index 2) ────────────────────────
     medals = [
         (1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
         (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER),
@@ -1580,9 +1565,10 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
     ]
     for rank, bg, fg in medals:
         if row_count >= rank:
+            # rank 1 → index 2, rank 2 → index 3, rank 3 → index 4
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id,
-                          "startRowIndex": rank + 1,   # +1 for timestamp, +1 for header = rank+1... wait
+                          "startRowIndex": rank + 1,
                           "endRowIndex":   rank + 2,
                           "startColumnIndex": 0, "endColumnIndex": main_cols},
                 "cell": {"userEnteredFormat": {
@@ -1592,7 +1578,7 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat)",
             }})
 
-    # ── Rank column bold/blue (data rows index 2+) ─────────────────────────
+    # ── Rank column (data rows index 2+) ──────────────────────────────────
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 2, "endRowIndex": row_count + 2,
                   "startColumnIndex": 0, "endColumnIndex": 1},
@@ -1603,7 +1589,7 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
         "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
     }})
 
-    # ── HR Score column green bold (col index 8) ───────────────────────────
+    # ── HR Score column green (col 8) ──────────────────────────────────────
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 2, "endRowIndex": row_count + 2,
                   "startColumnIndex": 8, "endColumnIndex": 9},
@@ -1614,27 +1600,27 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
         "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
     }})
 
-    # ── Freeze header row (row 2, index 1) — freeze 2 rows ────────────────
+    # ── Freeze 2 rows (timestamp + header) ────────────────────────────────
     reqs.append({"updateSheetProperties": {
         "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}},
         "fields": "gridProperties.frozenRowCount",
     }})
 
     # ── Row heights ────────────────────────────────────────────────────────
-    reqs.append({"updateDimensionProperties": {   # timestamp row
+    reqs.append({"updateDimensionProperties": {
         "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
         "properties": {"pixelSize": 36}, "fields": "pixelSize",
     }})
-    reqs.append({"updateDimensionProperties": {   # header row
+    reqs.append({"updateDimensionProperties": {
         "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 2},
         "properties": {"pixelSize": 36}, "fields": "pixelSize",
     }})
-    reqs.append({"updateDimensionProperties": {   # data rows
+    reqs.append({"updateDimensionProperties": {
         "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 2, "endIndex": total_rows},
         "properties": {"pixelSize": 58}, "fields": "pixelSize",
     }})
 
-    # ── Column widths (unchanged) ──────────────────────────────────────────
+    # ── Column widths ──────────────────────────────────────────────────────
     col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380,
                   75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85,
                   85, 100, 100, 75, 75, 75, 220, 60, 60, 70, 200, 220,
@@ -1656,8 +1642,87 @@ def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
     try:
         sh.batch_update({"requests": reqs})
         print("Carbon formatting applied successfully!")
-    except Exception as e:
+    except APIError as e:
         print(f"Formatting failed: {e}")
+
+
+def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) -> None:
+    today_str = date.today().strftime("%Y-%m-%d")
+    sh        = with_retry(lambda: gc.open_by_key(sheet_id))
+
+    try:
+        ws       = sh.worksheet("HR_All_Scores")
+        existing = pd.DataFrame(ws.get_all_records())
+    except gspread.WorksheetNotFound:
+        ws       = sh.add_worksheet(title="HR_All_Scores", rows=10000, cols=40)
+        existing = pd.DataFrame()
+
+    if not existing.empty and "date" in existing.columns:
+        existing = existing[existing["date"] != today_str].copy()
+
+    if combined.empty:
+        print("No scored players to log to HR_All_Scores.")
+        return
+
+    sorted_df = combined.sort_values("score", ascending=False).reset_index(drop=True)
+    sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
+
+    new_rows = []
+    for _, row in sorted_df.iterrows():
+        new_rows.append({
+            "date":                     today_str,
+            "rank":                     str(row.get("all_scores_rank", "")),
+            "player_name":              str(row.get("player_name", "")),
+            "team":                     str(row.get("batter_team", "")),
+            "pitcher_name":             str(row.get("opp_pitcher_name", "")),
+            "pitcher_hand":             str(row.get("pitcher_hand", "")),
+            "hr_score":                 str(row.get("score", "")),
+            "consensus_odds":           str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
+            "barrel_pct_7d":            str(row.get("barrel_pct_7d", "")),
+            "season_barrel_pct":        str(row.get("season_barrel_pct", "")),
+            "barrel_pct_5d":            str(row.get("barrel_pct_5d", "")),
+            "barrel_pct_10d":           str(row.get("barrel_pct_10d", "")),
+            "avg_ev_7d":                str(row.get("avg_ev_7d", "")),
+            "avg_ev_5d":                str(row.get("avg_ev_5d", "")),
+            "avg_ev_10d":               str(row.get("avg_ev_10d", "")),
+            "avg_la_7d":                str(row.get("avg_la_7d", "")),
+            "avg_la_season":            str(row.get("avg_launch_angle", "")),
+            "iso":                      str(row.get("iso", "")),
+            "hr_per_pa":                str(row.get("hr_per_pa", "")),
+            "hr_per_fb":                str(row.get("hr_per_fb", "")),
+            "pull_rate":                str(row.get("pull_rate", "")),
+            "platoon_matchup":          str(row.get("platoon_desc", "")),
+            "pitch_matchup":            str(row.get("pitch_matchup_desc", "")),
+            "pitch_matchup_score":      str(row.get("pitch_matchup_score", "")),
+            "pull_park_matchup":        str(row.get("pull_park_desc", "")),
+            "pitcher_barrel_pct":       str(row.get("pitcher_barrel_pct", "")),
+            "pitcher_hr_per_fb":        str(row.get("pitcher_hr_per_fb", "")),
+            "pitcher_barrel_vs_lhh":    str(row.get("pitcher_vs_lhh_barrel_pct", "")),
+            "pitcher_barrel_vs_rhh":    str(row.get("pitcher_vs_rhh_barrel_pct", "")),
+            "park_hr_factor":           str(row.get("park_hr_factor", "")),
+            "weather_boost":            str(row.get("hr_weather_boost", "")),
+            "wind":                     str(row.get("wind_context", "")),
+            "temp_f":                   str(row.get("temp_f", "")),
+            "momentum":                 str(row.get("momentum_desc", "")),
+            "hit_hr":                   "Pending",
+        })
+
+    if not new_rows:
+        print("No rows to log to HR_All_Scores.")
+        return
+
+    new_df = pd.DataFrame(new_rows)
+    if not existing.empty:
+        for col in new_df.columns:
+            if col not in existing.columns:
+                existing[col] = ""
+
+    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
+
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
+    print(f"Logged {len(new_rows)} scored players to HR_All_Scores")
 
 
 def main() -> None:
@@ -1693,17 +1758,17 @@ def main() -> None:
 
     print(f"\nQualifying HR Picks (score ≥{MIN_SCORE_FLOOR}, odds ≤+{MAX_CHALK_ODDS} or ≥+{MIN_VALUE_ODDS}):")
     if not picks.empty:
-        print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws", "Batting Avg", "Confidence", "HR Score", "Consensus Odds"]].to_string(index=False))
+        print(picks[["Rank", "Batter", "Bats", "Team", "Opposing Pitcher", "Throws",
+                     "Batting Avg", "Confidence", "HR Score", "Consensus Odds"]].to_string(index=False))
     else:
         print("No qualifying picks today.")
 
     row_count = write_picks_to_sheet(gc, sheet_id, picks)
-    print("Written to Top_HR_Picks")
-
     format_picks_sheet(gc, sheet_id, row_count)
 
     resolve_pending_picks(gc, sheet_id)
     log_todays_picks(gc, sheet_id, picks)
+
     combined["consensus_odds"] = combined["player_name"].apply(
         lambda n: odds_lookup.get(normalize_name(str(n)), "")
     )
