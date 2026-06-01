@@ -1441,16 +1441,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     print("Scorecard updated.")
 
 
-def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
-    et     = pytz.timezone("America/New_York")
-    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
-
-    sh = gc.open_by_key(sheet_id)
-    try:
-        ws = sh.worksheet("Top_HR_Picks")
-    except gspread.WorksheetNotFound:
-        return
-
+def write_last_run_timestamp(gc, sheet_id: str) -> None:
+    """
+    No-op — timestamp is now written directly in write_picks_to_sheet as row 1.
+    Kept so main() call doesn't break.
+    """
+    print("Timestamp already written in write_picks_to_sheet — skipping.")
     ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
     print(f"Last run timestamp written: {now_et}")
 
@@ -1464,25 +1460,41 @@ def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> int:
+def write_picks_to_sheet(gc, sheet_id: str, picks, row_count_ref: list) -> int:
+    """
+    Writes timestamp row 1, headers row 2, data rows 3+.
+    Returns row count (data rows only, not counting timestamp or header).
+    Stores sheet ws_id in row_count_ref[0] for format_picks_sheet to reuse.
+    """
+    import pytz
+    from datetime import datetime
+    import numpy as np
+
+    et     = pytz.timezone("America/New_York")
+    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+
     sh = gc.open_by_key(sheet_id)
     try:
         ws = sh.worksheet("Top_HR_Picks")
         ws.clear()
-    except gspread.WorksheetNotFound:
+    except Exception:
         ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=55)
 
     if picks.empty:
-        ws.update([["No qualifying picks today — score ≥11 with odds ≤+300 or ≥+500"]])
+        ws.update([[f"⏱  Last Run: {now_et}"],
+                   ["No qualifying picks today — score ≥9.5 with odds ≤+300 or ≥+500"]])
         return 0
 
     picks_clean = clean_for_sheets(picks)
-    all_values  = [picks_clean.columns.tolist()]
-    for _, row in picks_clean.iterrows():
-        all_values.append(row.astype(str).tolist())
+    timestamp_row = [f"⏱  Last Run: {now_et}"] + [""] * (len(picks_clean.columns) - 1)
+    header_row    = picks_clean.columns.tolist()
+    data_rows     = picks_clean.astype(str).values.tolist()
 
+    all_values = [timestamp_row, header_row] + data_rows
     ws.update(all_values)
-    return len(picks_clean)
+
+    print(f"Written {len(data_rows)} picks to Top_HR_Picks (with timestamp row 1)")
+    return len(data_rows)
 
 
 def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> None:
