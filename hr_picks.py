@@ -1497,7 +1497,14 @@ def write_picks_to_sheet(gc, sheet_id: str, picks, row_count_ref: list) -> int:
     return len(data_rows)
 
 
-def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> None:
+def format_picks_sheet(gc, sheet_id: str, row_count: int) -> None:
+    """
+    Formats Top_HR_Picks. Layout:
+      Row 1 (index 0): timestamp
+      Row 2 (index 1): headers
+      Rows 3+ (index 2+): data
+    All row indices shifted +1 vs original to account for timestamp row.
+    """
     if row_count == 0:
         return
 
@@ -1506,122 +1513,151 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
     ws    = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    main_cols  = 50
+    # row_count = data rows only; +2 for timestamp + header
     total_rows = row_count + 2
+    main_cols  = 50
     reqs       = []
 
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows, "startColumnIndex": 0, "endColumnIndex": 55}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_BG, "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10}, "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)"}})
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": COLOR_ACCENT_DIM, "textFormat": {"foregroundColor": COLOR_ACCENT, "bold": True, "fontFamily": "Roboto", "fontSize": 11}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}}, "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}})
+    # ── Base style for entire sheet ────────────────────────────────────────
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
+                  "startColumnIndex": 0, "endColumnIndex": 55},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_BG,
+            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
+            "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+    }})
 
+    # ── Timestamp row (index 0) ────────────────────────────────────────────
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                  "startColumnIndex": 0, "endColumnIndex": main_cols},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
+            "textFormat": {"foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6},
+                           "bold": False, "fontFamily": "Roboto", "fontSize": 11},
+            "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT",
+            "wrapStrategy": "OVERFLOW_CELL",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
+    }})
+    reqs.append({"mergeCells": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                  "startColumnIndex": 0, "endColumnIndex": main_cols},
+        "mergeType": "MERGE_ALL",
+    }})
+
+    # ── Header row (index 1) ───────────────────────────────────────────────
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2,
+                  "startColumnIndex": 0, "endColumnIndex": main_cols},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_ACCENT_DIM,
+            "textFormat": {"foregroundColor": COLOR_ACCENT, "bold": True,
+                           "fontFamily": "Roboto", "fontSize": 11},
+            "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+    }})
+
+    # ── Alternating data rows (index 2+) ───────────────────────────────────
     for i in range(row_count):
         bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
-        reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": bg}}, "fields": "userEnteredFormat(backgroundColor)"}})
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": i + 2, "endRowIndex": i + 3,
+                      "startColumnIndex": 0, "endColumnIndex": main_cols},
+            "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+            "fields": "userEnteredFormat(backgroundColor)",
+        }})
 
-    medals = [(1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
-              (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER),
-              (3, {"red": 0.16, "green": 0.10, "blue": 0.04}, COLOR_BRONZE)]
+    # ── Gold/silver/bronze medals (data rows start at index 2) ────────────
+    medals = [
+        (1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
+        (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER),
+        (3, {"red": 0.16, "green": 0.10, "blue": 0.04}, COLOR_BRONZE),
+    ]
     for rank, bg, fg in medals:
         if row_count >= rank:
-            reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": rank, "endRowIndex": rank + 1, "startColumnIndex": 0, "endColumnIndex": main_cols}, "cell": {"userEnteredFormat": {"backgroundColor": bg, "textFormat": {"foregroundColor": fg, "bold": True, "fontSize": 10}}}, "fields": "userEnteredFormat(backgroundColor,textFormat)"}})
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id,
+                          "startRowIndex": rank + 1,   # +1 for timestamp, +1 for header = rank+1... wait
+                          "endRowIndex":   rank + 2,
+                          "startColumnIndex": 0, "endColumnIndex": main_cols},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": bg,
+                    "textFormat": {"foregroundColor": fg, "bold": True, "fontSize": 10},
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat)",
+            }})
 
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": row_count + 1, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
-    reqs.append({"repeatCell": {"range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": row_count + 1, "startColumnIndex": 8, "endColumnIndex": 9}, "cell": {"userEnteredFormat": {"textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN}, "horizontalAlignment": "CENTER"}}, "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    # ── Rank column bold/blue (data rows index 2+) ─────────────────────────
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 2, "endRowIndex": row_count + 2,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "cell": {"userEnteredFormat": {
+            "textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT},
+            "horizontalAlignment": "CENTER",
+        }},
+        "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+    }})
 
-    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}}, "fields": "gridProperties.frozenRowCount"}})
-    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1}, "properties": {"pixelSize": 36}, "fields": "pixelSize"}})
-    reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": total_rows}, "properties": {"pixelSize": 58}, "fields": "pixelSize"}})
+    # ── HR Score column green bold (col index 8) ───────────────────────────
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 2, "endRowIndex": row_count + 2,
+                  "startColumnIndex": 8, "endColumnIndex": 9},
+        "cell": {"userEnteredFormat": {
+            "textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN},
+            "horizontalAlignment": "CENTER",
+        }},
+        "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+    }})
 
-    col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380, 75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85, 85, 100, 100, 75, 75, 75, 220, 60, 60, 70, 200, 220, 120, 120, 130, 130, 90, 90, 90, 75, 90, 75, 90, 75, 240, 75, 65, 65, 65, 65]
+    # ── Freeze header row (row 2, index 1) — freeze 2 rows ────────────────
+    reqs.append({"updateSheetProperties": {
+        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}},
+        "fields": "gridProperties.frozenRowCount",
+    }})
+
+    # ── Row heights ────────────────────────────────────────────────────────
+    reqs.append({"updateDimensionProperties": {   # timestamp row
+        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+        "properties": {"pixelSize": 36}, "fields": "pixelSize",
+    }})
+    reqs.append({"updateDimensionProperties": {   # header row
+        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 2},
+        "properties": {"pixelSize": 36}, "fields": "pixelSize",
+    }})
+    reqs.append({"updateDimensionProperties": {   # data rows
+        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 2, "endIndex": total_rows},
+        "properties": {"pixelSize": 58}, "fields": "pixelSize",
+    }})
+
+    # ── Column widths (unchanged) ──────────────────────────────────────────
+    col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380,
+                  75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85,
+                  85, 100, 100, 75, 75, 75, 220, 60, 60, 70, 200, 220,
+                  120, 120, 130, 130, 90, 90, 90, 75, 90, 75, 90, 75,
+                  240, 75, 65, 65, 65, 65]
     for i, width in enumerate(col_widths):
-        reqs.append({"updateDimensionProperties": {"range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1}, "properties": {"pixelSize": width}, "fields": "pixelSize"}})
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": width}, "fields": "pixelSize",
+        }})
 
-    reqs.append({"updateSheetProperties": {"properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": COLOR_ACCENT}}, "fields": "tabColorStyle"}})
+    # ── Tab color ──────────────────────────────────────────────────────────
+    reqs.append({"updateSheetProperties": {
+        "properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": COLOR_ACCENT}},
+        "fields": "tabColorStyle",
+    }})
 
     try:
         sh.batch_update({"requests": reqs})
         print("Carbon formatting applied successfully!")
-    except APIError as e:
+    except Exception as e:
         print(f"Formatting failed: {e}")
-
-
-def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) -> None:
-    today_str = date.today().strftime("%Y-%m-%d")
-    sh        = with_retry(lambda: gc.open_by_key(sheet_id))
-
-    try:
-        ws       = sh.worksheet("HR_All_Scores")
-        existing = pd.DataFrame(ws.get_all_records())
-    except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="HR_All_Scores", rows=10000, cols=40)
-        existing = pd.DataFrame()
-
-    if not existing.empty and "date" in existing.columns:
-        existing = existing[existing["date"] != today_str].copy()
-
-    if combined.empty:
-        print("No scored players to log to HR_All_Scores.")
-        return
-
-    sorted_df = combined.sort_values("score", ascending=False).reset_index(drop=True)
-    sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
-
-    new_rows = []
-    for _, row in sorted_df.iterrows():
-        new_rows.append({
-            "date":                     today_str,
-            "rank":                     str(row.get("all_scores_rank", "")),
-            "player_name":              str(row.get("player_name", "")),
-            "team":                     str(row.get("batter_team", "")),
-            "pitcher_name":             str(row.get("opp_pitcher_name", "")),
-            "pitcher_hand":             str(row.get("pitcher_hand", "")),
-            "hr_score":                 str(row.get("score", "")),
-            "consensus_odds":           str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
-            "barrel_pct_7d":            str(row.get("barrel_pct_7d", "")),
-            "season_barrel_pct":        str(row.get("season_barrel_pct", "")),
-            "barrel_pct_5d":            str(row.get("barrel_pct_5d", "")),
-            "barrel_pct_10d":           str(row.get("barrel_pct_10d", "")),
-            "avg_ev_7d":                str(row.get("avg_ev_7d", "")),
-            "avg_ev_5d":                str(row.get("avg_ev_5d", "")),
-            "avg_ev_10d":               str(row.get("avg_ev_10d", "")),
-            "avg_la_7d":                str(row.get("avg_la_7d", "")),
-            "avg_la_season":            str(row.get("avg_launch_angle", "")),
-            "iso":                      str(row.get("iso", "")),
-            "hr_per_pa":                str(row.get("hr_per_pa", "")),
-            "hr_per_fb":                str(row.get("hr_per_fb", "")),
-            "pull_rate":                str(row.get("pull_rate", "")),
-            "platoon_matchup":          str(row.get("platoon_desc", "")),
-            "pitch_matchup":            str(row.get("pitch_matchup_desc", "")),
-            "pitch_matchup_score":      str(row.get("pitch_matchup_score", "")),
-            "pull_park_matchup":        str(row.get("pull_park_desc", "")),
-            "pitcher_barrel_pct":       str(row.get("pitcher_barrel_pct", "")),
-            "pitcher_hr_per_fb":        str(row.get("pitcher_hr_per_fb", "")),
-            "pitcher_barrel_vs_lhh":    str(row.get("pitcher_vs_lhh_barrel_pct", "")),
-            "pitcher_barrel_vs_rhh":    str(row.get("pitcher_vs_rhh_barrel_pct", "")),
-            "park_hr_factor":           str(row.get("park_hr_factor", "")),
-            "weather_boost":            str(row.get("hr_weather_boost", "")),
-            "wind":                     str(row.get("wind_context", "")),
-            "temp_f":                   str(row.get("temp_f", "")),
-            "momentum":                 str(row.get("momentum_desc", "")),
-            "hit_hr":                   "Pending",
-        })
-
-    if not new_rows:
-        print("No rows to log to HR_All_Scores.")
-        return
-
-    new_df = pd.DataFrame(new_rows)
-
-    if not existing.empty:
-        for col in new_df.columns:
-            if col not in existing.columns:
-                existing[col] = ""
-
-    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
-    combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
-
-    with_retry(lambda: ws.clear())
-    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
-    print(f"Logged {len(new_rows)} scored players to HR_All_Scores")
 
 
 def main() -> None:
