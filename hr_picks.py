@@ -948,7 +948,8 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     if not filtered.empty and odds_lookup:
         filtered = filtered[filtered.apply(
             lambda row: row.get("consensus_odds") is not None and
-            odds_qualifies(int(row["consensus_odds"]), safe_float(row["score"])),
+            str(row.get("consensus_odds", "")).strip() not in ("", "nan", "None") and
+            odds_qualifies(int(float(row["consensus_odds"])), safe_float(row["score"])),
             axis=1
         )].copy()
 
@@ -1714,6 +1715,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "pull_rate":                str(row.get("pull_rate", "")),
             "platoon_matchup":          str(row.get("platoon_desc", "")),
             "pitch_matchup":            str(row.get("pitch_matchup_desc", "")),
+            "pitch_matchup_score":  str(row.get("pitch_matchup_score", "")),
             "pull_park_matchup":        str(row.get("pull_park_desc", "")),
             "pitcher_barrel_pct":       str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":        str(row.get("pitcher_hr_per_fb", "")),
