@@ -1448,13 +1448,10 @@ def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
 
 def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> int:
     """
-    Writes timestamp row 1, headers row 2, data rows 3+.
-    No insert_row call — everything written in one shot.
+    Writes headers row 1, data rows 2+. Timestamp is added separately
+    afterward by write_last_run_timestamp via insert_row (original behavior).
     Returns number of data rows written.
     """
-    et     = pytz.timezone("America/New_York")
-    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
-
     sh = gc.open_by_key(sheet_id)
     try:
         ws = sh.worksheet("Top_HR_Picks")
@@ -1463,33 +1460,41 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=55)
 
     if picks.empty:
-        ws.update([[f"⏱  Last Run: {now_et}"],
-                   [f"No qualifying picks today — score ≥{MIN_SCORE_FLOOR} with odds ≤+{MAX_CHALK_ODDS} or ≥+{MIN_VALUE_ODDS}"]])
+        ws.update([[f"No qualifying picks today — score ≥{MIN_SCORE_FLOOR} with odds ≤+{MAX_CHALK_ODDS} or ≥+{MIN_VALUE_ODDS}"]])
         return 0
 
-    picks_clean   = clean_for_sheets(picks)
-    n_cols        = len(picks_clean.columns)
-    timestamp_row = [f"⏱  Last Run: {now_et}"] + [""] * (n_cols - 1)
-    header_row    = picks_clean.columns.tolist()
-    data_rows     = picks_clean.astype(str).values.tolist()
+    picks_clean = clean_for_sheets(picks)
+    all_values  = [picks_clean.columns.tolist()]
+    for _, row in picks_clean.iterrows():
+        all_values.append(row.astype(str).tolist())
 
-    ws.update([timestamp_row, header_row] + data_rows)
-    print(f"Written {len(data_rows)} picks to Top_HR_Picks (timestamp row 1, headers row 2)")
-    return len(data_rows)
+    ws.update(all_values)
+    print(f"Written {len(picks_clean)} picks to Top_HR_Picks")
+    return len(picks_clean)
 
 
 def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
-    """No-op — timestamp is now written in write_picks_to_sheet as row 1."""
-    print("Timestamp written in write_picks_to_sheet — skipping separate timestamp write.")
+    et     = pytz.timezone("America/New_York")
+    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+
+    sh = gc.open_by_key(sheet_id)
+    try:
+        ws = sh.worksheet("Top_HR_Picks")
+    except gspread.WorksheetNotFound:
+        return
+
+    ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
+    print(f"Last run timestamp written: {now_et}")
 
 
 def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> None:
     """
-    Formats Top_HR_Picks. Layout:
-      Row index 0: timestamp (grey, merged)
-      Row index 1: headers (blue accent)
-      Row index 2+: data rows
-    Freeze 2 rows (timestamp + header).
+    Formats Top_HR_Picks. Layout (original, pre-timestamp):
+      Row index 0: headers
+      Row index 1+: data rows
+    The timestamp is inserted at the very top AFTER formatting by
+    write_last_run_timestamp, so this function formats as if no timestamp
+    row exists (matching original working behavior).
     """
     if row_count == 0:
         return
@@ -1499,17 +1504,10 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
     ws    = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
-    total_rows = row_count + 2  # timestamp + header + data
     main_cols  = 50
+    total_rows = row_count + 2
     reqs       = []
 
-    # ── Unmerge all first — clears any stale merges from previous runs ─────
-    reqs.append({"unmergeCells": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows + 5,
-                  "startColumnIndex": 0, "endColumnIndex": 55},
-    }})
-
-    # ── Base style ─────────────────────────────────────────────────────────
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": 55},
@@ -1521,28 +1519,8 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
 
-    # ── Timestamp row (index 0) ────────────────────────────────────────────
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                  "startColumnIndex": 0, "endColumnIndex": main_cols},
-        "cell": {"userEnteredFormat": {
-            "backgroundColor": {"red": 0.078, "green": 0.078, "blue": 0.078},
-            "textFormat": {"foregroundColor": {"red": 0.6, "green": 0.6, "blue": 0.6},
-                           "bold": False, "fontFamily": "Roboto", "fontSize": 11},
-            "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT",
-            "wrapStrategy": "OVERFLOW_CELL",
-        }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
-    }})
-    reqs.append({"mergeCells": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                  "startColumnIndex": 0, "endColumnIndex": main_cols},
-        "mergeType": "MERGE_ALL",
-    }})
-
-    # ── Header row (index 1) ───────────────────────────────────────────────
-    reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2,
                   "startColumnIndex": 0, "endColumnIndex": main_cols},
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_ACCENT_DIM,
@@ -1553,17 +1531,15 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
     }})
 
-    # ── Alternating data rows (index 2+) ───────────────────────────────────
     for i in range(row_count):
         bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
         reqs.append({"repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": i + 2, "endRowIndex": i + 3,
+            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2,
                       "startColumnIndex": 0, "endColumnIndex": main_cols},
             "cell": {"userEnteredFormat": {"backgroundColor": bg}},
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-    # ── Gold/silver/bronze (data starts at index 2) ────────────────────────
     medals = [
         (1, {"red": 0.18, "green": 0.14, "blue": 0.00}, COLOR_GOLD),
         (2, {"red": 0.14, "green": 0.14, "blue": 0.14}, COLOR_SILVER),
@@ -1571,11 +1547,8 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
     ]
     for rank, bg, fg in medals:
         if row_count >= rank:
-            # rank 1 → index 2, rank 2 → index 3, rank 3 → index 4
             reqs.append({"repeatCell": {
-                "range": {"sheetId": ws_id,
-                          "startRowIndex": rank + 1,
-                          "endRowIndex":   rank + 2,
+                "range": {"sheetId": ws_id, "startRowIndex": rank, "endRowIndex": rank + 1,
                           "startColumnIndex": 0, "endColumnIndex": main_cols},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": bg,
@@ -1584,9 +1557,8 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
                 "fields": "userEnteredFormat(backgroundColor,textFormat)",
             }})
 
-    # ── Rank column (data rows index 2+) ──────────────────────────────────
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 2, "endRowIndex": row_count + 2,
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": row_count + 1,
                   "startColumnIndex": 0, "endColumnIndex": 1},
         "cell": {"userEnteredFormat": {
             "textFormat": {"bold": True, "fontSize": 14, "foregroundColor": COLOR_ACCENT},
@@ -1595,9 +1567,8 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
         "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
     }})
 
-    # ── HR Score column green (col 8) ──────────────────────────────────────
     reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 2, "endRowIndex": row_count + 2,
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": row_count + 1,
                   "startColumnIndex": 8, "endColumnIndex": 9},
         "cell": {"userEnteredFormat": {
             "textFormat": {"bold": True, "fontSize": 12, "foregroundColor": COLOR_GREEN},
@@ -1606,27 +1577,20 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
         "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
     }})
 
-    # ── Freeze 2 rows (timestamp + header) ────────────────────────────────
     reqs.append({"updateSheetProperties": {
-        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 2}},
+        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1}},
         "fields": "gridProperties.frozenRowCount",
     }})
 
-    # ── Row heights ────────────────────────────────────────────────────────
     reqs.append({"updateDimensionProperties": {
         "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
         "properties": {"pixelSize": 36}, "fields": "pixelSize",
     }})
     reqs.append({"updateDimensionProperties": {
-        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 2},
-        "properties": {"pixelSize": 36}, "fields": "pixelSize",
-    }})
-    reqs.append({"updateDimensionProperties": {
-        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 2, "endIndex": total_rows},
+        "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 1, "endIndex": total_rows},
         "properties": {"pixelSize": 58}, "fields": "pixelSize",
     }})
 
-    # ── Column widths ──────────────────────────────────────────────────────
     col_widths = [50, 160, 50, 55, 175, 55, 75, 175, 75, 95, 80, 380,
                   75, 90, 90, 75, 75, 200, 75, 75, 65, 80, 80, 85, 85,
                   85, 100, 100, 75, 75, 75, 220, 60, 60, 70, 200, 220,
@@ -1639,7 +1603,6 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
             "properties": {"pixelSize": width}, "fields": "pixelSize",
         }})
 
-    # ── Tab color ──────────────────────────────────────────────────────────
     reqs.append({"updateSheetProperties": {
         "properties": {"sheetId": ws_id, "tabColorStyle": {"rgbColor": COLOR_ACCENT}},
         "fields": "tabColorStyle",
