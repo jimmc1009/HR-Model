@@ -49,10 +49,10 @@ MAX_PER_TEAM         = 2
 MAX_PER_GAME         = 2
 
 # ── Bet filter criteria ────────────────────────────────────────────────────
-MIN_SCORE_FLOOR       = 11.0
+MIN_SCORE_FLOOR       = 9.5
 MAX_CHALK_ODDS        = 300
 MIN_VALUE_ODDS        = 500
-MID_RANGE_SCORE_FLOOR = 12.0
+MID_RANGE_SCORE_FLOOR = 11.0
 
 COLOR_BG        = {"red": 0.114, "green": 0.114, "blue": 0.114}
 COLOR_BG_ALT    = {"red": 0.149, "green": 0.149, "blue": 0.149}
