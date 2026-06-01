@@ -67,6 +67,7 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
         all_values = with_retry(lambda: ws.get_all_values())
         if not all_values:
             return pd.DataFrame()
+        # Skip timestamp row if present (row 0 contains "Last Run")
         start = 1 if "Last Run" in str(all_values[0]) else 0
         if start >= len(all_values):
             return pd.DataFrame()
@@ -110,7 +111,8 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     rows = []
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥11 (≤+300 or ≥+500) | Score ≥12 (+301-499)"]), "section_header_hr"))
+    # Updated to reflect new score floors: 9.5 floor, 11.0 for +301-499
+    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥9.5 (≤+300 or ≥+500) | Score ≥11 (+301-499)"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", ""]), "col_header_hr"))
 
     if hr_df.empty:
@@ -426,49 +428,49 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
 
 
 def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
-   et     = pytz.timezone("America/New_York")
-   now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
-   sh     = with_retry(lambda: gc.open_by_key(sheet_id))
-   try:
-       ws    = sh.worksheet(DASHBOARD_SHEET)
-       ws_id = ws.id
-       with_retry(lambda: ws.insert_row(
-           [f"⏱  Last Updated: {now_et}", "", "", "", "", ""], index=1
-       ))
-       reqs = [
-           {"repeatCell": {
-               "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                         "startColumnIndex": 0, "endColumnIndex": 6},
-               "cell": {"userEnteredFormat": {
-                   "backgroundColor": COLOR_HEADER_BG,
-                   "textFormat": {
-                       "foregroundColor": COLOR_SUBTEXT,
-                       "fontFamily": "Roboto", "fontSize": 11,
-                       "italic": True, "bold": False,
-                   },
-                   "verticalAlignment": "MIDDLE",
-                   "wrapStrategy": "OVERFLOW_CELL",
-               }},
-               "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
-           }},
-           {
-               "mergeCells": {
-                   "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                             "startColumnIndex": 0, "endColumnIndex": 6},
-                   "mergeType": "MERGE_ALL",
-               }
-           },
-           {"updateDimensionProperties": {
-               "range": {"sheetId": ws_id, "dimension": "ROWS",
-                         "startIndex": 0, "endIndex": 1},
-               "properties": {"pixelSize": 32},
-               "fields": "pixelSize",
-           }},
-       ]
-       with_retry(lambda: sh.batch_update({"requests": reqs}))
-   except Exception as e:
-       print(f"Dashboard timestamp failed: {e}")
-   print(f"Dashboard timestamp written: {now_et}")
+    et     = pytz.timezone("America/New_York")
+    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+    sh     = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws    = sh.worksheet(DASHBOARD_SHEET)
+        ws_id = ws.id
+        with_retry(lambda: ws.insert_row(
+            [f"⏱  Last Updated: {now_et}", "", "", "", "", ""], index=1
+        ))
+        reqs = [
+            {"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 6},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_HEADER_BG,
+                    "textFormat": {
+                        "foregroundColor": COLOR_SUBTEXT,
+                        "fontFamily": "Roboto", "fontSize": 11,
+                        "italic": True, "bold": False,
+                    },
+                    "verticalAlignment": "MIDDLE",
+                    "wrapStrategy": "OVERFLOW_CELL",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+            }},
+            {
+                "mergeCells": {
+                    "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                              "startColumnIndex": 0, "endColumnIndex": 6},
+                    "mergeType": "MERGE_ALL",
+                }
+            },
+            {"updateDimensionProperties": {
+                "range": {"sheetId": ws_id, "dimension": "ROWS",
+                          "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 32},
+                "fields": "pixelSize",
+            }},
+        ]
+        with_retry(lambda: sh.batch_update({"requests": reqs}))
+    except Exception as e:
+        print(f"Dashboard timestamp failed: {e}")
+    print(f"Dashboard timestamp written: {now_et}")
 
 
 def main() -> None:
