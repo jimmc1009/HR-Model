@@ -33,7 +33,6 @@ COLOR_DARK_RED  = {"red": 0.550, "green": 0.050, "blue": 0.050}
 COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT   = {"red": 0.500, "green": 0.500, "blue": 0.500}
 COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
-COLOR_PURPLE    = {"red": 0.576, "green": 0.439, "blue": 0.859}
 
 
 def get_gspread_client() -> gspread.Client:
@@ -67,13 +66,22 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
         all_values = with_retry(lambda: ws.get_all_values())
         if not all_values:
             return pd.DataFrame()
-        # Skip timestamp row if present (row 0 contains "Last Run")
-        start = 1 if "Last Run" in str(all_values[0]) else 0
-        if start >= len(all_values):
+        # Find the actual header row by scanning first 5 rows
+        # for a row containing known column names
+        header_idx = None
+        for i, row in enumerate(all_values[:5]):
+            joined = " ".join(str(v) for v in row)
+            if "Rank" in joined and ("Batter" in joined or "Pitcher" in joined):
+                header_idx = i
+                break
+        if header_idx is None:
             return pd.DataFrame()
-        headers = all_values[start]
-        rows    = all_values[start + 1:]
-        return pd.DataFrame(rows, columns=headers)
+        headers = all_values[header_idx]
+        rows    = all_values[header_idx + 1:]
+        df = pd.DataFrame(rows, columns=headers)
+        # Drop completely empty rows
+        df = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
+        return df
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
         return pd.DataFrame()
@@ -85,6 +93,27 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
 def has_signal(signal: str) -> bool:
     s = str(signal).strip()
     return s not in ("", "—", "nan") and len(s) > 1
+
+
+def edge_is_positive_or_neutral(edge_str: str) -> bool:
+    """
+    Returns True if the edge value represents a positive or neutral edge.
+    Checks for the absence of a leading minus sign after any non-numeric chars.
+    ✅ +7.6%  → True
+    ➡️ +2.2%  → True
+    ❌ -8.2%  → False
+    """
+    s = str(edge_str).strip()
+    if not s or s in ("", "nan", "—"):
+        return False
+    # Extract just the numeric portion — find if there's a - before the number
+    # Strip any leading emoji/symbols and look for the sign
+    for char in s:
+        if char == '+':
+            return True
+        if char == '-':
+            return False
+    return False
 
 
 def safe_val(row, col: str, default: str = "") -> str:
@@ -111,8 +140,6 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     rows = []
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
-    # Shows only picks with positive or neutral edge (✅ or ➡️)
-    # Full pick list available in Top_HR_Picks sheet
     rows.append((pad(["🏠  HOME RUN PICKS — Value Plays Only (✅ Positive / ➡️ Neutral Edge)"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", "Edge"]), "col_header_hr"))
 
@@ -120,28 +147,35 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         rows.append((pad(["—", "No value plays today", ""]), "no_plays"))
     else:
         hr_clean = hr_df.copy()
+
+        # Remove non-data rows
         hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
         hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
-            "Last Run|Batter|No qualifying", na=False
+            "Last Run|Batter|No qualifying|No value", na=False
         )]
         hr_clean = hr_clean[
             pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce") >= 1
         ]
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
 
-        # Filter to only positive (✅) or neutral (➡️) edge picks
-        # Use contains("+") to avoid emoji encoding issues across environments
+        print(f"  HR rows after cleaning: {len(hr_clean)}")
         if "Edge" in hr_clean.columns:
-            hr_clean = hr_clean[
-                hr_clean["Edge"].astype(str).str.contains(r"\+", regex=True, na=False)
-            ]
+            print(f"  Edge column found. Sample values: {hr_clean['Edge'].head(5).tolist()}")
+            hr_clean = hr_clean[hr_clean["Edge"].apply(edge_is_positive_or_neutral)]
+            print(f"  HR rows after edge filter: {len(hr_clean)}")
+        else:
+            print("  WARNING: Edge column not found in Top_HR_Picks")
+            hr_clean = pd.DataFrame()
 
         if hr_clean.empty:
             rows.append((pad(["—", "No value plays today — check Top_HR_Picks for full list", ""]), "no_plays"))
         else:
             cols = hr_clean.columns.tolist()
             for i in range(len(hr_clean)):
-                rank = str(int(pd.to_numeric(hr_clean.iloc[i, 0], errors="coerce")))
+                try:
+                    rank = str(int(pd.to_numeric(hr_clean.iloc[i, 0], errors="coerce")))
+                except Exception:
+                    rank = str(i + 1)
                 try:
                     batter = str(hr_clean.iloc[i, 1]).strip()
                 except Exception:
@@ -229,6 +263,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
 
+    # Unmerge everything first
     reqs_pre = [{"unmergeCells": {
         "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
                   "startColumnIndex": 0, "endColumnIndex": 6}
@@ -465,13 +500,11 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
                 }},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
             }},
-            {
-                "mergeCells": {
-                    "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                              "startColumnIndex": 0, "endColumnIndex": 6},
-                    "mergeType": "MERGE_ALL",
-                }
-            },
+            {"mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                          "startColumnIndex": 0, "endColumnIndex": 6},
+                "mergeType": "MERGE_ALL",
+            }},
             {"updateDimensionProperties": {
                 "range": {"sheetId": ws_id, "dimension": "ROWS",
                           "startIndex": 0, "endIndex": 1},
