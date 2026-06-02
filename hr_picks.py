@@ -1201,9 +1201,12 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
     picks_clean   = clean_for_sheets(picks)
     n_cols        = len(picks_clean.columns)
     timestamp_row = [f"⏱  Last Run: {now_et}"] + [""] * (n_cols - 1)
-    header_row    = picks_clean.columns.tolist()
+    header_row    = [str(c) for c in picks_clean.columns.tolist()]
     data_rows     = picks_clean.astype(str).values.tolist()
 
+    print(f"  Timestamp row length: {len(timestamp_row)}")
+    print(f"  Header row length: {len(header_row)}, first 5: {header_row[:5]}")
+    print(f"  Data row 0 length: {len(data_rows[0]) if data_rows else 0}")
     ws.update([timestamp_row, header_row] + data_rows)
     print(f"Written {len(data_rows)} picks to Top_HR_Picks (timestamp row 1, headers row 2)")
     return len(data_rows)

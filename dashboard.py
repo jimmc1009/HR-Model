@@ -68,18 +68,14 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
             return pd.DataFrame()
         # Find the actual header row by scanning first 5 rows
         # for a row containing known column names
-        header_idx = None
-        for i, row in enumerate(all_values[:5]):
-            joined = " ".join(str(v) for v in row)
-            if "Rank" in joined and ("Batter" in joined or "Pitcher" in joined):
-                header_idx = i
-                break
-        if header_idx is None:
+        # Skip timestamp row if present
+        start = 1 if "Last Run" in str(all_values[0]) else 0
+        if start >= len(all_values):
             return pd.DataFrame()
-        headers = all_values[header_idx]
-        rows    = all_values[header_idx + 1:]
+        headers = all_values[start]
+        print(f"  Header row ({start}): {headers[:6]}")
+        rows    = all_values[start + 1:]
         df = pd.DataFrame(rows, columns=headers)
-        # Drop completely empty rows
         df = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
         return df
     except gspread.WorksheetNotFound:
