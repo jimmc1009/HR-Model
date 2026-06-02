@@ -111,12 +111,13 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     rows = []
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
-    # Updated to reflect new score floors: 9.5 floor, 11.0 for +301-499
-    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥8.5 | Top 15 | Max +699 Odds"]), "section_header_hr"))
-    rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", ""]), "col_header_hr"))
+    # Shows only picks with positive or neutral edge (✅ or ➡️)
+    # Full pick list available in Top_HR_Picks sheet
+    rows.append((pad(["🏠  HOME RUN PICKS — Value Plays Only (✅ Positive / ➡️ Neutral Edge)"]), "section_header_hr"))
+    rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", "Edge"]), "col_header_hr"))
 
     if hr_df.empty:
-        rows.append((pad(["—", "No qualifying picks today", ""]), "no_plays"))
+        rows.append((pad(["—", "No value plays today", ""]), "no_plays"))
     else:
         hr_clean = hr_df.copy()
         hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
@@ -128,8 +129,15 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         ]
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
 
+        # Filter to only positive (✅) or neutral (➡️) edge picks
+        if "Edge" in hr_clean.columns:
+            hr_clean = hr_clean[
+                hr_clean["Edge"].astype(str).str.startswith("✅") |
+                hr_clean["Edge"].astype(str).str.startswith("➡️")
+            ]
+
         if hr_clean.empty:
-            rows.append((pad(["—", "No qualifying picks today", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — check Top_HR_Picks for full list", ""]), "no_plays"))
         else:
             cols = hr_clean.columns.tolist()
             for i in range(len(hr_clean)):
@@ -152,9 +160,13 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
                         odds = f"+{odds}" if not odds.startswith("+") else odds
                 except Exception:
                     odds = ""
+                try:
+                    edge = str(hr_clean.iloc[i, cols.index("Edge")]).strip() if "Edge" in cols else ""
+                except Exception:
+                    edge = ""
                 if not batter or batter == "nan":
                     continue
-                rows.append((pad([rank, batter, team, hr_score, odds, ""]), "data_hr"))
+                rows.append((pad([rank, batter, team, hr_score, odds, edge]), "data_hr"))
 
     rows.append((E[:], "spacer"))
 
