@@ -974,7 +974,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
 def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
-
+ 
     try:
         ws         = sh.worksheet("KS_All_Scores")
         all_values = with_retry(lambda: ws.get_all_values())
@@ -987,17 +987,17 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
     except gspread.WorksheetNotFound:
         ws       = sh.add_worksheet(title="KS_All_Scores", rows=10000, cols=25)
         existing = pd.DataFrame()
-
+ 
     if not existing.empty and "date" in existing.columns:
         existing = existing[existing["date"] != today_str].copy()
-
+ 
     if picks.empty:
         print("No scored pitchers to log to KS_All_Scores.")
         return
-
+ 
     sorted_df = picks.sort_values("ks_score", ascending=False).reset_index(drop=True)
     sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
-
+ 
     new_rows = []
     for _, row in sorted_df.iterrows():
         team = str(row.get("pitching_team", row.get("pitcher_team", row.get("team", ""))))
@@ -1013,7 +1013,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
             "over_odds":        str(row.get("ks_over_odds", "")),
             "under_odds":       str(row.get("ks_under_odds", "")),
             "projected_ks":     str(row.get("projected_k_calc", "")),
-            "prop_signal":      str(row.get("prop_signal", "")),
+            "prop_signal":      str(row.get("prop_signal", "")),   # ← ADDED
             "k_pct_season":     str(row.get("k_pct_season", "")),
             "swstr_pct":        str(row.get("swstr_pct", "")),
             "chase_rate":       str(row.get("chase_rate", "")),
@@ -1031,25 +1031,24 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
             "over_hit":         "Pending",
             "under_hit":        "Pending",
         })
-
+ 
     if not new_rows:
         print("No rows to log to KS_All_Scores.")
         return
-
+ 
     new_df = pd.DataFrame(new_rows)
-
+ 
     if not existing.empty:
         for col in new_df.columns:
             if col not in existing.columns:
                 existing[col] = ""
-
+ 
     combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
     combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
-
+ 
     with_retry(lambda: ws.clear())
     with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
     print(f"Logged {len(new_rows)} scored pitchers to KS_All_Scores")
-
 
 def main() -> None:
     time.sleep(10)
