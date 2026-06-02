@@ -130,10 +130,10 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
 
         # Filter to only positive (✅) or neutral (➡️) edge picks
+        # Use contains("+") to avoid emoji encoding issues across environments
         if "Edge" in hr_clean.columns:
             hr_clean = hr_clean[
-                hr_clean["Edge"].astype(str).str.startswith("✅") |
-                hr_clean["Edge"].astype(str).str.startswith("➡️")
+                hr_clean["Edge"].astype(str).str.contains(r"\+", regex=True, na=False)
             ]
 
         if hr_clean.empty:
