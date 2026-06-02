@@ -1227,6 +1227,12 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
     total_rows = row_count + 2
     reqs       = []
 
+    # Clear any stale merges from previous runs first
+    reqs.append({"unmergeCells": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows + 5,
+                  "startColumnIndex": 0, "endColumnIndex": 55},
+    }})
+
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": 55},
