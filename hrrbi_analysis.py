@@ -129,12 +129,13 @@ def build_analysis(df: pd.DataFrame) -> dict:
     # ── By Score Tier ──────────────────────────────────────────────────────
     score_tiers = []
     tier_defs = [
-        ("15+",    15.0, 999),
-        ("13-15",  13.0, 15.0),
-        ("11-13",  11.0, 13.0),
-        ("9-11",    9.0, 11.0),
-        ("7-9",     7.0,  9.0),
-        ("Under 7", 0.0,  7.0),
+        ("17+",     17.0, 999),
+        ("15-17",   15.0, 17.0),
+        ("13-15",   13.0, 15.0),
+        ("11-13",   11.0, 13.0),
+        ("9-11",     9.0, 11.0),
+        ("7-9",      7.0,  9.0),
+        ("Under 7",  0.0,  7.0),
     ]
     for label, lo, hi in tier_defs:
         sub = resolved[(resolved["hrrbi_score"] >= lo) & (resolved["hrrbi_score"] < hi)]
@@ -213,24 +214,32 @@ def build_analysis(df: pd.DataFrame) -> dict:
 
     # ── Feature Separators ────────────────────────────────────────────────
     features = [
+        # Score — most important, validates the model itself
+        ("hrrbi_score",       "HRRBI Score"),
+        # Batter — season stats
         ("avg",               "Season AVG"),
         ("woba",              "wOBA"),
         ("obp",               "OBP"),
+        ("bb_pct",            "BB%"),
         ("ld_pct",            "LD%"),
         ("gb_pct",            "GB%"),
         ("hard_hit_pct_season", "Hard Hit% (Season)"),
+        # Batter — recent form
         ("avg_ev_7d",         "Avg EV (7d)"),
         ("hard_hit_pct_7d",   "Hard Hit% (7d)"),
         ("avg_14d",           "AVG (14d)"),
-        ("avg_bat_order",     "Avg Bat Order"),
-        ("bb_pct",            "BB%"),
         ("momentum_score",    "Momentum Score"),
+        # Lineup context
+        ("avg_bat_order",     "Avg Bat Order"),
+        # Pitcher matchup
         ("opp_whip",          "Opp WHIP"),
         ("opp_k_pct_season",  "Opp K%"),
         ("opp_bb_pct_season", "Opp BB%"),
         ("opp_hard_hit_pct",  "Opp Hard Hit%"),
+        # Game context
         ("game_total",        "Game Total"),
         ("park_hr_factor",    "Park HR Factor"),
+        ("over_odds",         "Over Odds"),
     ]
 
     separators = []
