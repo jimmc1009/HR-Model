@@ -29,6 +29,7 @@ on:
           - hr_odds_backtest
           - hr_analysis
           - ks_analysis
+          - hrrbi_analysis
 
 jobs:
   test:
@@ -178,6 +179,7 @@ jobs:
       - name: Run resolve_picks.py
         if: >
           inputs.script == 'full' ||
+          inputs.script == 'full_hrrbi' ||
           inputs.script == 'resolve_picks'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -212,3 +214,12 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_analysis.py
 
+      - name: Run hrrbi_analysis.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'hrrbi_analysis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hrrbi_analysis.py
