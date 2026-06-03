@@ -706,6 +706,19 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
         print("No scored batters to log to HRRBI_All_Scores.")
         return
 
+    # Only log batters with a valid line and odds — excludes nan rows from analysis
+    combined = combined.copy()
+    combined["hrrbi_line"] = combined["hrrbi_line"].apply(lambda x: safe_float(x, 0))
+    combined["hrrbi_over_odds"] = combined["hrrbi_over_odds"].apply(lambda x: safe_float(x, 0))
+    combined = combined[
+        (combined["hrrbi_line"] > 0) &
+        (combined["hrrbi_over_odds"] != 0)
+    ].copy()
+
+    if combined.empty:
+        print("No scored batters with valid line/odds to log to HRRBI_All_Scores.")
+        return
+
     sorted_df = combined.sort_values("hrrbi_score", ascending=False).reset_index(drop=True)
     sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
 
