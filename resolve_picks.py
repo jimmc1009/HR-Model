@@ -370,7 +370,6 @@ def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
         row_date = str(row.get("date", "")).strip()
         if row_date == today_str or not row_date:
             continue
-
         player_norm = normalize_name(str(row.get("player_name", "")))
         log.at[idx, "hit_hr"] = "Yes" if (row_date, player_norm) in hr_lookup else "No"
         resolved += 1
@@ -458,6 +457,77 @@ def resolve_ks_all_scores(gc: gspread.Client, sheet_id: str) -> None:
     print("KS_All_Scores updated.")
 
 
+def resolve_hrrbi_all_scores(gc: gspread.Client, sheet_id: str) -> None:
+    """
+    Resolves HRRBI_All_Scores by fetching actual H+R+RBI totals from MLB API
+    and marking over/under vs the 1.5 line.
+    """
+    today_str = date.today().strftime("%Y-%m-%d")
+    log       = read_sheet_raw(gc, sheet_id, "HRRBI_All_Scores")
+
+    if log.empty:
+        print("HRRBI_All_Scores is empty.")
+        return
+
+    if "actual_hrrbi" not in log.columns or "date" not in log.columns:
+        print("HRRBI_All_Scores missing required columns — skipping resolution.")
+        return
+
+    pending = log[
+        (log["actual_hrrbi"].astype(str).str.strip() == "Pending") &
+        (log["date"].astype(str).str.strip() != today_str) &
+        (log["date"].astype(str).str.strip() != "")
+    ].copy()
+
+    if pending.empty:
+        print("No pending HRRBI_All_Scores to resolve.")
+        return
+
+    pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
+    print(f"Resolving {len(pending)} pending HRRBI_All_Scores across {len(pending_dates)} dates...")
+
+    hrrbi_results = build_hrrbi_results(pending_dates)
+
+    resolved = 0
+    for idx, row in log.iterrows():
+        if str(row.get("actual_hrrbi", "")).strip() != "Pending":
+            continue
+        row_date = str(row.get("date", "")).strip()
+        if row_date == today_str or not row_date:
+            continue
+
+        player_norm  = normalize_name(str(row.get("player_name", "")))
+        line         = safe_float(row.get("hrrbi_line", 1.5), 1.5)
+        if line <= 0:
+            line = 1.5
+        actual_total = hrrbi_results.get((row_date, player_norm))
+
+        if actual_total is not None:
+            log.at[idx, "actual_hrrbi"] = str(actual_total)
+            log.at[idx, "over_hit"]     = "Yes" if actual_total > line else "No"
+            log.at[idx, "under_hit"]    = "Yes" if actual_total < line else "No"
+        else:
+            log.at[idx, "actual_hrrbi"] = "Not Found"
+            log.at[idx, "over_hit"]     = "Not Found"
+            log.at[idx, "under_hit"]    = "Not Found"
+        resolved += 1
+
+    over_hits  = (log["over_hit"] == "Yes").sum()
+    under_hits = (log["under_hit"] == "Yes").sum()
+    print(f"Resolved {resolved} HRRBI_All_Scores. Over: {over_hits} | Under: {under_hits}")
+
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("HRRBI_All_Scores")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="HRRBI_All_Scores", rows=10000, cols=30)
+
+    log = log.fillna("").replace([np.inf, -np.inf], "")
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
+    print("HRRBI_All_Scores updated.")
+
+
 # ── Scorecard ─────────────────────────────────────────────────────────────
 
 def build_scorecard(
@@ -541,9 +611,9 @@ def build_scorecard(
     if has_odds_zones and not scored["odds_num"].isna().all():
         add_row("── By Odds Zone ──", pd.DataFrame(), bold=True, header=True)
         for label, sub in [
-            ("   Minus Odds",   scored[scored["odds_num"] < 0]),
-            ("   +100 to +110", scored[(scored["odds_num"] >= 100) & (scored["odds_num"] <= 110)]),
-            ("   +111 to +120", scored[(scored["odds_num"] >= 111) & (scored["odds_num"] <= 120)]),
+            ("   Minus Odds",     scored[scored["odds_num"] < 0]),
+            ("   +100 to +110",   scored[(scored["odds_num"] >= 100) & (scored["odds_num"] <= 110)]),
+            ("   +111 to +120",   scored[(scored["odds_num"] >= 111) & (scored["odds_num"] <= 120)]),
             ("   +121 and above", scored[scored["odds_num"] >= 121]),
         ]:
             if not sub.empty: add_row(label, sub)
@@ -551,11 +621,11 @@ def build_scorecard(
     if has_score_tiers and not scored["score_num"].isna().all():
         add_row("── By Score Tier ──", pd.DataFrame(), bold=True, header=True)
         for label, sub in [
-            ("   Score 9+",   scored[scored["score_num"] >= 9]),
-            ("   Score 8-9",  scored[(scored["score_num"] >= 8) & (scored["score_num"] < 9)]),
-            ("   Score 6-8",  scored[(scored["score_num"] >= 6) & (scored["score_num"] < 8)]),
-            ("   Score 4-6",  scored[(scored["score_num"] >= 4) & (scored["score_num"] < 6)]),
-            ("   Under 4",    scored[scored["score_num"] < 4]),
+            ("   Score 9+",  scored[scored["score_num"] >= 9]),
+            ("   Score 8-9", scored[(scored["score_num"] >= 8) & (scored["score_num"] < 9)]),
+            ("   Score 6-8", scored[(scored["score_num"] >= 6) & (scored["score_num"] < 8)]),
+            ("   Score 4-6", scored[(scored["score_num"] >= 4) & (scored["score_num"] < 6)]),
+            ("   Under 4",   scored[scored["score_num"] < 4]),
         ]:
             if not sub.empty: add_row(label, sub)
 
@@ -736,6 +806,12 @@ def main() -> None:
     print("Resolving KS All Scores...")
     print("=" * 50)
     resolve_ks_all_scores(gc, sheet_id)
+    time.sleep(5)
+
+    print("=" * 50)
+    print("Resolving HRRBI All Scores...")
+    print("=" * 50)
+    resolve_hrrbi_all_scores(gc, sheet_id)
     time.sleep(5)
 
     print("=" * 50)
