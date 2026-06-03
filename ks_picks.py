@@ -130,23 +130,25 @@ def get_todays_game_times() -> dict:
 # ── Scoring functions ─────────────────────────────────────────────────────
 
 def score_k_pct(v: float, ip: float) -> float:
+    # K% is neutral per analysis — reduced max from 3.0 to 1.5
     if ip < MIN_IP: return 0.0
-    if v >= 32.0: return 3.0
-    if v >= 28.0: return 2.5
-    if v >= 25.0: return 2.0
-    if v >= 22.0: return 1.5
-    if v >= 19.0: return 1.0
-    if v >= 16.0: return 0.5
+    if v >= 32.0: return 1.5
+    if v >= 28.0: return 1.2
+    if v >= 25.0: return 0.9
+    if v >= 22.0: return 0.6
+    if v >= 19.0: return 0.3
+    if v >= 16.0: return 0.1
     return 0.0
 
 
 def score_swstr(v: float, ip: float) -> float:
+    # SwStr% is neutral per analysis — reduced max from 2.5 to 1.0
     if ip < MIN_IP: return 0.0
-    if v >= 16.0: return 2.5
-    if v >= 14.0: return 2.0
-    if v >= 12.0: return 1.5
-    if v >= 10.0: return 1.0
-    if v >= 8.0:  return 0.5
+    if v >= 16.0: return 1.0
+    if v >= 14.0: return 0.7
+    if v >= 12.0: return 0.5
+    if v >= 10.0: return 0.3
+    if v >= 8.0:  return 0.1
     return 0.0
 
 
@@ -185,12 +187,13 @@ def score_k_per_start_21d(v: float) -> float:
 
 
 def score_avg_ip(v: float) -> float:
-    if v >= 6.5: return 1.0
-    if v >= 6.0: return 0.7
-    if v >= 5.5: return 0.4
-    if v >= 5.0: return 0.1
-    if v <= 4.0: return -1.0
-    if v <= 4.5: return -0.5
+    # IP/Start +8.6% separator — increased max from 1.0 to 1.3
+    if v >= 6.5: return  1.3
+    if v >= 6.0: return  0.9
+    if v >= 5.5: return  0.5
+    if v >= 5.0: return  0.1
+    if v <= 4.0: return -1.3
+    if v <= 4.5: return -0.6
     return 0.0
 
 
@@ -257,24 +260,26 @@ def score_opener_risk(v: float) -> float:
 
 
 def score_pitcher_whip(v: float) -> float:
+    # WHIP -8.4% separator (lower=better) — increased max from 0.8 to 1.2
     if v <= 0: return 0.0
-    if v <= 0.90: return  0.8
-    if v <= 1.00: return  0.5
-    if v <= 1.10: return  0.2
-    if v >= 1.50: return -0.8
-    if v >= 1.35: return -0.4
-    if v >= 1.20: return -0.2
+    if v <= 0.90: return  1.2
+    if v <= 1.00: return  0.8
+    if v <= 1.10: return  0.3
+    if v >= 1.50: return -1.2
+    if v >= 1.35: return -0.6
+    if v >= 1.20: return -0.3
     return 0.0
 
 
 def score_pitcher_bb_pct(v: float) -> float:
+    # BB% strongest separator at -15.9% (lower=better) — increased max from 0.8 to 1.5
     if v <= 0: return 0.0
-    if v <= 4.0:  return  0.8
-    if v <= 6.0:  return  0.4
-    if v <= 8.0:  return  0.1
-    if v >= 12.0: return -0.8
-    if v >= 10.0: return -0.4
-    if v >= 9.0:  return -0.2
+    if v <= 4.0:  return  1.5
+    if v <= 6.0:  return  0.8
+    if v <= 8.0:  return  0.2
+    if v >= 12.0: return -1.5
+    if v >= 10.0: return -0.8
+    if v >= 9.0:  return -0.3
     return 0.0
 
 
@@ -609,7 +614,6 @@ def prepare_picks(
     if not team_k_rates.empty and "opposing_team" in df.columns:
         team_k_rates = team_k_rates.copy()
         team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
-        
 
         merge_cols = ["team"]
         if "team_k_pct" in team_k_rates.columns:
@@ -631,7 +635,6 @@ def prepare_picks(
             on="opposing_team", how="left"
         )
 
-
     if not parks_df.empty and "home_team" in df.columns:
         parks_df = parks_df.copy()
         parks_df.columns = [c.strip() for c in parks_df.columns]
@@ -643,19 +646,19 @@ def prepare_picks(
             )
 
     defaults = {
-        "opp_team_k_pct":  22.0,
-        "opp_chase_rate":  30.0,
-        "opp_whiff_rate":  22.0,
-        "park_hr_factor":  100.0,
-        "swstr_trend":     "",
-        "velo_trend":      "",
-        "opener_risk":     0.0,
-        "k_per_start_21d": 0.0,
+        "opp_team_k_pct":   22.0,
+        "opp_chase_rate":   30.0,
+        "opp_whiff_rate":   22.0,
+        "park_hr_factor":   100.0,
+        "swstr_trend":      "",
+        "velo_trend":       "",
+        "opener_risk":      0.0,
+        "k_per_start_21d":  0.0,
         "avg_ip_per_start": 5.5,
-        "fastball_velo":   93.0,
-        "chase_rate":      30.0,
-        "whip_proxy":      1.2,
-        "bb_pct_season":   8.0,
+        "fastball_velo":    93.0,
+        "chase_rate":       30.0,
+        "whip_proxy":       1.2,
+        "bb_pct_season":    8.0,
     }
     for col, val in defaults.items():
         if col not in df.columns:
@@ -705,7 +708,6 @@ def prepare_picks(
     df["prop_signal"] = df.apply(calc_prop_signal, axis=1)
 
     return df
-
 
 
 def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
@@ -974,7 +976,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
 def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
- 
+
     try:
         ws         = sh.worksheet("KS_All_Scores")
         all_values = with_retry(lambda: ws.get_all_values())
@@ -987,17 +989,17 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
     except gspread.WorksheetNotFound:
         ws       = sh.add_worksheet(title="KS_All_Scores", rows=10000, cols=25)
         existing = pd.DataFrame()
- 
+
     if not existing.empty and "date" in existing.columns:
         existing = existing[existing["date"] != today_str].copy()
- 
+
     if picks.empty:
         print("No scored pitchers to log to KS_All_Scores.")
         return
- 
+
     sorted_df = picks.sort_values("ks_score", ascending=False).reset_index(drop=True)
     sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
- 
+
     new_rows = []
     for _, row in sorted_df.iterrows():
         team = str(row.get("pitching_team", row.get("pitcher_team", row.get("team", ""))))
@@ -1013,7 +1015,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
             "over_odds":        str(row.get("ks_over_odds", "")),
             "under_odds":       str(row.get("ks_under_odds", "")),
             "projected_ks":     str(row.get("projected_k_calc", "")),
-            "prop_signal":      str(row.get("prop_signal", "")),   # ← ADDED
+            "prop_signal":      str(row.get("prop_signal", "")),
             "k_pct_season":     str(row.get("k_pct_season", "")),
             "swstr_pct":        str(row.get("swstr_pct", "")),
             "chase_rate":       str(row.get("chase_rate", "")),
@@ -1031,24 +1033,25 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> No
             "over_hit":         "Pending",
             "under_hit":        "Pending",
         })
- 
+
     if not new_rows:
         print("No rows to log to KS_All_Scores.")
         return
- 
+
     new_df = pd.DataFrame(new_rows)
- 
+
     if not existing.empty:
         for col in new_df.columns:
             if col not in existing.columns:
                 existing[col] = ""
- 
+
     combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
     combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
- 
+
     with_retry(lambda: ws.clear())
     with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
     print(f"Logged {len(new_rows)} scored pitchers to KS_All_Scores")
+
 
 def main() -> None:
     time.sleep(10)
