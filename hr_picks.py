@@ -46,12 +46,12 @@ MIN_BATTING_AVG  = 0.200
 # Used for edge calculation. Update these as more resolved data comes in.
 # Tightened buckets as of 2026-06-02. Rates will stabilize with more data.
 SCORE_TIER_HIT_RATES = {
-    "13+":      0.21,   # 19 picks, small sample — keep wide
-    "12-13":    0.19,   # interpolated from 11-13 (16.7%) and 13-15 (20%)
-    "11-12":    0.16,   # interpolated from 11-13 (16.7%)
-    "10-11":    0.24,   # interpolated from 9-11 (23%) — upper half likely stronger
-    "9-10":     0.21,   # interpolated from 9-11 (23%) — lower half slightly weaker
-    "8.5-9":    0.14,   # extrapolated from 7-9 bucket
+    "13+":      0.25,   # 19 picks, small sample — keep wide
+    "12-13":    0.15,   # interpolated from 11-13 (16.7%) and 13-15 (20%)
+    "11-12":    0.244,   # interpolated from 11-13 (16.7%)
+    "10-11":    0.247,   # interpolated from 9-11 (23%) — upper half likely stronger
+    "9-10":     0.205,   # interpolated from 9-11 (23%) — lower half slightly weaker
+    "8.5-9":    0.137,   # extrapolated from 7-9 bucket
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
