@@ -21,6 +21,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# Model rebuild date — only analyze data from this date forward
+MODEL_START_DATE = "2026-06-02"
+
 COLOR_BG        = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
 COLOR_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
@@ -108,6 +111,11 @@ def parse_wind(wind_str: str) -> str:
 
 
 def build_analysis(df: pd.DataFrame) -> dict:
+    # ── Filter to current model only ──────────────────────────────────────
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)].copy()
+    print(f"  Filtered to model start date {MODEL_START_DATE}: {len(df)} rows remaining")
+
     scored = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
 
     if scored.empty:
@@ -240,7 +248,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
     max_date  = scored["date_dt"].max()
     roll_rows = []
     for label, days in [("Last 7 Days", 7), ("Last 14 Days", 14), ("Last 30 Days", 30), ("All Time", 9999)]:
-        cutoff = max_date - pd.Timedelta(days=days) if days < 9999 else pd.Timestamp("2000-01-01")
+        cutoff = max_date - pd.Timedelta(days=days) if days < 9999 else pd.Timestamp(MODEL_START_DATE)
         sub    = scored[scored["date_dt"] >= cutoff]
         if sub.empty:
             continue
@@ -252,13 +260,13 @@ def build_analysis(df: pd.DataFrame) -> dict:
     # ── Platoon analysis ──────────────────────────────────────────────────
     platoon_rows = []
     if "platoon_matchup" in scored.columns:
-        scored["has_platoon_adv"]    = scored["platoon_matchup"].str.contains("advantage", case=False, na=False)
-        scored["has_platoon_dis"]    = scored["platoon_matchup"].str.contains("disadvantage|weakness", case=False, na=False)
+        scored["has_platoon_adv"]     = scored["platoon_matchup"].str.contains("advantage", case=False, na=False)
+        scored["has_platoon_dis"]     = scored["platoon_matchup"].str.contains("disadvantage|weakness", case=False, na=False)
         scored["has_platoon_neutral"] = ~scored["has_platoon_adv"] & ~scored["has_platoon_dis"]
 
         for label, mask in [
-            ("Platoon Advantage", scored["has_platoon_adv"]),
-            ("Platoon Neutral",   scored["has_platoon_neutral"]),
+            ("Platoon Advantage",             scored["has_platoon_adv"]),
+            ("Platoon Neutral",               scored["has_platoon_neutral"]),
             ("Platoon Disadvantage / Weakness", scored["has_platoon_dis"]),
         ]:
             sub = scored[mask]
@@ -310,7 +318,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
 
     # ── Header ────────────────────────────────────────────────────────────
     all_values.append([
-        f"📊  HR MODEL ANALYSIS — Updated {today}",
+        f"📊  HR MODEL ANALYSIS — Up to date (Model v2 from {MODEL_START_DATE})",
         "", "", "", "", "", "", ""
     ])
     all_values.append([
@@ -406,7 +414,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
 
-    # Title row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -419,7 +426,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
     }})
 
-    # Summary row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -466,7 +472,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
         }})
 
-    # Color hit rate cells
     for row_idx, row in enumerate(all_values):
         if len(row) >= 4 and str(row[3]).endswith("%"):
             try:
@@ -495,25 +500,19 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             except Exception:
                 pass
 
-    # Color feature signal column
     feature_start = section_starts.get("features", 0) + 2
     for i, r in enumerate(analysis["feature_separators"]):
         row_idx = feature_start + i
         if r["pct_diff"] >= 15:
-            fg = COLOR_GREEN
-            bg = COLOR_GREEN_DIM
+            fg = COLOR_GREEN; bg = COLOR_GREEN_DIM
         elif r["pct_diff"] >= 8:
-            fg = COLOR_TEAL
-            bg = COLOR_TEAL_DIM
+            fg = COLOR_TEAL; bg = COLOR_TEAL_DIM
         elif r["pct_diff"] <= -15:
-            fg = COLOR_RED
-            bg = COLOR_RED_DIM
+            fg = COLOR_RED; bg = COLOR_RED_DIM
         elif r["pct_diff"] <= -8:
-            fg = COLOR_GOLD
-            bg = COLOR_GOLD_DIM
+            fg = COLOR_GOLD; bg = COLOR_GOLD_DIM
         else:
-            fg = COLOR_GREY
-            bg = COLOR_BG
+            fg = COLOR_GREY; bg = COLOR_BG
         reqs.append({"repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
                       "startColumnIndex": 5, "endColumnIndex": 6},
@@ -525,11 +524,10 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
         }})
 
-    # Alternating rows for data sections
     for row_idx, row in enumerate(all_values):
         if row_idx < 3:
             continue
-        is_section   = any(str(row[0]).startswith(e) for e in ["🎯", "💰", "🌬", "🔄", "📈", "🔬"])
+        is_section    = any(str(row[0]).startswith(e) for e in ["🎯", "💰", "🌬", "🔄", "📈", "🔬"])
         is_header_row = row_idx in [s + 1 for s in section_starts.values()]
         is_empty      = not any(str(v).strip() for v in row)
         if not is_section and not is_header_row and not is_empty:
