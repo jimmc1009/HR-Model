@@ -40,8 +40,8 @@ MAX_PER_TEAM         = 2
 TOP_N                = 15
 
 # Signal filters
-MIN_ODDS_FOR_SIGNAL  = -110   # must be -110 or better
-MAX_LINE_FOR_SIGNAL  = 1.5   # only 1.5 lines
+MIN_ODDS_FOR_SIGNAL  = -110
+MAX_LINE_FOR_SIGNAL  = 1.5
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
@@ -240,7 +240,6 @@ def score_bb_pct(v: float, pa: float) -> float:
     return 0.0
 
 def score_opp_whip(v: float) -> float:
-    """Higher WHIP = more baserunners = more runs and RBI opportunities."""
     if v >= 1.60: return 2.0
     if v >= 1.50: return 1.5
     if v >= 1.35: return 1.0
@@ -260,7 +259,6 @@ def score_opp_k_pct(v: float) -> float:
     return 0.0
 
 def score_opp_bb_pct(v: float) -> float:
-    """High pitcher walk rate = more baserunners = more scoring opportunities."""
     if v >= 12.0: return 1.5
     if v >= 10.0: return 1.0
     if v >=  8.0: return 0.5
@@ -276,7 +274,6 @@ def score_opp_hard_hit(v: float) -> float:
     return 0.0
 
 def score_game_total(v: float) -> float:
-    """Higher game total = more expected offense = better for H+R+RBI overs."""
     if v >= 10.0: return 2.0
     if v >= 9.5:  return 1.5
     if v >= 9.0:  return 1.0
@@ -390,14 +387,10 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_roll_avg = score_rolling_avg(safe_float(row.get("avg_14d")), pa_14d)
     s_bat_ord  = score_bat_order(safe_float(row.get("avg_bat_order", 6)), pa)
     s_bb       = score_bb_pct(safe_float(row.get("bb_pct")), pa)
-
-    # Pitcher matchup — now more heavily weighted
     s_opp_whip = score_opp_whip(safe_float(row.get("opp_whip", 1.20), 1.20))
     s_opp_k    = score_opp_k_pct(safe_float(row.get("opp_k_pct_season", 22.0), 22.0))
     s_opp_bb   = score_opp_bb_pct(safe_float(row.get("opp_bb_pct_season", 8.0), 8.0))
     s_opp_hh   = score_opp_hard_hit(safe_float(row.get("opp_hard_hit_pct", 38.0), 38.0))
-
-    # Game context
     s_game_total = score_game_total(safe_float(row.get("game_total", 8.5), 8.5))
     s_park       = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
     s_weather    = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
@@ -435,15 +428,11 @@ def calc_prop_signal(row: pd.Series) -> str:
     line      = safe_float(row.get("hrrbi_line", 0))
     score     = safe_float(row.get("hrrbi_score", 0))
     over_odds = safe_float(row.get("hrrbi_over_odds", -999), -999)
-    
 
     if line <= 0:
         return "—"
-
-    # Only fire on 1.5 lines at plus odds
     if line > MAX_LINE_FOR_SIGNAL:
         return "—"
-
     if over_odds < MIN_ODDS_FOR_SIGNAL:
         return "—"
 
@@ -579,10 +568,7 @@ def prepare_combined(
         park_cols = [c for c in ["team", "park_hr_factor", "park_name"] if c in parks.columns]
         if park_cols:
             batters = batters.merge(
-                parks[park_cols],
-                left_on="batter_team",
-                right_on="team",
-                how="left",
+                parks[park_cols], left_on="batter_team", right_on="team", how="left"
             )
 
     if not weather.empty:
@@ -591,24 +577,17 @@ def prepare_combined(
         weather_cols = [c for c in ["home_team", "hr_weather_boost", "wind_context", "temp_f"] if c in weather.columns]
         if "home_team" in weather.columns:
             batters = batters.merge(
-                weather[weather_cols],
-                left_on="batter_team",
-                right_on="home_team",
-                how="left",
+                weather[weather_cols], left_on="batter_team", right_on="home_team", how="left"
             )
 
-    # Merge game totals
     if not game_totals.empty:
         game_totals = game_totals.copy()
         game_totals.columns = [c.strip() for c in game_totals.columns]
         if "home_team" in game_totals.columns and "game_total" in game_totals.columns:
             batters = batters.merge(
                 game_totals[["home_team", "game_total"]],
-                left_on="batter_team",
-                right_on="home_team",
-                how="left",
+                left_on="batter_team", right_on="home_team", how="left"
             )
-            # Also try away team match
             missing_total = batters["game_total"].isna()
             if missing_total.any() and "away_team" in game_totals.columns:
                 away_totals = game_totals[["away_team", "game_total"]].rename(
@@ -620,21 +599,21 @@ def prepare_combined(
                     batters = batters.drop(columns=["game_total_away", "batter_team_away"], errors="ignore")
 
     defaults = {
-        "opp_whip": 1.20,
-        "opp_k_pct_season": 22.0,
+        "opp_whip":          1.20,
+        "opp_k_pct_season":  22.0,
         "opp_bb_pct_season": 8.0,
-        "opp_hard_hit_pct": 38.0,
-        "park_hr_factor": 100.0,
-        "hr_weather_boost": 0.0,
-        "avg_bat_order": 5.0,
-        "ld_pct": 0.0,
-        "gb_pct": 42.0,
-        "bb_pct": 0.0,
-        "avg_ev_14d": 0.0,
-        "hard_hit_pct_14d": 0.0,
-        "barrel_pct_14d": 0.0,
-        "bbe_14d": 0.0,
-        "game_total": 8.5,
+        "opp_hard_hit_pct":  38.0,
+        "park_hr_factor":    100.0,
+        "hr_weather_boost":  0.0,
+        "avg_bat_order":     5.0,
+        "ld_pct":            0.0,
+        "gb_pct":            42.0,
+        "bb_pct":            0.0,
+        "avg_ev_14d":        0.0,
+        "hard_hit_pct_14d":  0.0,
+        "barrel_pct_14d":    0.0,
+        "bbe_14d":           0.0,
+        "game_total":        8.5,
     }
     for col, val in defaults.items():
         if col not in batters.columns:
@@ -677,7 +656,6 @@ def prepare_combined(
 
 
 def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
-    # Only include players with a signal
     df = df[df["prop_signal"] != "—"].copy()
 
     if df.empty:
@@ -701,6 +679,100 @@ def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
     result = pd.DataFrame(selected).reset_index(drop=True)
     result["rank"] = range(1, len(result) + 1)
     return result
+
+
+def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) -> None:
+    """Log all scored batters to HRRBI_All_Scores for analysis."""
+    today_str = date.today().strftime("%Y-%m-%d")
+    sh        = with_retry(lambda: gc.open_by_key(sheet_id))
+
+    try:
+        ws         = sh.worksheet("HRRBI_All_Scores")
+        all_values = with_retry(lambda: ws.get_all_values())
+        if all_values and len(all_values) > 1:
+            headers  = all_values[0]
+            rows     = all_values[1:]
+            existing = pd.DataFrame(rows, columns=headers)
+        else:
+            existing = pd.DataFrame()
+    except gspread.WorksheetNotFound:
+        ws       = sh.add_worksheet(title="HRRBI_All_Scores", rows=10000, cols=30)
+        existing = pd.DataFrame()
+
+    if not existing.empty and "date" in existing.columns:
+        existing = existing[existing["date"] != today_str].copy()
+
+    if combined.empty:
+        print("No scored batters to log to HRRBI_All_Scores.")
+        return
+
+    # Only log batters with a valid line and odds — excludes nan rows from analysis
+    combined = combined.copy()
+    combined["hrrbi_line"] = combined["hrrbi_line"].apply(lambda x: safe_float(x, 0))
+    combined["hrrbi_over_odds"] = combined["hrrbi_over_odds"].apply(lambda x: safe_float(x, 0))
+    combined = combined[
+        (combined["hrrbi_line"] > 0) &
+        (combined["hrrbi_over_odds"] != 0)
+    ].copy()
+
+    if combined.empty:
+        print("No scored batters with valid line/odds to log to HRRBI_All_Scores.")
+        return
+
+    sorted_df = combined.sort_values("hrrbi_score", ascending=False).reset_index(drop=True)
+    sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
+
+    new_rows = []
+    for _, row in sorted_df.iterrows():
+        new_rows.append({
+            "date":              today_str,
+            "rank":              str(row.get("all_scores_rank", "")),
+            "player_name":       str(row.get("player_name", "")),
+            "team":              str(row.get("batter_team", "")),
+            "hrrbi_score":       str(row.get("hrrbi_score", "")),
+            "hrrbi_line":        str(row.get("hrrbi_line", "")),
+            "over_odds":         str(row.get("hrrbi_over_odds", "")),
+            "prop_signal":       str(row.get("prop_signal", "")),
+            "confidence":        str(row.get("confidence", "")),
+            "avg":               str(row.get("avg", "")),
+            "woba":              str(row.get("woba", "")),
+            "obp":               str(row.get("obp", "")),
+            "ld_pct":            str(row.get("ld_pct", "")),
+            "gb_pct":            str(row.get("gb_pct", "")),
+            "hard_hit_pct_season": str(row.get("hard_hit_pct_season", "")),
+            "avg_ev_7d":         str(row.get("avg_ev_7d", "")),
+            "hard_hit_pct_7d":   str(row.get("hard_hit_pct_7d", "")),
+            "avg_14d":           str(row.get("avg_14d", "")),
+            "avg_bat_order":     str(row.get("avg_bat_order", "")),
+            "bb_pct":            str(row.get("bb_pct", "")),
+            "momentum_score":    str(row.get("momentum_score", "")),
+            "opp_whip":          str(row.get("opp_whip", "")),
+            "opp_k_pct_season":  str(row.get("opp_k_pct_season", "")),
+            "opp_bb_pct_season": str(row.get("opp_bb_pct_season", "")),
+            "opp_hard_hit_pct":  str(row.get("opp_hard_hit_pct", "")),
+            "game_total":        str(row.get("game_total", "")),
+            "park_hr_factor":    str(row.get("park_hr_factor", "")),
+            "over_hit":          "Pending",
+            "under_hit":         "Pending",
+            "actual_hrrbi":      "Pending",
+        })
+
+    if not new_rows:
+        print("No rows to log to HRRBI_All_Scores.")
+        return
+
+    new_df = pd.DataFrame(new_rows)
+    if not existing.empty:
+        for col in new_df.columns:
+            if col not in existing.columns:
+                existing[col] = ""
+
+    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
+    combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
+
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
+    print(f"Logged {len(new_rows)} scored batters to HRRBI_All_Scores")
 
 
 def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
@@ -744,8 +816,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_BG,
             "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
-            "verticalAlignment": "MIDDLE",
-            "wrapStrategy": "CLIP",
+            "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
         }},
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
     }})
@@ -757,9 +828,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
             "backgroundColor": COLOR_HEADER,
             "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True,
                            "fontFamily": "Roboto", "fontSize": 11},
-            "horizontalAlignment": "CENTER",
-            "verticalAlignment": "MIDDLE",
-            "wrapStrategy": "CLIP",
+            "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
         }},
         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
     }})
@@ -778,16 +847,14 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
                       "startIndex": i, "endIndex": i + 1},
-            "properties": {"pixelSize": w},
-            "fields": "pixelSize",
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
         }})
 
     for i in range(len(out_df) + 1):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "ROWS",
                       "startIndex": i, "endIndex": i + 1},
-            "properties": {"pixelSize": 32},
-            "fields": "pixelSize",
+            "properties": {"pixelSize": 32}, "fields": "pixelSize",
         }})
 
     reqs.append({"updateSheetProperties": {
@@ -842,12 +909,9 @@ def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
         print("No HRRBI picks to log.")
         return
 
-    new_df = pd.DataFrame(new_rows)
-
-    col_order = [
-        "date", "rank", "player_name", "team", "line",
-        "prop_signal", "over_odds", "confidence", "win",
-    ]
+    new_df    = pd.DataFrame(new_rows)
+    col_order = ["date", "rank", "player_name", "team", "line",
+                 "prop_signal", "over_odds", "confidence", "win"]
 
     if not existing.empty and "win" not in existing.columns:
         existing["win"] = ""
@@ -883,7 +947,6 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
 
 def main() -> None:
     time.sleep(10)
-
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
 
@@ -919,6 +982,10 @@ def main() -> None:
     if combined.empty:
         print("WARNING: No combined H+R+RBI data.")
         return
+
+    # Log all scores BEFORE diversity cap
+    log_all_scores(gc, sheet_id, combined)
+    time.sleep(5)
 
     picks = apply_diversity_cap(combined)
 
