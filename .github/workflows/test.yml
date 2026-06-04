@@ -30,7 +30,6 @@ on:
           - hr_analysis
           - ks_analysis
           - hrrbi_analysis
-          - hrrbi_picks_main
 
 jobs:
   test:
