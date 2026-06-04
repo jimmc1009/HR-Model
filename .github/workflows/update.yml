@@ -1,121 +1,233 @@
-name: MLB Model Pipeline
+name: MLB Model — Test Runner
 
 on:
- workflow_dispatch:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Script to run"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - full_hr
+          - full_hrrbi
+          - full_ks
+          - main
+          - pitcher_statcast
+          - park_factors
+          - weather
+          - odds
+          - hr_picks
+          - hrrbi_statcast
+          - hrrbi_picks
+          - ks_statcast
+          - ks_picks
+          - dashboard
+          - resolve_picks
+          - migrate_ks
+          - hr_odds_backtest
+          - hr_analysis
+          - ks_analysis
+          - hrrbi_analysis
+          - hrrbi_picks_main
 
 jobs:
- run-pipeline:
-   runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
-   steps:
-     - name: Checkout repo
-       uses: actions/checkout@v4
+    steps:
+      - name: Checkout repo (dev branch)
+        uses: actions/checkout@v3
+        with:
+          ref: dev
 
-     - name: Set up Python
-       uses: actions/setup-python@v5
-       with:
-         python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-     - name: Install dependencies
-       run: |
-         pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
+      - name: Install dependencies
+        run: |
+          pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
 
-     # ── Shared data pulls ─────────────────────────────────────────────────
-     - name: Run main.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python main.py
+      - name: Run main.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'full_ks' ||
+          inputs.script == 'main' ||
+          inputs.script == 'hr_picks' ||
+          inputs.script == 'hrrbi_picks' ||
+          inputs.script == 'ks_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python main.py
 
-     - name: Run pitcher_statcast.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python pitcher_statcast.py
+      - name: Run pitcher_statcast.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'pitcher_statcast' ||
+          inputs.script == 'hr_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python pitcher_statcast.py
 
-     - name: Run park_factors.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python park_factors.py
+      - name: Run park_factors.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'full_ks' ||
+          inputs.script == 'park_factors' ||
+          inputs.script == 'hr_picks' ||
+          inputs.script == 'hrrbi_picks' ||
+          inputs.script == 'ks_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python park_factors.py
 
-     - name: Run weather.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python weather.py
+      - name: Run weather.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'weather' ||
+          inputs.script == 'hr_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python weather.py
 
-     - name: Run odds.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-         ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-       run: python odds.py
+      - name: Run odds.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'odds' ||
+          inputs.script == 'hr_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python odds.py
 
-     # ── HR Model ──────────────────────────────────────────────────────────
-     - name: Run hr_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hr_picks.py
+      - name: Run hr_picks.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'hr_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hr_picks.py
 
-     # ── H+R+RBI Model ─────────────────────────────────────────────────────
-     - name: Run hrrbi_statcast.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hrrbi_statcast.py
+      - name: Run hrrbi_statcast.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'hrrbi_statcast' ||
+          inputs.script == 'hrrbi_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hrrbi_statcast.py
 
-     - name: Run hrrbi_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hrrbi_picks.py
+      - name: Run hrrbi_picks.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'hrrbi_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hrrbi_picks.py
 
-     # ── Pitcher Strikeout Model ───────────────────────────────────────────
-     - name: Run ks_statcast.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python ks_statcast.py
+      - name: Run hrrbi_picks.py (write to main sheet)
+        if: inputs.script == 'hrrbi_picks_main'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
+        run: python hrrbi_picks.py
 
-     - name: Run ks_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python ks_picks.py
+      - name: Run ks_statcast.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_ks' ||
+          inputs.script == 'ks_statcast' ||
+          inputs.script == 'ks_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python ks_statcast.py
 
-     # ── Dashboard ─────────────────────────────────────────────────────────
-     - name: Run dashboard.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python dashboard.py
+      - name: Run ks_picks.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_ks' ||
+          inputs.script == 'ks_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python ks_picks.py
 
-     # ── Resolve picks ─────────────────────────────────────────────────────
-     - name: Run resolve_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python resolve_picks.py
+      - name: Run dashboard.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'dashboard'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python dashboard.py
 
-     # ── HR Analysis ───────────────────────────────────────────────────────
-     - name: Run hr_analysis.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hr_analysis.py
+      - name: Run resolve_picks.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'resolve_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python resolve_picks.py
 
-     # ── KS Analysis ───────────────────────────────────────────────────────
-     - name: Run ks_analysis.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python ks_analysis.py
+      - name: Run hr_odds_backtest.py
+        if: inputs.script == 'hr_odds_backtest'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python hr_odds_backtest.py
 
-     # ── HRRBI Analysis ────────────────────────────────────────────────────
-     - name: Run hrrbi_analysis.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hrrbi_analysis.py
+      - name: Run hr_analysis.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hr' ||
+          inputs.script == 'hr_analysis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hr_analysis.py
+
+      - name: Run ks_analysis.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_ks' ||
+          inputs.script == 'ks_analysis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python ks_analysis.py
+
+      - name: Run hrrbi_analysis.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'full_hrrbi' ||
+          inputs.script == 'hrrbi_analysis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hrrbi_analysis.py
