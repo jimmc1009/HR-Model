@@ -30,6 +30,7 @@ on:
           - hr_analysis
           - ks_analysis
           - hrrbi_analysis
+          - hrrbi_picks_main
 
 jobs:
   test:
@@ -144,6 +145,13 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hrrbi_picks.py
+
+      - name: Run hrrbi_picks.py (write to main sheet)
+        if: inputs.script == 'hrrbi_picks_main'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
         run: python hrrbi_picks.py
 
       - name: Run ks_statcast.py
