@@ -136,7 +136,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
     rows = []
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN PICKS — Value Plays Only (✅ Positive / ➡️ Neutral Edge)"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥10.0 | +301 to +699 | Value Plays Only"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", "Edge"]), "col_header_hr"))
 
     if hr_df.empty:

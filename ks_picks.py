@@ -33,10 +33,11 @@ TOP_N              = 10
 MIN_LINEUP_BATTERS = 5
 
 # Signal thresholds
-OVER_SCORE      = 8.0
+OVER_SCORE      = 6.0   # lowered from 8.0 — data shows 6-8 tier hitting 64.7%
 OVER_EDGE       = 0.4
-LEAN_OVER_SCORE = 5.0
+LEAN_OVER_SCORE = 4.0   # lowered from 5.0
 LEAN_OVER_EDGE  = 0.15
+UNDER_SCORE     = 4.0   # sub-4 scores hitting UNDER at 59.3%
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
@@ -450,6 +451,10 @@ def calc_prop_signal(row: pd.Series) -> str:
 
     edge = proj - line
 
+    # UNDER signal — low scores hit under at 59.3%
+    if score > 0 and score < UNDER_SCORE:
+        return f"UNDER {line} 🔻"
+
     if score >= OVER_SCORE and edge >= OVER_EDGE:
         return f"OVER {line} ✅"
     if score >= LEAN_OVER_SCORE and edge >= LEAN_OVER_EDGE:
@@ -828,6 +833,9 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
             elif "LEAN" in sig:
                 bg = {"red": 0.039, "green": 0.118, "blue": 0.118}
                 fg = COLOR_TEAL
+            elif "UNDER" in sig:
+                bg = {"red": 0.200, "green": 0.039, "blue": 0.039}
+                fg = COLOR_RED
             else:
                 continue
             reqs.append({"repeatCell": {

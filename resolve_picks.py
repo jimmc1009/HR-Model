@@ -235,7 +235,11 @@ def resolve_ks_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
         if actual_ks is None:
             log.at[idx, "win"] = "No"
         else:
-            log.at[idx, "win"] = "Yes" if actual_ks > k_line else "No"
+            signal = str(row.get("prop_signal", "")).upper()
+            if "UNDER" in signal:
+                log.at[idx, "win"] = "Yes" if actual_ks < k_line else "No"
+            else:
+                log.at[idx, "win"] = "Yes" if actual_ks > k_line else "No"
         resolved += 1
 
     print(f"Resolved {resolved} KS picks. Yes: {(log['win'] == 'Yes').sum()} | No: {(log['win'] == 'No').sum()}")

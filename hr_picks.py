@@ -35,7 +35,8 @@ PITCH_MATCHUP_WEIGHT = 1.0   # capped — only 2 days resolved data
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 
 # ── Pick criteria ──────────────────────────────────────────────────────────
-MIN_SCORE_FLOOR  = 8.5
+MIN_SCORE_FLOOR  = 10.0
+MIN_ODDS         = 301       # no chalk — ≤+300 hits only 9% (below baseline)
 MAX_ODDS         = 699       # hard cap — no +700+ picks
 TOP_N            = 15
 MAX_PER_TEAM     = 2
@@ -46,12 +47,12 @@ MIN_BATTING_AVG  = 0.200
 # Used for edge calculation. Update these as more resolved data comes in.
 # Tightened buckets as of 2026-06-02. Rates will stabilize with more data.
 SCORE_TIER_HIT_RATES = {
-    "13+":      0.25,   # 19 picks, small sample — keep wide
-    "12-13":    0.15,   # interpolated from 11-13 (16.7%) and 13-15 (20%)
-    "11-12":    0.244,   # interpolated from 11-13 (16.7%)
-    "10-11":    0.247,   # interpolated from 9-11 (23%) — upper half likely stronger
-    "9-10":     0.205,   # interpolated from 9-11 (23%) — lower half slightly weaker
-    "8.5-9":    0.137,   # extrapolated from 7-9 bucket
+    "13+":      0.238,  # 15 picks, 3 HR — 20.0%
+    "12-13":    0.125,  # 17 picks, 3 HR — 17.6%
+    "11-12":    0.227,  # 32 picks, 6 HR — 18.8%
+    "10-11":    0.225,  # 55 picks, 16 HR — 29.1% (best tier)
+    "9-10":     0.089,  # 56 picks, 5 HR — 8.9% (below baseline, caution)
+    "8.5-9":    0.125,  # 36 picks, 10 HR — 27.8%
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
@@ -609,7 +610,7 @@ def prepare_combined(
     combined["confidence"] = combined.apply(assign_confidence, axis=1)
 
     # ── Cap context scores ─────────────────────────────────────────────────
-    combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.5)
+    combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.0)
     combined["bvp_capped"]           = combined["bvp_score"].clip(-0.5, 1.0)
     combined["total_penalty"]        = (
         combined["platoon_penalty"] + combined["pitch_penalty"]
@@ -729,6 +730,7 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
             lambda row: (
                 row.get("consensus_odds") is not None and
                 str(row.get("consensus_odds", "")).strip() not in ("", "nan", "None") and
+                int(float(row["consensus_odds"])) >= MIN_ODDS and
                 int(float(row["consensus_odds"])) <= MAX_ODDS
             ),
             axis=1
@@ -1097,9 +1099,10 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
 
     add_perf("── By Odds Zone ──", pd.DataFrame(), header=True)
     for label, sub in [
-        ("   ≤ +300",       scored[scored["odds_zone"] <= 300]),
-        ("   +301 to +499", scored[(scored["odds_zone"] > 300) & (scored["odds_zone"] < 500)]),
-        ("   +500 to +699", scored[(scored["odds_zone"] >= 500) & (scored["odds_zone"] <= 699)]),
+        ("   +301 to +399", scored[(scored["odds_zone"] >= 301) & (scored["odds_zone"] <= 399)]),
+        ("   +400 to +499", scored[(scored["odds_zone"] >= 400) & (scored["odds_zone"] <= 499)]),
+        ("   +500 to +599", scored[(scored["odds_zone"] >= 500) & (scored["odds_zone"] <= 599)]),
+        ("   +600 to +699", scored[(scored["odds_zone"] >= 600) & (scored["odds_zone"] <= 699)]),
     ]:
         if not sub.empty: add_perf(label, sub)
 
