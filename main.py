@@ -932,9 +932,16 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
                 ).reset_index()
                 barrel_pivot.columns = ["batter"] + [f"barrel_pct_vs_{c}" for c in barrel_pivot.columns if c != "batter"]
 
+                # Add BBE count per pitch type for regression in hr_picks.py
+                bbe_pivot = pitch_grp.pivot_table(
+                    index="batter", columns="pitch_type", values="bbe_count", fill_value=np.nan
+                ).reset_index()
+                bbe_pivot.columns = ["batter"] + [f"bbe_vs_{c}" for c in bbe_pivot.columns if c != "batter"]
+
                 combined = combined.merge(iso_pivot,    on="batter", how="left")
                 combined = combined.merge(hr_pivot,     on="batter", how="left")
                 combined = combined.merge(barrel_pivot, on="batter", how="left")
+                combined = combined.merge(bbe_pivot,    on="batter", how="left")
 
     if "pitch_group" in bbe.columns:
         for group in ["fastball", "breaking", "offspeed", "knuckleball"]:
