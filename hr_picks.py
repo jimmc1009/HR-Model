@@ -47,12 +47,12 @@ MIN_BATTING_AVG  = 0.200
 # Used for edge calculation. Update these as more resolved data comes in.
 # Tightened buckets as of 2026-06-02. Rates will stabilize with more data.
 SCORE_TIER_HIT_RATES = {
-    "13+":      0.238,  # 15 picks, 3 HR — 20.0%
-    "12-13":    0.244,  # 17 picks, 3 HR — 17.6%
-    "11-12":    0.244,  # 32 picks, 6 HR — 18.8%
-    "10-11":    0.217,  # 55 picks, 16 HR — 29.1% (best tier)
-    "9-10":     0.208,  # 56 picks, 5 HR — 8.9% (below baseline, caution)
-    "8.5-9":    0.119,  # 36 picks, 10 HR — 27.8%
+    "13+":      0.200,  # 15 picks, 3 HR — 20.0%
+    "12-13":    0.176,  # 17 picks, 3 HR — 17.6%
+    "11-12":    0.188,  # 32 picks, 6 HR — 18.8%
+    "10-11":    0.291,  # 55 picks, 16 HR — 29.1% (best tier)
+    "9-10":     0.089,  # 56 picks, 5 HR — 8.9% (below baseline, caution)
+    "8.5-9":    0.278,  # 36 picks, 10 HR — 27.8%
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
@@ -288,9 +288,22 @@ def compute_platoon_penalty(row: pd.Series) -> tuple:
 
 # ── Pitch matchup score ────────────────────────────────────────────────────
 
+# League average ISO by pitch type — used for regression to the mean
+LEAGUE_AVG_ISO_VS_PITCH = 0.150
+LEAGUE_AVG_ISO_VS_PITCH_FULL_SAMPLE = 25  # BBE needed for full trust
+
+
+def regress_pitch_iso(raw_iso: float, bbe_count: float, league_avg: float = LEAGUE_AVG_ISO_VS_PITCH, full_sample: float = LEAGUE_AVG_ISO_VS_PITCH_FULL_SAMPLE) -> float:
+    """Regress pitch-specific ISO toward league average based on sample size."""
+    if bbe_count <= 0:
+        return league_avg
+    weight = min(bbe_count / full_sample, 1.0)
+    return round((raw_iso * weight) + (league_avg * (1 - weight)), 3)
+
+
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
-    scores       = []
-    descriptions = []
+    scores        = []
+    descriptions  = []
     pitch_penalty = 0.0
 
     for rank in range(1, 4):
@@ -300,10 +313,15 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
 
-        batter_iso     = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
+        # Get raw values
+        raw_batter_iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
         batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
         batter_barrel  = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
-        batter_has     = (batter_iso > 0 or batter_hr_rate > 0)
+
+        # Regress batter ISO toward league average based on BBE count
+        batter_bbe    = safe_float(row.get(f"bbe_vs_{pitch_type}", 0))
+        batter_iso    = regress_pitch_iso(raw_batter_iso, batter_bbe) if raw_batter_iso > 0 else 0.0
+        batter_has    = (raw_batter_iso > 0 or batter_hr_rate > 0) and batter_bbe >= 5
 
         pitcher_iso    = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
         pitcher_hr     = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
@@ -318,17 +336,17 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         pitch_score       = (batter_component + pitcher_component) * (pitch_pct / 100)
         scores.append(pitch_score)
 
-        if batter_has and batter_iso >= 0.150 and pitch_pct >= 15:
-            descriptions.append(f"✅ ISO {batter_iso:.3f} vs {pitch_type} ({pitch_pct:.0f}% usage)")
+        if batter_has and batter_iso >= 0.200 and pitch_pct >= 15:
+            descriptions.append(f"✅ ISO {raw_batter_iso:.3f} vs {pitch_type} ({int(batter_bbe)} BBE, {pitch_pct:.0f}% usage)")
         if pitcher_has and pitcher_iso >= 0.180 and pitch_pct >= 15:
             descriptions.append(f"✅ Pitcher allows {pitcher_iso:.3f} ISO on {pitch_type}")
 
-        if batter_has and batter_iso < 0.100 and pitch_pct >= 15:
+        if batter_has and raw_batter_iso < 0.100 and pitch_pct >= 15:
             pitcher_iso_factor = max(0.0, 1.0 - (pitcher_iso / 0.150)) if pitcher_has else 1.0
             pen = round((0.100 - batter_iso) * (pitch_pct / 100) * 10 * pitcher_iso_factor, 3)
             pitch_penalty = max(pitch_penalty, pen)
             if pen > 0.02:
-                descriptions.append(f"⚠️ Weak vs {pitch_type} — ISO {batter_iso:.3f} ({pitch_pct:.0f}% usage)")
+                descriptions.append(f"⚠️ Weak vs {pitch_type} — ISO {raw_batter_iso:.3f} ({int(batter_bbe)} BBE, {pitch_pct:.0f}% usage)")
 
     return sum(scores), " + ".join(descriptions), pitch_penalty
 
