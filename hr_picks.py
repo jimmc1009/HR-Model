@@ -268,13 +268,13 @@ def compute_platoon_penalty(row: pd.Series) -> tuple:
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
     if has_iso_data:
         iso_gap = iso_vs_opp - iso_vs_this
-        if iso_gap >= 0.150:
+        if iso_gap >= 0.200:
             penalty += 2.0
             parts.append(f"🚨 Severe platoon weakness ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap >= 0.100:
+        elif iso_gap >= 0.140:
             penalty += 1.2
             parts.append(f"❌ Platoon disadvantage ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap >= 0.060:
+        elif iso_gap >= 0.100:
             penalty += 0.6
             parts.append(f"⚠️ Moderate platoon weakness ({label})")
 
