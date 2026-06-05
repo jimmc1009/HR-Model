@@ -323,9 +323,11 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         batter_iso    = regress_pitch_iso(raw_batter_iso, batter_bbe) if raw_batter_iso > 0 else 0.0
         batter_has    = (raw_batter_iso > 0 or batter_hr_rate > 0) and batter_bbe >= 5
 
+        # ISO is already regressed toward league avg in pitcher_statcast.py
         pitcher_iso    = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
         pitcher_hr     = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
         pitcher_barrel = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
+        pitcher_bbe    = safe_float(row.get(f"pitcher_bbe_vs_{pitch_type}", 0))
         pitcher_has    = (pitcher_iso > 0 or pitcher_hr > 0)
 
         if not batter_has and not pitcher_has:
@@ -339,7 +341,8 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if batter_has and batter_iso >= 0.200 and pitch_pct >= 15:
             descriptions.append(f"✅ ISO {raw_batter_iso:.3f} vs {pitch_type} ({int(batter_bbe)} BBE, {pitch_pct:.0f}% usage)")
         if pitcher_has and pitcher_iso >= 0.180 and pitch_pct >= 15:
-            descriptions.append(f"✅ Pitcher allows {pitcher_iso:.3f} ISO on {pitch_type}")
+            bbe_note = f", {int(pitcher_bbe)} BBE" if pitcher_bbe >= 10 else ""
+            descriptions.append(f"✅ Pitcher allows {pitcher_iso:.3f} ISO on {pitch_type}{bbe_note}")
 
         if batter_has and raw_batter_iso < 0.100 and pitch_pct >= 15:
             pitcher_iso_factor = max(0.0, 1.0 - (pitcher_iso / 0.150)) if pitcher_has else 1.0
