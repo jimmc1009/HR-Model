@@ -341,7 +341,7 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if batter_has and batter_iso >= 0.200 and pitch_pct >= 15:
             descriptions.append(f"✅ ISO {raw_batter_iso:.3f} vs {pitch_type} ({int(batter_bbe)} BBE, {pitch_pct:.0f}% usage)")
         if pitcher_has and pitcher_iso >= 0.180 and pitch_pct >= 15:
-            bbe_note = f", {int(pitcher_bbe)} BBE" if pitcher_bbe >= 10 else ""
+            bbe_note = f" ({int(pitcher_bbe)} BBE)" if pitcher_bbe > 0 else ""
             descriptions.append(f"✅ Pitcher allows {pitcher_iso:.3f} ISO on {pitch_type}{bbe_note}")
 
         if batter_has and raw_batter_iso < 0.100 and pitch_pct >= 15:
