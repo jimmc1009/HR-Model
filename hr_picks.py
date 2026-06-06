@@ -48,11 +48,11 @@ MIN_BATTING_AVG  = 0.200
 # Tightened buckets as of 2026-06-02. Rates will stabilize with more data.
 SCORE_TIER_HIT_RATES = {
     "13+":      0.200,  # 15 picks, 3 HR — 20.0%
-    "12-13":    0.176,  # 17 picks, 3 HR — 17.6%
-    "11-12":    0.188,  # 32 picks, 6 HR — 18.8%
-    "10-11":    0.291,  # 55 picks, 16 HR — 29.1% (best tier)
-    "9-10":     0.089,  # 56 picks, 5 HR — 8.9% (below baseline, caution)
-    "8.5-9":    0.278,  # 36 picks, 10 HR — 27.8%
+    "12-13":    0.200,  # 17 picks, 3 HR — 17.6%
+    "11-12":    0.200,  # 32 picks, 6 HR — 18.8%
+    "10-11":    0.200,  # 55 picks, 16 HR — 29.1% (best tier)
+    "9-10":     0.120,  # 56 picks, 5 HR — 8.9% (below baseline, caution)
+    "8.5-9":    0.120,  # 36 picks, 10 HR — 27.8%
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
