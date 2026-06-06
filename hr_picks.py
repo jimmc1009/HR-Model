@@ -31,8 +31,9 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.0   # capped — only 2 days resolved data
+PITCH_MATCHUP_WEIGHT = 1.3   # raised from 1.0 — separator at 14.6% and improving
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
+MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
 
 # ── Pick criteria ──────────────────────────────────────────────────────────
 MIN_SCORE_FLOOR  = 10.0
@@ -44,15 +45,13 @@ MAX_PER_GAME     = 2
 MIN_BATTING_AVG  = 0.200
 
 # ── Score tier hit rates (from HR_Analysis, updated as data accumulates) ───
-# Used for edge calculation. Update these as more resolved data comes in.
-# Tightened buckets as of 2026-06-02. Rates will stabilize with more data.
 SCORE_TIER_HIT_RATES = {
-    "13+":      0.200,  # 15 picks, 3 HR — 20.0%
-    "12-13":    0.200,  # 17 picks, 3 HR — 17.6%
-    "11-12":    0.200,  # 32 picks, 6 HR — 18.8%
-    "10-11":    0.200,  # 55 picks, 16 HR — 29.1% (best tier)
-    "9-10":     0.120,  # 56 picks, 5 HR — 8.9% (below baseline, caution)
-    "8.5-9":    0.120,  # 36 picks, 10 HR — 27.8%
+    "13+":      0.200,
+    "12-13":    0.200,
+    "11-12":    0.200,
+    "10-11":    0.200,
+    "9-10":     0.120,
+    "8.5-9":    0.120,
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
@@ -123,10 +122,9 @@ def regress(value: float, league_avg: float, sample: float, full_sample: float) 
 
 
 # ── Batter scoring ─────────────────────────────────────────────────────────
-# Only components with meaningful separation from feature analysis
 
 def score_barrel_pct_7d(v: float, bbe_7d: float) -> float:
-    """Barrel% 7d — +31.8% separation, strongest consistent predictor"""
+    """Barrel% 7d — +31.8% separation"""
     if bbe_7d < MIN_BBE_7D_PARTIAL:
         return 0.0
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
@@ -150,7 +148,7 @@ def score_barrel_pct_5d(v: float, bbe_5d: float) -> float:
 
 
 def score_barrel_pct_10d(v: float, bbe_10d: float) -> float:
-    """Barrel% 10d — +36.3% separation, strongest window"""
+    """Barrel% 10d — +36.3% separation"""
     if bbe_10d < MIN_BBE_7D_PARTIAL:
         return 0.0
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_10d, MIN_BBE_7D_FULL)
@@ -200,8 +198,58 @@ def score_iso(v: float, pa: float) -> float:
     return 0.0
 
 
+def score_momentum_delta(
+    barrel_7d: float, bbe_7d: float,
+    barrel_5d: float, bbe_5d: float,
+    season_barrel: float, pa: float,
+) -> tuple:
+    """
+    Momentum delta — rewards batters whose recent barrel% significantly
+    exceeds their season average. Surfaces hot hitters not yet in top 15.
+
+    Uses the best recent window (5d or 7d) vs season average.
+    Requires minimum sample on both sides to avoid noise.
+    Returns (score, description).
+    """
+    if pa < 50 or season_barrel <= 0:
+        return 0.0, ""
+
+    # Regress season barrel toward league avg for fair comparison
+    season_reg = regress(season_barrel, LEAGUE_AVG_SEASON_BARREL, pa, MIN_PA_FULL)
+
+    # Pick best recent window with enough BBE
+    recent_barrel = None
+    recent_label  = ""
+    if bbe_7d >= MIN_BBE_7D_PARTIAL:
+        b7 = regress(barrel_7d, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
+        recent_barrel = b7
+        recent_label  = "7d"
+    if bbe_5d >= MIN_BBE_7D_PARTIAL:
+        b5 = regress(barrel_5d, LEAGUE_AVG_BARREL_7D, bbe_5d, MIN_BBE_7D_FULL)
+        if recent_barrel is None or b5 > recent_barrel:
+            recent_barrel = b5
+            recent_label  = "5d"
+
+    if recent_barrel is None:
+        return 0.0, ""
+
+    delta = recent_barrel - season_reg
+
+    # Only reward meaningful surges, not noise
+    if delta >= 12:
+        return 1.5, f"🔥 Barrel% surging ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
+    if delta >= 8:
+        return 1.0, f"📈 Barrel% trending up ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
+    if delta >= 5:
+        return 0.5, f"↗️ Barrel% above average ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
+    # Penalize cold streaks slightly
+    if delta <= -8:
+        return -0.5, f"❄️ Barrel% cold ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
+
+    return 0.0, ""
+
+
 # ── Pitcher scoring ────────────────────────────────────────────────────────
-# Light weights — only +9% and +8.4% separation
 
 def score_pitcher_barrel_pct(v: float) -> float:
     """Pitcher Barrel% Allowed — +9.0% separation"""
@@ -239,8 +287,6 @@ def score_pitcher_quality_penalty(
 
 
 # ── Platoon penalty only ───────────────────────────────────────────────────
-# Data shows platoon advantage doesn't help (11.1% vs neutral 15.0%)
-# But disadvantage clearly hurts (8.5%)
 
 def compute_platoon_penalty(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
@@ -288,13 +334,11 @@ def compute_platoon_penalty(row: pd.Series) -> tuple:
 
 # ── Pitch matchup score ────────────────────────────────────────────────────
 
-# League average ISO by pitch type — used for regression to the mean
-LEAGUE_AVG_ISO_VS_PITCH = 0.150
-LEAGUE_AVG_ISO_VS_PITCH_FULL_SAMPLE = 25  # BBE needed for full trust
+LEAGUE_AVG_ISO_VS_PITCH             = 0.150
+LEAGUE_AVG_ISO_VS_PITCH_FULL_SAMPLE = 25
 
 
 def regress_pitch_iso(raw_iso: float, bbe_count: float, league_avg: float = LEAGUE_AVG_ISO_VS_PITCH, full_sample: float = LEAGUE_AVG_ISO_VS_PITCH_FULL_SAMPLE) -> float:
-    """Regress pitch-specific ISO toward league average based on sample size."""
     if bbe_count <= 0:
         return league_avg
     weight = min(bbe_count / full_sample, 1.0)
@@ -313,17 +357,14 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
 
-        # Get raw values
         raw_batter_iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
         batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
         batter_barrel  = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
 
-        # Regress batter ISO toward league average based on BBE count
-        batter_bbe    = safe_float(row.get(f"bbe_vs_{pitch_type}", 0))
-        batter_iso    = regress_pitch_iso(raw_batter_iso, batter_bbe) if raw_batter_iso > 0 else 0.0
-        batter_has    = (raw_batter_iso > 0 or batter_hr_rate > 0) and batter_bbe >= 5
+        batter_bbe = safe_float(row.get(f"bbe_vs_{pitch_type}", 0))
+        batter_iso = regress_pitch_iso(raw_batter_iso, batter_bbe) if raw_batter_iso > 0 else 0.0
+        batter_has = (raw_batter_iso > 0 or batter_hr_rate > 0) and batter_bbe >= 5
 
-        # ISO is already regressed toward league avg in pitcher_statcast.py
         pitcher_iso    = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
         pitcher_hr     = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
         pitcher_barrel = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
@@ -384,40 +425,28 @@ def compute_bvp_score(row: pd.Series) -> tuple:
 # ── Edge calculation ───────────────────────────────────────────────────────
 
 def get_score_tier_hit_rate(score: float) -> float:
-    if score >= 13:
-        return SCORE_TIER_HIT_RATES["13+"]
-    if score >= 12:
-        return SCORE_TIER_HIT_RATES["12-13"]
-    if score >= 11:
-        return SCORE_TIER_HIT_RATES["11-12"]
-    if score >= 10:
-        return SCORE_TIER_HIT_RATES["10-11"]
-    if score >= 9:
-        return SCORE_TIER_HIT_RATES["9-10"]
+    if score >= 13: return SCORE_TIER_HIT_RATES["13+"]
+    if score >= 12: return SCORE_TIER_HIT_RATES["12-13"]
+    if score >= 11: return SCORE_TIER_HIT_RATES["11-12"]
+    if score >= 10: return SCORE_TIER_HIT_RATES["10-11"]
+    if score >= 9:  return SCORE_TIER_HIT_RATES["9-10"]
     return SCORE_TIER_HIT_RATES["8.5-9"]
 
 
 def calc_edge(score: float, odds: float) -> str:
-    """
-    Edge = estimated hit rate (from score tier) - breakeven rate at given odds.
-    Positive = value bet. Negative = skip.
-    """
     if odds <= 0:
         return "—"
     hit_rate  = get_score_tier_hit_rate(score)
     breakeven = 100.0 / (odds + 100.0)
     edge      = hit_rate - breakeven
     edge_pct  = round(edge * 100, 1)
-    if edge_pct >= 3:
-        return f"✅ +{edge_pct}%"
-    if edge_pct >= 0:
-        return f"➡️ +{edge_pct}%"
+    if edge_pct >= 3:  return f"✅ +{edge_pct}%"
+    if edge_pct >= 0:  return f"➡️ +{edge_pct}%"
     return f"❌ {edge_pct}%"
 
 
 def american_odds_to_profit(odds: float) -> float:
-    if odds <= 0:
-        return 0.0
+    if odds <= 0: return 0.0
     return odds / 100.0
 
 
@@ -426,8 +455,7 @@ def assign_confidence(row: pd.Series) -> str:
     batter_pa   = safe_float(row.get("pa", 0))
     pitcher_bbe = safe_float(row.get("pitcher_bbe_allowed", 0))
 
-    points        = 0
-    batter_points = 0
+    points = 0; batter_points = 0
 
     if batter_bbe >= 60 and batter_pa >= 100:
         points += 2; batter_points = 2
@@ -563,7 +591,7 @@ def prepare_combined(
     else:
         print("No BvP data to merge.")
 
-    # ── Park merge (kept for display, not scoring) ─────────────────────────
+    # ── Park merge ─────────────────────────────────────────────────────────
     parks = parks.copy()
     parks.columns = [c.strip() for c in parks.columns]
     parks = parks.rename(columns={"team": "park_home_team"})
@@ -601,6 +629,8 @@ def prepare_combined(
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "batting_avg", "park_hr_factor",
+        "avg_ev_7d", "avg_ev_5d", "avg_ev_10d",
+        "avg_la_7d", "avg_la_season", "pull_rate",
     ]
     dynamic_cols = [c for c in combined.columns
                     if c.startswith("pitcher_iso_allowed_")
@@ -628,17 +658,28 @@ def prepare_combined(
     combined["bvp_score"] = bvp_results.apply(lambda x: x[0])
     combined["bvp_desc"]  = bvp_results.apply(lambda x: x[1])
 
+    # ── Momentum delta ─────────────────────────────────────────────────────
+    momentum_results = combined.apply(
+        lambda r: score_momentum_delta(
+            r["barrel_pct_7d"], r["bbe_7d"],
+            r["barrel_pct_5d"], r["bbe_5d"],
+            r["season_barrel_pct"], r["pa"],
+        ), axis=1
+    )
+    combined["momentum_score"] = momentum_results.apply(lambda x: x[0])
+    combined["momentum_desc"]  = momentum_results.apply(lambda x: x[1])
+
     combined["confidence"] = combined.apply(assign_confidence, axis=1)
 
     # ── Cap context scores ─────────────────────────────────────────────────
     combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.0)
     combined["bvp_capped"]           = combined["bvp_score"].clip(-0.5, 1.0)
+    combined["momentum_capped"]      = combined["momentum_score"].clip(-0.5, 1.5)
     combined["total_penalty"]        = (
         combined["platoon_penalty"] + combined["pitch_penalty"]
     ).clip(0, 3.0)
 
     # ── Final score ────────────────────────────────────────────────────────
-    # Components weighted by separator strength, noise removed
     combined["score"] = (
         # Barrel% windows — strongest predictors
         combined.apply(lambda r: score_barrel_pct_7d(r["barrel_pct_7d"], r["bbe_7d"]), axis=1) +
@@ -657,7 +698,8 @@ def prepare_combined(
         ), axis=1) +
         # Context — capped
         combined["pitch_matchup_capped"] * PITCH_MATCHUP_WEIGHT +
-        combined["bvp_capped"]           * BVP_WEIGHT -
+        combined["bvp_capped"]           * BVP_WEIGHT +
+        combined["momentum_capped"]      * MOMENTUM_WEIGHT -
         combined["total_penalty"]
     ).round(3)
 
@@ -666,6 +708,10 @@ def prepare_combined(
 
 def build_reason(row) -> str:
     reasons = []
+
+    momentum_desc = str(row.get("momentum_desc", ""))
+    if momentum_desc:
+        reasons.append(momentum_desc)
 
     barrel_7d = safe_float(row.get("barrel_pct_7d"))
     if barrel_7d >= 15:
@@ -726,7 +772,6 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     combined = combined.copy()
     combined["reason"] = combined.apply(build_reason, axis=1)
 
-    # ── Odds lookup ────────────────────────────────────────────────────────
     odds_lookup = {}
     if odds_df is not None and not odds_df.empty and "player_name_norm" in odds_df.columns and "consensus_odds" in odds_df.columns:
         for _, row in odds_df.iterrows():
@@ -743,7 +788,6 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
         lambda n: odds_lookup.get(normalize_name(str(n)), None)
     )
 
-    # ── Filter: score floor + hard odds cap ────────────────────────────────
     filtered = combined[combined["score"] >= MIN_SCORE_FLOOR].copy()
 
     if not filtered.empty and odds_lookup:
@@ -759,7 +803,6 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
 
     filtered = filtered.sort_values("score", ascending=False).reset_index(drop=True)
 
-    # ── Diversity cap + TOP_N ──────────────────────────────────────────────
     selected    = []
     team_counts = {}
     game_counts = {}
@@ -786,16 +829,15 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     picks = pd.DataFrame(selected).reset_index(drop=True)
     picks["rank"] = range(1, len(picks) + 1)
 
-    # ── Add edge column ────────────────────────────────────────────────────
     picks["edge"] = picks.apply(
         lambda r: calc_edge(safe_float(r["score"]), safe_float(r.get("consensus_odds", 0))),
         axis=1
     )
 
     print(f"Qualifying picks: {len(picks)} (score ≥{MIN_SCORE_FLOOR}, odds ≤+{MAX_ODDS})")
-    pos_edge = picks["edge"].str.startswith("✅").sum()
+    pos_edge     = picks["edge"].str.startswith("✅").sum()
     neutral_edge = picks["edge"].str.startswith("➡️").sum()
-    neg_edge = picks["edge"].str.startswith("❌").sum()
+    neg_edge     = picks["edge"].str.startswith("❌").sum()
     print(f"Edge breakdown: {pos_edge} positive ✅ | {neutral_edge} neutral ➡️ | {neg_edge} negative ❌")
 
     output_cols = {
@@ -842,6 +884,7 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
         "top_pitch_3":                "Top Pitch 3",
         "top_pitch_3_pct":            "Top Pitch 3 %",
         "pitch_matchup_desc":         "Pitch Matchup",
+        "momentum_desc":              "Momentum",
         "park_hr_factor":             "Park HR Factor",
     }
 
@@ -986,6 +1029,7 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> 
                 "park_hr_factor":       str(row.get("Park HR Factor", "")),
                 "platoon_matchup":      str(row.get("Platoon Matchup", "")),
                 "pitch_matchup":        str(row.get("Pitch Matchup", "")),
+                "momentum":             str(row.get("Momentum", "")),
                 "bvp_pa":               str(row.get("BvP PA", "")),
                 "bvp_hr":               str(row.get("BvP HR", "")),
                 "bvp_iso":              str(row.get("BvP ISO", "")),
@@ -1086,9 +1130,9 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             score_rows.append({"label": label, "total": "", "hits": "", "rate": "", "avg": "", "_header": True})
             return
         if sub.empty: return
-        total    = len(sub)
-        hits     = int(sub["hit_hr_bool"].sum())
-        avg_scr  = round(sub["hr_score"].mean(), 2) if not sub["hr_score"].isna().all() else 0.0
+        total   = len(sub)
+        hits    = int(sub["hit_hr_bool"].sum())
+        avg_scr = round(sub["hr_score"].mean(), 2) if not sub["hr_score"].isna().all() else 0.0
         score_rows.append({"label": label, "total": total, "hits": hits,
                            "rate": round(hits/total*100, 1), "avg": avg_scr, "_bold": bold})
 
@@ -1097,10 +1141,10 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
             roi_rows.append({"label": label, "bets": "", "hits": "", "rate": "", "profit": "", "roi": "", "_header": True})
             return
         if sub.empty: return
-        total   = len(sub)
-        hits    = int(sub["hit_hr_bool"].sum())
-        profit  = round(sub["unit_result"].sum(), 2)
-        roi     = round(profit/total*100, 1) if total > 0 else 0.0
+        total  = len(sub)
+        hits   = int(sub["hit_hr_bool"].sum())
+        profit = round(sub["unit_result"].sum(), 2)
+        roi    = round(profit/total*100, 1) if total > 0 else 0.0
         roi_rows.append({"label": label, "bets": total, "hits": hits,
                          "rate": round(hits/total*100, 1) if total > 0 else 0.0,
                          "profit": f"+{profit}" if profit >= 0 else str(profit),
@@ -1144,12 +1188,12 @@ def update_scorecard(gc: gspread.Client, sheet_id: str) -> None:
     add_score("📈  Score Tier Analysis", scored, bold=True)
     add_score("── By Score Tier ──", pd.DataFrame(), header=True)
     for label, sub in [
-        ("   13+",     scored[scored["hr_score"] >= 13]),
-        ("   12-13",   scored[(scored["hr_score"] >= 12) & (scored["hr_score"] < 13)]),
-        ("   11-12",   scored[(scored["hr_score"] >= 11) & (scored["hr_score"] < 12)]),
-        ("   10-11",   scored[(scored["hr_score"] >= 10) & (scored["hr_score"] < 11)]),
-        ("   9-10",    scored[(scored["hr_score"] >= 9)  & (scored["hr_score"] < 10)]),
-        ("   8.5-9",   scored[(scored["hr_score"] >= 8.5) & (scored["hr_score"] < 9)]),
+        ("   13+",   scored[scored["hr_score"] >= 13]),
+        ("   12-13", scored[(scored["hr_score"] >= 12) & (scored["hr_score"] < 13)]),
+        ("   11-12", scored[(scored["hr_score"] >= 11) & (scored["hr_score"] < 12)]),
+        ("   10-11", scored[(scored["hr_score"] >= 10) & (scored["hr_score"] < 11)]),
+        ("   9-10",  scored[(scored["hr_score"] >= 9)  & (scored["hr_score"] < 10)]),
+        ("   8.5-9", scored[(scored["hr_score"] >= 8.5) & (scored["hr_score"] < 9)]),
     ]:
         if not sub.empty: add_score(label, sub)
 
@@ -1257,7 +1301,6 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
     total_rows = row_count + 2
     reqs       = []
 
-    # Clear any stale merges from previous runs first
     reqs.append({"unmergeCells": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows + 5,
                   "startColumnIndex": 0, "endColumnIndex": 55},
@@ -1413,34 +1456,28 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "pitcher_hand":           str(row.get("pitcher_hand", "")),
             "hr_score":               str(row.get("score", "")),
             "consensus_odds":         str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
-            # Batter barrel / contact metrics
             "barrel_pct_7d":          str(row.get("barrel_pct_7d", "")),
             "season_barrel_pct":      str(row.get("season_barrel_pct", "")),
             "barrel_pct_5d":          str(row.get("barrel_pct_5d", "")),
             "barrel_pct_10d":         str(row.get("barrel_pct_10d", "")),
-            # EV windows
             "avg_ev_7d":              str(row.get("avg_ev_7d", "")),
             "avg_ev_5d":              str(row.get("avg_ev_5d", "")),
             "avg_ev_10d":             str(row.get("avg_ev_10d", "")),
-            # Launch angle
             "avg_la_7d":              str(row.get("avg_la_7d", "")),
             "avg_la_season":          str(row.get("avg_la_season", "")),
-            # Power metrics
             "iso":                    str(row.get("iso", "")),
             "hr_per_pa":              str(row.get("hr_per_pa", "")),
             "hr_per_fb":              str(row.get("hr_per_fb", "")),
             "pull_rate":              str(row.get("pull_rate", "")),
-            # Matchup descriptions
             "platoon_matchup":        str(row.get("platoon_desc", "")),
             "pitch_matchup":          str(row.get("pitch_matchup_desc", "")),
-            # Pitcher metrics
             "pitcher_barrel_pct":     str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":      str(row.get("pitcher_hr_per_fb", "")),
             "pitcher_barrel_vs_lhh":  str(row.get("pitcher_vs_lhh_barrel_pct", "")),
             "pitcher_barrel_vs_rhh":  str(row.get("pitcher_vs_rhh_barrel_pct", "")),
-            # Park factor
             "park_hr_factor":         str(row.get("park_hr_factor", "")),
-            # Misc
+            "momentum_score":         str(row.get("momentum_score", "")),
+            "momentum_desc":          str(row.get("momentum_desc", "")),
             "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
             "hit_hr":                 "Pending",
         })
@@ -1484,7 +1521,6 @@ def main() -> None:
     print(f"Active Roster: {len(active_roster)} rows")
     print(f"HR Odds: {len(odds_df)} rows")
 
-    # Weather removed — -25% separator, actively hurts prediction
     combined = prepare_combined(batters, pitchers, parks, bvp, lineups, active_roster)
 
     if combined.empty:
