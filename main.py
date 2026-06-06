@@ -410,6 +410,10 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
     return bbe
 
 
+# DROP-IN REPLACEMENT for build_handedness_start_rates in main.py
+# Fix: uses starting pitcher handedness (first pitcher per game) instead of
+# any pitcher handedness, which was inflating team game counts incorrectly.
+
 def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "p_throws" not in df.columns:
         return pd.DataFrame()
@@ -425,37 +429,124 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame()
 
-    game_df = df.drop_duplicates(
-        subset=[c for c in ["game_pk", "batter"] if c in df.columns]
-    ).copy()
+    # ── Identify starting pitcher handedness per game ─────────────────────
+    # The starting pitcher is the one who threw in the lowest at_bat_number
+    # in inning 1. This avoids counting relief pitcher handedness.
+    if "at_bat_number" in df.columns and "inning" in df.columns:
+        inning1 = df[pd.to_numeric(df["inning"], errors="coerce") == 1].copy()
+        inning1["at_bat_number"] = pd.to_numeric(inning1["at_bat_number"], errors="coerce")
 
-    if "p_throws" not in game_df.columns:
-        return pd.DataFrame()
+        # Get the minimum at_bat_number per game per pitching team
+        # pitching team = opposite of batting team
+        if "inning_topbot" in inning1.columns:
+            inning1["pitching_team"] = inning1.apply(
+                lambda r: str(r["home_team"]).strip()
+                if str(r["inning_topbot"]).lower().startswith("top")
+                else str(r["away_team"]).strip(), axis=1,
+            )
+        else:
+            inning1["pitching_team"] = ""
 
-    team_vs_lhp = (
-        game_df[game_df["p_throws"] == "L"]
-        .groupby("batting_team")["game_pk"]
-        .nunique()
-        .reset_index(name="team_games_vs_lhp")
-    )
-    team_vs_rhp = (
-        game_df[game_df["p_throws"] == "R"]
-        .groupby("batting_team")["game_pk"]
-        .nunique()
-        .reset_index(name="team_games_vs_rhp")
-    )
-    batter_vs_lhp = (
-        game_df[game_df["p_throws"] == "L"]
-        .groupby(["batter", "batting_team"])["game_pk"]
-        .nunique()
-        .reset_index(name="batter_games_vs_lhp")
-    )
-    batter_vs_rhp = (
-        game_df[game_df["p_throws"] == "R"]
-        .groupby(["batter", "batting_team"])["game_pk"]
-        .nunique()
-        .reset_index(name="batter_games_vs_rhp")
-    )
+        starter_hand = (
+            inning1.sort_values("at_bat_number")
+            .drop_duplicates(subset=["game_pk", "pitching_team"], keep="first")
+            [["game_pk", "pitching_team", "p_throws", "home_team", "away_team"]]
+        )
+
+        # Map game_pk → starter handedness for home and away separately
+        home_starters = starter_hand[
+            starter_hand["pitching_team"] == starter_hand["home_team"]
+        ][["game_pk", "p_throws"]].rename(columns={"p_throws": "home_starter_hand"})
+
+        away_starters = starter_hand[
+            starter_hand["pitching_team"] == starter_hand["away_team"]
+        ][["game_pk", "p_throws"]].rename(columns={"p_throws": "away_starter_hand"})
+
+        game_starters = home_starters.merge(away_starters, on="game_pk", how="outer")
+
+    else:
+        # Fallback — use first pitch per game as before if columns missing
+        game_starters = None
+
+    if game_starters is not None and not game_starters.empty:
+        # For each batter appearance, determine which starter hand they faced
+        # Batters face the opposing starter: home batters face away starter, vice versa
+        batter_games = df.drop_duplicates(
+            subset=[c for c in ["game_pk", "batter"] if c in df.columns]
+        )[["game_pk", "batter", "batting_team", "home_team", "away_team"]].copy()
+
+        batter_games = batter_games.merge(game_starters, on="game_pk", how="left")
+
+        # Home batters face away starter, away batters face home starter
+        def get_starter_hand(row):
+            if str(row.get("batting_team", "")).strip() == str(row.get("home_team", "")).strip():
+                return row.get("away_starter_hand", "")
+            else:
+                return row.get("home_starter_hand", "")
+
+        batter_games["opp_starter_hand"] = batter_games.apply(get_starter_hand, axis=1)
+        batter_games = batter_games[batter_games["opp_starter_hand"].isin(["L", "R"])].copy()
+
+        # Team games vs each starter hand
+        team_vs_lhp = (
+            batter_games[batter_games["opp_starter_hand"] == "L"]
+            .drop_duplicates(subset=["game_pk", "batting_team"])
+            .groupby("batting_team")["game_pk"]
+            .nunique()
+            .reset_index(name="team_games_vs_lhp")
+        )
+        team_vs_rhp = (
+            batter_games[batter_games["opp_starter_hand"] == "R"]
+            .drop_duplicates(subset=["game_pk", "batting_team"])
+            .groupby("batting_team")["game_pk"]
+            .nunique()
+            .reset_index(name="team_games_vs_rhp")
+        )
+
+        # Batter games vs each starter hand
+        batter_vs_lhp = (
+            batter_games[batter_games["opp_starter_hand"] == "L"]
+            .groupby(["batter", "batting_team"])["game_pk"]
+            .nunique()
+            .reset_index(name="batter_games_vs_lhp")
+        )
+        batter_vs_rhp = (
+            batter_games[batter_games["opp_starter_hand"] == "R"]
+            .groupby(["batter", "batting_team"])["game_pk"]
+            .nunique()
+            .reset_index(name="batter_games_vs_rhp")
+        )
+
+    else:
+        # Fallback to original logic
+        game_df = df.drop_duplicates(
+            subset=[c for c in ["game_pk", "batter"] if c in df.columns]
+        ).copy()
+
+        team_vs_lhp = (
+            game_df[game_df["p_throws"] == "L"]
+            .groupby("batting_team")["game_pk"]
+            .nunique()
+            .reset_index(name="team_games_vs_lhp")
+        )
+        team_vs_rhp = (
+            game_df[game_df["p_throws"] == "R"]
+            .groupby("batting_team")["game_pk"]
+            .nunique()
+            .reset_index(name="team_games_vs_rhp")
+        )
+        batter_vs_lhp = (
+            game_df[game_df["p_throws"] == "L"]
+            .groupby(["batter", "batting_team"])["game_pk"]
+            .nunique()
+            .reset_index(name="batter_games_vs_lhp")
+        )
+        batter_vs_rhp = (
+            game_df[game_df["p_throws"] == "R"]
+            .groupby(["batter", "batting_team"])["game_pk"]
+            .nunique()
+            .reset_index(name="batter_games_vs_rhp")
+        )
 
     starts = batter_vs_lhp.merge(batter_vs_rhp, on=["batter", "batting_team"], how="outer").fillna(0)
     starts = starts.merge(team_vs_lhp, on="batting_team", how="left")
@@ -932,9 +1023,16 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
                 ).reset_index()
                 barrel_pivot.columns = ["batter"] + [f"barrel_pct_vs_{c}" for c in barrel_pivot.columns if c != "batter"]
 
+                # Add BBE count per pitch type for regression in hr_picks.py
+                bbe_pivot = pitch_grp.pivot_table(
+                    index="batter", columns="pitch_type", values="bbe_count", fill_value=np.nan
+                ).reset_index()
+                bbe_pivot.columns = ["batter"] + [f"bbe_vs_{c}" for c in bbe_pivot.columns if c != "batter"]
+
                 combined = combined.merge(iso_pivot,    on="batter", how="left")
                 combined = combined.merge(hr_pivot,     on="batter", how="left")
                 combined = combined.merge(barrel_pivot, on="batter", how="left")
+                combined = combined.merge(bbe_pivot,    on="batter", how="left")
 
     if "pitch_group" in bbe.columns:
         for group in ["fastball", "breaking", "offspeed", "knuckleball"]:

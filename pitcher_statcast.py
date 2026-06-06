@@ -62,6 +62,10 @@ HIT_EVENTS = {"single", "double", "triple", "home_run"}
 
 MIN_BBE_PER_PITCH = 10
 
+# League average ISO allowed per pitch type — used for regression
+LEAGUE_AVG_PITCHER_ISO_ALLOWED = 0.150
+PITCHER_ISO_FULL_SAMPLE = 30  # BBE needed for full trust on pitcher side
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -153,7 +157,6 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                         teams.add(mlb_abbr)
         return teams
 
-    # Today only — never fall back to tomorrow
     date_str = date.today().strftime("%Y-%m-%d")
     try:
         print(f"Fetching probable pitchers from MLB API for today...")
@@ -686,10 +689,18 @@ def build_pitch_type_splits_pitcher(bbe: pd.DataFrame, probable_ids: Set[int]) -
     for pitcher_id, pdata in grp.groupby("pitcher"):
         record = {"pitcher": pitcher_id}
         for _, row in pdata.iterrows():
-            pt = row["pitch_type"]
-            record[f"pitcher_iso_allowed_{pt}"]        = row["pitcher_iso_allowed"]
+            pt      = row["pitch_type"]
+            bbe_ct  = row["bbe_count"]
+            raw_iso = row["pitcher_iso_allowed"]
+
+            # Regress ISO allowed toward league average based on BBE count
+            weight     = min(bbe_ct / PITCHER_ISO_FULL_SAMPLE, 1.0)
+            reg_iso    = round((raw_iso * weight) + (LEAGUE_AVG_PITCHER_ISO_ALLOWED * (1 - weight)), 3)
+
+            record[f"pitcher_iso_allowed_{pt}"]        = reg_iso
             record[f"pitcher_hr_rate_allowed_{pt}"]    = row["pitcher_hr_rate_allowed"]
             record[f"pitcher_barrel_pct_allowed_{pt}"] = row["pitcher_barrel_pct_allowed"]
+            record[f"pitcher_bbe_vs_{pt}"]             = int(bbe_ct)
         result_rows.append(record)
 
     return pd.DataFrame(result_rows)

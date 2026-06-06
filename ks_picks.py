@@ -452,7 +452,8 @@ def calc_prop_signal(row: pd.Series) -> str:
     edge = proj - line
 
     # UNDER signal — low scores hit under at 59.3%
-    if score > 0 and score < UNDER_SCORE:
+    # No score > 0 gate — negative scores are even stronger under signals
+    if score < UNDER_SCORE:
         return f"UNDER {line} 🔻"
 
     if score >= OVER_SCORE and edge >= OVER_EDGE:

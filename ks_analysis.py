@@ -125,15 +125,17 @@ def build_analysis(df: pd.DataFrame) -> dict:
             resolved[col] = 0.0
 
     # ── Score tiers ───────────────────────────────────────────────────────
-    score_tiers = []
-    for label, lo, hi in [
+    score_tier_defs = [
         ("12+",    12,  999),
         ("10-12",  10,   12),
         ("8-10",    8,   10),
         ("6-8",     6,    8),
         ("4-6",     4,    6),
         ("Under 4", 0,    4),
-    ]:
+    ]
+
+    score_tiers = []
+    for label, lo, hi in score_tier_defs:
         sub = resolved[(resolved["ks_score"] >= lo) & (resolved["ks_score"] < hi)]
         if sub.empty:
             continue
@@ -150,13 +152,43 @@ def build_analysis(df: pd.DataFrame) -> dict:
             "avg_proj": avg_proj,
         })
 
+    # ── Score tier × Line cross-tab ───────────────────────────────────────
+    line_vals = [4.5, 5.5, 6.5, 7.5]
+    with_line = resolved[resolved["k_line"] > 0].copy()
+
+    score_x_line_rows = []
+    for tier_label, lo, hi in score_tier_defs:
+        tier_sub = with_line[(with_line["ks_score"] >= lo) & (with_line["ks_score"] < hi)]
+        if tier_sub.empty:
+            continue
+        for line_val in line_vals:
+            sub = tier_sub[tier_sub["k_line"] == line_val]
+            if sub.empty or len(sub) < 3:
+                continue
+            n       = len(sub)
+            over_h  = int(sub["over_bool"].sum())
+            under_h = int(sub["under_bool"].sum())
+            over_r  = round(over_h / n * 100, 1)
+            under_r = round(under_h / n * 100, 1)
+            score_x_line_rows.append({
+                "tier":       tier_label,  # repeated on every row
+                "line":       f"O/U {line_val}",
+                "total":      n,
+                "over_hits":  over_h,
+                "over_rate":  over_r,
+                "under_hits": under_h,
+                "under_rate": under_r,
+            })
+
     # ── By signal ─────────────────────────────────────────────────────────
     signal_rows = []
-    for sig_label in ["OVER", "LEAN OVER", "No Signal"]:
+    for sig_label in ["OVER", "LEAN OVER", "UNDER", "No Signal"]:
         if sig_label == "No Signal":
-            sub = resolved[~resolved["prop_signal"].astype(str).str.contains("OVER", na=False)]
+            sub = resolved[~resolved["prop_signal"].astype(str).str.contains("OVER|UNDER", na=False)]
         elif sig_label == "OVER":
             sub = resolved[resolved["prop_signal"].astype(str).str.contains("✅", na=False)]
+        elif sig_label == "UNDER":
+            sub = resolved[resolved["prop_signal"].astype(str).str.contains("UNDER", na=False)]
         else:
             sub = resolved[
                 resolved["prop_signal"].astype(str).str.contains("LEAN", na=False) &
@@ -166,10 +198,13 @@ def build_analysis(df: pd.DataFrame) -> dict:
             continue
         n      = len(sub)
         over_h = int(sub["over_bool"].sum())
+        under_h = int(sub["under_bool"].sum())
         over_r = round(over_h / n * 100, 1)
+        under_r = round(under_h / n * 100, 1)
         signal_rows.append({
             "label": sig_label, "total": n,
             "over_hits": over_h, "over_rate": over_r,
+            "under_hits": under_h, "under_rate": under_r,
         })
 
     # ── By line ───────────────────────────────────────────────────────────
@@ -178,10 +213,10 @@ def build_analysis(df: pd.DataFrame) -> dict:
         sub = resolved[resolved["k_line"] == line_val]
         if sub.empty:
             continue
-        n      = len(sub)
-        over_h = int(sub["over_bool"].sum())
+        n       = len(sub)
+        over_h  = int(sub["over_bool"].sum())
         under_h = int(sub["under_bool"].sum())
-        over_r = round(over_h / n * 100, 1)
+        over_r  = round(over_h / n * 100, 1)
         under_r = round(under_h / n * 100, 1)
         line_rows.append({
             "label": f"Line {line_val}", "total": n,
@@ -190,11 +225,9 @@ def build_analysis(df: pd.DataFrame) -> dict:
         })
 
     # ── Projection accuracy ───────────────────────────────────────────────
-    with_line = resolved[resolved["k_line"] > 0].copy()
     proj_rows = []
     if not with_line.empty:
         with_line["proj_edge"] = with_line["projected"] - with_line["k_line"]
-        with_line["actual_edge"] = with_line["actual_ks"] - with_line["k_line"]
         for label, lo, hi in [
             ("Proj +1.5+",    1.5,  99),
             ("Proj +0.5-1.5", 0.5,  1.5),
@@ -219,18 +252,18 @@ def build_analysis(df: pd.DataFrame) -> dict:
     over_no  = resolved[~resolved["over_bool"]]
 
     feature_labels = {
-        "k_pct_season":     "K% (Season)",
-        "swstr_pct":        "SwStr%",
+        "bb_pct_season":    "BB%",
+        "avg_ip_per_start": "Avg IP/Start",
+        "whip_proxy":       "WHIP",
         "chase_rate":       "Chase Rate%",
         "k_per_9":          "K/9",
-        "fastball_velo":    "Fastball Velo",
-        "avg_ip_per_start": "Avg IP/Start",
-        "k_per_start_21d":  "K/Start (21d)",
-        "whip_proxy":       "WHIP",
-        "bb_pct_season":    "BB%",
+        "k_pct_season":     "K% (Season)",
         "opp_team_k_pct":   "Opp Team K%",
-        "opp_chase_rate":   "Opp Chase Rate%",
         "opp_whiff_rate":   "Opp Whiff Rate%",
+        "swstr_pct":        "SwStr%",
+        "fastball_velo":    "Fastball Velo",
+        "k_per_start_21d":  "K/Start (21d)",
+        "opp_chase_rate":   "Opp Chase Rate%",
     }
 
     feature_separators = []
@@ -275,6 +308,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "over_rate":          over_rate,
         "under_rate":         under_rate,
         "score_tiers":        score_tiers,
+        "score_x_line":       score_x_line_rows,
         "signal_rows":        signal_rows,
         "line_rows":          line_rows,
         "proj_rows":          proj_rows,
@@ -332,12 +366,22 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                    r["under_hits"], f"{r['under_rate']}%", r["avg_proj"], ""]
     )
 
+    # ── Score Tier × Line Cross-Tab ───────────────────────────────────────
+    add_section(
+        "📊  SCORE TIER × LINE",
+        ["Score Tier", "Line", "Total", "Over Hits", "Over Rate %", "Under Hits", "Under Rate %", ""],
+        analysis["score_x_line"],
+        lambda r: [r["tier"], r["line"], r["total"], r["over_hits"], f"{r['over_rate']}%",
+                   r["under_hits"], f"{r['under_rate']}%", ""]
+    )
+
     # ── By Signal ─────────────────────────────────────────────────────────
     add_section(
         "📡  BY SIGNAL",
-        ["Signal", "Total", "Over Hits", "Over Rate %", "", "", "", ""],
+        ["Signal", "Total", "Over Hits", "Over Rate %", "Under Hits", "Under Rate %", "", ""],
         analysis["signal_rows"],
-        lambda r: [r["label"], r["total"], r["over_hits"], f"{r['over_rate']}%", "", "", "", ""]
+        lambda r: [r["label"], r["total"], r["over_hits"], f"{r['over_rate']}%",
+                   r["under_hits"], f"{r['under_rate']}%", "", ""]
     )
 
     # ── By Line ───────────────────────────────────────────────────────────
@@ -396,6 +440,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     total_cols = 8
     reqs       = []
 
+    # Base style — all cells
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -403,11 +448,19 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "backgroundColor": COLOR_BG,
             "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
             "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
+            "horizontalAlignment": "CENTER",
         }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy,horizontalAlignment)",
     }})
 
-    # Title
+    # Label column (col 0) — left aligned
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "cell": {"userEnteredFormat": {"horizontalAlignment": "LEFT"}},
+        "fields": "userEnteredFormat(horizontalAlignment)",
+    }})
+
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -420,7 +473,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
     }})
 
-    # Summary row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": 2,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -435,6 +487,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
 
     section_colors = {
         "🎯  BY SCORE TIER":        (COLOR_PURPLE, COLOR_PURPLE_DIM),
+        "📊  SCORE TIER × LINE":    (COLOR_BLUE,   COLOR_BLUE_DIM),
         "📡  BY SIGNAL":            (COLOR_GREEN,  COLOR_GREEN_DIM),
         "📏  BY LINE":              (COLOR_GOLD,   COLOR_GOLD_DIM),
         "🎯  PROJECTION ACCURACY":  (COLOR_BLUE,   COLOR_BLUE_DIM),
@@ -467,36 +520,61 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
         }})
 
-    # Color over rate cells
+    # Color over rate cells (col 4) and under rate cells (col 6)
     for row_idx, row in enumerate(all_values):
+        # Over rate — col index 3 (0-based)
         if len(row) >= 4 and str(row[3]).endswith("%"):
             try:
                 rate_val = float(str(row[3]).replace("%", ""))
                 if rate_val >= 60:
-                    rate_bg = COLOR_GREEN_DIM
-                    rate_fg = COLOR_GREEN
+                    rate_bg, rate_fg = COLOR_GREEN_DIM, COLOR_GREEN
                 elif rate_val >= 50:
-                    rate_bg = COLOR_TEAL_DIM
-                    rate_fg = COLOR_TEAL
+                    rate_bg, rate_fg = COLOR_TEAL_DIM, COLOR_TEAL
                 elif rate_val <= 35:
-                    rate_bg = COLOR_RED_DIM
-                    rate_fg = COLOR_RED
+                    rate_bg, rate_fg = COLOR_RED_DIM, COLOR_RED
                 else:
-                    continue
-                reqs.append({"repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
-                              "startColumnIndex": 3, "endColumnIndex": 4},
-                    "cell": {"userEnteredFormat": {
-                        "backgroundColor": rate_bg,
-                        "textFormat": {"foregroundColor": rate_fg, "bold": True},
-                        "horizontalAlignment": "CENTER",
-                    }},
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-                }})
+                    rate_bg = rate_fg = None
+                if rate_bg:
+                    reqs.append({"repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                                  "startColumnIndex": 3, "endColumnIndex": 4},
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColor": rate_bg,
+                            "textFormat": {"foregroundColor": rate_fg, "bold": True},
+                            "horizontalAlignment": "CENTER",
+                        }},
+                        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                    }})
             except Exception:
                 pass
 
-    # Color feature signal column
+        # Under rate — col index 5 (0-based), only for rows that have it
+        if len(row) >= 6 and str(row[5]).endswith("%"):
+            try:
+                rate_val = float(str(row[5]).replace("%", ""))
+                if rate_val >= 60:
+                    rate_bg, rate_fg = COLOR_GREEN_DIM, COLOR_GREEN
+                elif rate_val >= 50:
+                    rate_bg, rate_fg = COLOR_TEAL_DIM, COLOR_TEAL
+                elif rate_val <= 35:
+                    rate_bg, rate_fg = COLOR_RED_DIM, COLOR_RED
+                else:
+                    rate_bg = rate_fg = None
+                if rate_bg:
+                    reqs.append({"repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                                  "startColumnIndex": 5, "endColumnIndex": 6},
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColor": rate_bg,
+                            "textFormat": {"foregroundColor": rate_fg, "bold": True},
+                            "horizontalAlignment": "CENTER",
+                        }},
+                        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                    }})
+            except Exception:
+                pass
+
+    # Feature signal column
     feature_start = section_starts.get("features", 0) + 2
     for i, r in enumerate(analysis["feature_separators"]):
         row_idx = feature_start + i
@@ -525,7 +603,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     for row_idx, row in enumerate(all_values):
         if row_idx < 3:
             continue
-        is_section    = any(str(row[0]).startswith(e) for e in ["🎯", "📡", "📏", "📈", "🔬"])
+        is_section    = any(str(row[0]).startswith(e) for e in ["🎯", "📡", "📏", "📈", "🔬", "📊"])
         is_header_row = row_idx in [s + 1 for s in section_starts.values()]
         is_empty      = not any(str(v).strip() for v in row)
         if not is_section and not is_header_row and not is_empty:
@@ -537,7 +615,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                 "fields": "userEnteredFormat(backgroundColor)",
             }})
 
-    col_widths = [240, 110, 90, 110, 90, 110, 100, 80]
+    col_widths = [200, 100, 80, 110, 90, 110, 100, 80]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
