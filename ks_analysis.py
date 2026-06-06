@@ -171,7 +171,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
             over_r  = round(over_h / n * 100, 1)
             under_r = round(under_h / n * 100, 1)
             score_x_line_rows.append({
-                "tier":       tier_label,
+                "tier":       tier_label,  # repeated on every row
                 "line":       f"O/U {line_val}",
                 "total":      n,
                 "over_hits":  over_h,
@@ -440,6 +440,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     total_cols = 8
     reqs       = []
 
+    # Base style — all cells
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -447,8 +448,17 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "backgroundColor": COLOR_BG,
             "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
             "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
+            "horizontalAlignment": "CENTER",
         }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy,horizontalAlignment)",
+    }})
+
+    # Label column (col 0) — left aligned
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "cell": {"userEnteredFormat": {"horizontalAlignment": "LEFT"}},
+        "fields": "userEnteredFormat(horizontalAlignment)",
     }})
 
     reqs.append({"repeatCell": {
