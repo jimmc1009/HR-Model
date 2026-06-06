@@ -1405,28 +1405,44 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
     new_rows = []
     for _, row in sorted_df.iterrows():
         new_rows.append({
-            "date":              today_str,
-            "rank":              str(row.get("all_scores_rank", "")),
-            "player_name":       str(row.get("player_name", "")),
-            "team":              str(row.get("batter_team", "")),
-            "pitcher_name":      str(row.get("opp_pitcher_name", "")),
-            "pitcher_hand":      str(row.get("pitcher_hand", "")),
-            "hr_score":          str(row.get("score", "")),
-            "consensus_odds":    str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
-            "barrel_pct_7d":     str(row.get("barrel_pct_7d", "")),
-            "barrel_pct_5d":     str(row.get("barrel_pct_5d", "")),
-            "barrel_pct_10d":    str(row.get("barrel_pct_10d", "")),
-            "season_barrel_pct": str(row.get("season_barrel_pct", "")),
-            "hr_per_pa":         str(row.get("hr_per_pa", "")),
-            "hr_per_fb":         str(row.get("hr_per_fb", "")),
-            "iso":               str(row.get("iso", "")),
-            "pitcher_barrel_pct":str(row.get("pitcher_barrel_pct", "")),
-            "pitcher_hr_per_fb": str(row.get("pitcher_hr_per_fb", "")),
-            "pitch_matchup":     str(row.get("pitch_matchup_desc", "")),
-            "pitch_matchup_score":str(row.get("pitch_matchup_score", "")),
-            "platoon_matchup":   str(row.get("platoon_desc", "")),
-            "park_hr_factor":    str(row.get("park_hr_factor", "")),
-            "hit_hr":            "Pending",
+            "date":                   today_str,
+            "rank":                   str(row.get("all_scores_rank", "")),
+            "player_name":            str(row.get("player_name", "")),
+            "team":                   str(row.get("batter_team", "")),
+            "pitcher_name":           str(row.get("opp_pitcher_name", "")),
+            "pitcher_hand":           str(row.get("pitcher_hand", "")),
+            "hr_score":               str(row.get("score", "")),
+            "consensus_odds":         str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
+            # Batter barrel / contact metrics
+            "barrel_pct_7d":          str(row.get("barrel_pct_7d", "")),
+            "season_barrel_pct":      str(row.get("season_barrel_pct", "")),
+            "barrel_pct_5d":          str(row.get("barrel_pct_5d", "")),
+            "barrel_pct_10d":         str(row.get("barrel_pct_10d", "")),
+            # EV windows
+            "avg_ev_7d":              str(row.get("avg_ev_7d", "")),
+            "avg_ev_5d":              str(row.get("avg_ev_5d", "")),
+            "avg_ev_10d":             str(row.get("avg_ev_10d", "")),
+            # Launch angle
+            "avg_la_7d":              str(row.get("avg_la_7d", "")),
+            "avg_la_season":          str(row.get("avg_la_season", "")),
+            # Power metrics
+            "iso":                    str(row.get("iso", "")),
+            "hr_per_pa":              str(row.get("hr_per_pa", "")),
+            "hr_per_fb":              str(row.get("hr_per_fb", "")),
+            "pull_rate":              str(row.get("pull_rate", "")),
+            # Matchup descriptions
+            "platoon_matchup":        str(row.get("platoon_desc", "")),
+            "pitch_matchup":          str(row.get("pitch_matchup_desc", "")),
+            # Pitcher metrics
+            "pitcher_barrel_pct":     str(row.get("pitcher_barrel_pct", "")),
+            "pitcher_hr_per_fb":      str(row.get("pitcher_hr_per_fb", "")),
+            "pitcher_barrel_vs_lhh":  str(row.get("pitcher_vs_lhh_barrel_pct", "")),
+            "pitcher_barrel_vs_rhh":  str(row.get("pitcher_vs_rhh_barrel_pct", "")),
+            # Park factor
+            "park_hr_factor":         str(row.get("park_hr_factor", "")),
+            # Misc
+            "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
+            "hit_hr":                 "Pending",
         })
 
     if not new_rows:
