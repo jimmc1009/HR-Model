@@ -30,6 +30,7 @@ on:
           - hr_analysis
           - ks_analysis
           - hrrbi_analysis
+          - hrrbi_picks_main
 
 jobs:
   test:
@@ -174,15 +175,6 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python ks_picks.py
 
-      - name: Run dashboard.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'dashboard'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python dashboard.py
-
       - name: Run resolve_picks.py
         if: >
           inputs.script == 'full' ||
@@ -192,14 +184,6 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python resolve_picks.py
-
-      - name: Run hr_odds_backtest.py
-        if: inputs.script == 'hr_odds_backtest'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python hr_odds_backtest.py
 
       - name: Run hr_analysis.py
         if: >
@@ -230,3 +214,20 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hrrbi_analysis.py
+
+      - name: Run dashboard.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'dashboard'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python dashboard.py
+
+      - name: Run hr_odds_backtest.py
+        if: inputs.script == 'hr_odds_backtest'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python hr_odds_backtest.py
