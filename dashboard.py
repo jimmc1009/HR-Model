@@ -271,12 +271,14 @@ def calc_ks_value(
     if hit_rate is None:
         return direction, 0.0, 0.0, False, "No data"
 
-    breakeven = american_to_implied(odds)
-    edge      = hit_rate - breakeven
-    edge_pct  = round(edge * 100, 1)
-    has_value = edge > 0
+    implied_odds  = american_to_implied(odds)
+    edge          = hit_rate - implied_odds
+    edge_pct      = round(edge * 100, 1)
+    has_value     = edge > 0
 
-    breakeven_american = implied_to_american(breakeven)
+    # Breakeven = the odds you need to break even at this hit rate
+    # e.g. hit rate 68.2% → breakeven odds = -214
+    breakeven_american = implied_to_american(hit_rate)
     edge_str           = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
 
     return direction, round(hit_rate * 100, 1), breakeven_american, has_value, edge_str
