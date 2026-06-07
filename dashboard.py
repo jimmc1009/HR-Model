@@ -423,7 +423,7 @@ def build_rows(
 
     # ── ALL KS SIGNALS (reference) ────────────────────────────────────────
     rows.append((pad(["⚾  ALL KS SIGNALS — Reference"]), "section_header_ks_ref"))
-    rows.append((pad(["Rank", "Pitcher", "Team", "K Line", "Over Odds", "Signal", ""]), "col_header_ks"))
+    rows.append((pad(["Rank", "Pitcher", "Team", "K Line", "Odds", "Signal", ""]), "col_header_ks"))
 
     if ks_df.empty:
         rows.append((pad(["—", "No plays today"]), "no_plays"))
@@ -439,10 +439,13 @@ def build_rows(
                 rank      = safe_val(row, "Rank", str(i + 1))
                 pitcher   = safe_val(row, "Pitcher") or safe_val(row, "pitcher_name")
                 team      = safe_val(row, "Team")
-                k_line    = safe_val(row, "K Line") or safe_val(row, "k_line")
-                over_odds = safe_val(row, "Over Odds") or safe_val(row, "ks_over_odds")
-                signal    = safe_val(row, sig_col)
-                rows.append((pad([rank, pitcher, team, k_line, over_odds, signal, ""]), "data_ks"))
+                k_line     = safe_val(row, "K Line") or safe_val(row, "k_line")
+                over_odds  = safe_val(row, "Over Odds") or safe_val(row, "ks_over_odds")
+                under_odds = safe_val(row, "Under Odds") or safe_val(row, "ks_under_odds")
+                signal     = safe_val(row, sig_col)
+                # Show under odds for UNDER signals, over odds for everything else
+                odds_display = under_odds if "UNDER" in str(signal).upper() else over_odds
+                rows.append((pad([rank, pitcher, team, k_line, odds_display, signal, ""]), "data_ks"))
 
     rows.append((E[:], "spacer"))
 
