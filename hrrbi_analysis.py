@@ -239,7 +239,6 @@ def build_analysis(df: pd.DataFrame) -> dict:
         # Game context
         ("game_total",        "Game Total"),
         ("park_hr_factor",    "Park HR Factor"),
-        ("over_odds",         "Over Odds"),
     ]
 
     separators = []
