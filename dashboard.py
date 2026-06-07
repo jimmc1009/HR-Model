@@ -289,6 +289,7 @@ def build_rows(
     ks_df: pd.DataFrame,
     hrrbi_df: pd.DataFrame,
     ks_hit_rates: dict,
+    ks_today: pd.DataFrame = None,
 ):
     N = 7  # expanded to 7 cols for KS value section
 
@@ -363,14 +364,15 @@ def build_rows(
     rows.append((pad(["⚾  PITCHER STRIKEOUT VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_ks"))
     rows.append((pad(["Rank", "Pitcher", "Team", "Line", "Direction", "Odds", "Edge"]), "col_header_ks"))
 
-    if ks_df.empty or not ks_hit_rates:
+    ks_value_source = ks_today if (ks_today is not None and not ks_today.empty) else ks_df
+    if ks_value_source.empty or not ks_hit_rates:
         rows.append((pad(["—", "No value plays today"]), "no_plays"))
     else:
         value_plays = []
 
-        sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_df.columns), None)
+        sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_value_source.columns), None)
 
-        for _, row in ks_df.iterrows():
+        for _, row in ks_value_source.iterrows():
             score      = safe_float(safe_val(row, "KS Score") or safe_val(row, "ks_score"))
             line       = safe_float(safe_val(row, "K Line") or safe_val(row, "k_line"))
             over_odds  = safe_float(safe_val(row, "Over Odds") or safe_val(row, "ks_over_odds") or safe_val(row, "over_odds"))
@@ -823,8 +825,8 @@ def main() -> None:
     hrrbi_df = read_sheet(gc, sheet_id, "Top_HRRBI_Picks")
     time.sleep(2)
 
-    # Read KS_All_Scores for hit rate lookup — resolve_picks runs before dashboard now
-    print("Reading KS_All_Scores for hit rate lookup...")
+    # Read KS_All_Scores — used for hit rate lookup AND full universe for value finder
+    print("Reading KS_All_Scores for hit rate lookup and value finder...")
     ks_all_scores = read_sheet_raw(gc, sheet_id, "KS_All_Scores")
     time.sleep(2)
 
@@ -836,7 +838,13 @@ def main() -> None:
     # Build KS hit rate lookup from resolved data
     ks_hit_rates = build_ks_hit_rates(ks_all_scores)
 
-    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates)
+    # For value finder — use today's rows from KS_All_Scores (full universe)
+    from datetime import date as _date
+    today_str = _date.today().strftime("%Y-%m-%d")
+    ks_today  = ks_all_scores[ks_all_scores["date"].astype(str).str.strip() == today_str].copy() if not ks_all_scores.empty else pd.DataFrame()
+    print(f"KS today's scores for value finder: {len(ks_today)} pitchers")
+
+    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates, ks_today)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
     write_timestamp(gc, sheet_id)
