@@ -277,11 +277,9 @@ def calc_ks_value(
     has_value = edge > 0
 
     breakeven_american = implied_to_american(breakeven)
-    hit_rate_american  = implied_to_american(hit_rate)
+    edge_str           = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
 
-    edge_str = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
-
-    return direction, round(hit_rate * 100, 1), round(breakeven * 100, 1), has_value, edge_str
+    return direction, round(hit_rate * 100, 1), breakeven_american, has_value, edge_str
 
 
 def build_rows(
@@ -291,7 +289,7 @@ def build_rows(
     ks_hit_rates: dict,
     ks_today: pd.DataFrame = None,
 ):
-    N = 7  # expanded to 7 cols for KS value section
+    N = 8  # expanded to 8 cols for KS value section
 
     def pad(row):
         return list(row) + [""] * (N - len(row))
@@ -362,7 +360,7 @@ def build_rows(
 
     # ── PITCHER STRIKEOUT VALUE PLAYS ─────────────────────────────────────
     rows.append((pad(["⚾  PITCHER STRIKEOUT VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_ks"))
-    rows.append((pad(["Rank", "Pitcher", "Team", "Line", "Direction", "Odds", "Breakeven"]), "col_header_ks"))
+    rows.append((pad(["Rank", "Pitcher", "Team", "Line", "Direction", "Odds", "Breakeven", "Edge"]), "col_header_ks"))
 
     ks_value_source = ks_today if (ks_today is not None and not ks_today.empty) else ks_df
     if ks_value_source.empty or not ks_hit_rates:
@@ -393,7 +391,7 @@ def build_rows(
             if odds_display > 0:
                 odds_str = f"+{odds_str}"
 
-            breakeven_american = implied_to_american(breakeven / 100.0)
+            breakeven_american = breakeven  # already converted in calc_ks_value
             value_plays.append({
                 "rank":       safe_val(row, "Rank"),
                 "pitcher":    safe_val(row, "pitcher_name") or safe_val(row, "Pitcher"),
@@ -421,6 +419,7 @@ def build_rows(
                     play["direction"],
                     play["odds"],
                     play["breakeven"],
+                    play["edge"],
                 ]), f"data_ks_{play['direction_raw'].lower()}"))
 
     rows.append((E[:], "spacer"))
@@ -485,11 +484,11 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         ws = sh.worksheet(DASHBOARD_SHEET)
         with_retry(lambda: ws.clear())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=7)
+        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=8)
 
     reqs_pre = [{"unmergeCells": {
         "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
-                  "startColumnIndex": 0, "endColumnIndex": 7}
+                  "startColumnIndex": 0, "endColumnIndex": 8}
     }}]
     try:
         with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
@@ -500,7 +499,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     with_retry(lambda: ws.update(data, value_input_option="RAW"))
 
     ws_id  = ws.id
-    n_cols = 7
+    n_cols = 8
     reqs   = []
 
     reqs.append({"repeatCell": {
@@ -667,6 +666,19 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                     }},
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                 }})
+                # Edge col — green
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 7, "endColumnIndex": 8},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": COLOR_GREEN_DIM,
+                        "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
 
             elif row_type in ("data_ks", "data_hrrbi"):
                 signal_val = str(row_data[5]).upper()
@@ -729,7 +741,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-    col_widths = [55, 180, 70, 80, 140, 110, 100]
+    col_widths = [55, 180, 70, 80, 140, 90, 90, 80]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -778,12 +790,12 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
         ws    = sh.worksheet(DASHBOARD_SHEET)
         ws_id = ws.id
         with_retry(lambda: ws.insert_row(
-            [f"⏱  Last Updated: {now_et}", "", "", "", "", "", ""], index=1
+            [f"⏱  Last Updated: {now_et}", "", "", "", "", "", "", ""], index=1
         ))
         reqs = [
             {"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 7},
+                          "startColumnIndex": 0, "endColumnIndex": 8},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COLOR_HEADER_BG,
                     "textFormat": {
@@ -798,7 +810,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
             }},
             {"mergeCells": {
                 "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 7},
+                          "startColumnIndex": 0, "endColumnIndex": 8},
                 "mergeType": "MERGE_ALL",
             }},
             {"updateDimensionProperties": {
