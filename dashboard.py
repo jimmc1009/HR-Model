@@ -1,6 +1,8 @@
 """
 dashboard.py
 Builds the "Today's Top Picks" unified dashboard sheet.
+Includes KS value finder — compares today's picks against resolved hit rates
+to surface value bets where hit rate exceeds breakeven at given odds.
 """
 
 import os
@@ -27,9 +29,12 @@ COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
 COLOR_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
 COLOR_GOLD      = {"red": 1.000, "green": 0.843, "blue": 0.000}
 COLOR_GREEN     = {"red": 0.118, "green": 0.627, "blue": 0.337}
+COLOR_GREEN_DIM = {"red": 0.039, "green": 0.180, "blue": 0.098}
 COLOR_BLUE      = {"red": 0.055, "green": 0.318, "blue": 0.580}
 COLOR_TEAL      = {"red": 0.047, "green": 0.450, "blue": 0.353}
 COLOR_DARK_RED  = {"red": 0.550, "green": 0.050, "blue": 0.050}
+COLOR_ORANGE    = {"red": 0.980, "green": 0.502, "blue": 0.059}
+COLOR_ORANGE_DIM= {"red": 0.250, "green": 0.118, "blue": 0.000}
 COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT   = {"red": 0.500, "green": 0.500, "blue": 0.500}
 COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
@@ -66,17 +71,14 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
         all_values = with_retry(lambda: ws.get_all_values())
         if not all_values:
             return pd.DataFrame()
-        # Find the actual header row by scanning first 5 rows
-        # for a row containing known column names
-        # Skip timestamp row if present
         start = 1 if "Last Run" in str(all_values[0]) else 0
         if start >= len(all_values):
             return pd.DataFrame()
         headers = all_values[start]
         print(f"  Header row ({start}): {headers[:6]}")
-        rows    = all_values[start + 1:]
-        df = pd.DataFrame(rows, columns=headers)
-        df = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
+        rows = all_values[start + 1:]
+        df   = pd.DataFrame(rows, columns=headers)
+        df   = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
         return df
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
@@ -86,24 +88,42 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def read_sheet_raw(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
+    """Read sheet without timestamp row stripping."""
+    try:
+        sh         = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws         = sh.worksheet(name)
+        all_values = with_retry(lambda: ws.get_all_values())
+        if not all_values or len(all_values) < 2:
+            return pd.DataFrame()
+        headers = all_values[0]
+        rows    = all_values[1:]
+        df      = pd.DataFrame(rows, columns=headers)
+        df      = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
+        return df
+    except gspread.WorksheetNotFound:
+        return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
+
+
+def safe_float(val, default=0.0) -> float:
+    try:
+        f = float(val)
+        return default if (np.isnan(f) or np.isinf(f)) else f
+    except (ValueError, TypeError):
+        return default
+
+
 def has_signal(signal: str) -> bool:
     s = str(signal).strip()
     return s not in ("", "—", "nan") and len(s) > 1
 
 
 def edge_is_positive_or_neutral(edge_str: str) -> bool:
-    """
-    Returns True if the edge value represents a positive or neutral edge.
-    Checks for the absence of a leading minus sign after any non-numeric chars.
-    ✅ +7.6%  → True
-    ➡️ +2.2%  → True
-    ❌ -8.2%  → False
-    """
     s = str(edge_str).strip()
     if not s or s in ("", "nan", "—"):
         return False
-    # Extract just the numeric portion — find if there's a - before the number
-    # Strip any leading emoji/symbols and look for the sign
     for char in s:
         if char == '+':
             return True
@@ -126,8 +146,151 @@ def safe_val(row, col: str, default: str = "") -> str:
         return default
 
 
-def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame):
-    N = 6
+def american_to_implied(odds: float) -> float:
+    """Convert American odds to implied probability."""
+    if odds >= 0:
+        return 100.0 / (odds + 100.0)
+    else:
+        return abs(odds) / (abs(odds) + 100.0)
+
+
+def implied_to_american(prob: float) -> str:
+    """Convert implied probability to American odds string."""
+    if prob <= 0 or prob >= 1:
+        return "—"
+    if prob >= 0.5:
+        odds = -round((prob / (1 - prob)) * 100)
+        return str(int(odds))
+    else:
+        odds = round(((1 - prob) / prob) * 100)
+        return f"+{int(odds)}"
+
+
+# ── KS Hit Rate Lookup ────────────────────────────────────────────────────
+
+def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
+    """
+    Build hit rate lookup from KS_All_Scores resolved data.
+    Returns dict keyed by (score_tier, line, direction) -> hit_rate
+    direction: 'over' or 'under'
+
+    Score tiers: "12+", "10-12", "8-10", "6-8", "4-6", "2-4", "Under 2"
+    """
+    hit_rates = {}
+
+    if ks_all_scores.empty:
+        return hit_rates
+
+    resolved = ks_all_scores[
+        ks_all_scores["over_hit"].astype(str).str.strip().isin(["Yes", "No"])
+    ].copy()
+
+    if resolved.empty:
+        return hit_rates
+
+    resolved["ks_score"] = resolved["ks_score"].apply(safe_float)
+    resolved["k_line"]   = resolved["k_line"].apply(safe_float)
+    resolved["over_bool"]  = resolved["over_hit"].astype(str).str.strip() == "Yes"
+    resolved["under_bool"] = resolved["under_hit"].astype(str).str.strip() == "Yes"
+
+    tier_defs = [
+        ("12+",    12,  999),
+        ("10-12",  10,   12),
+        ("8-10",    8,   10),
+        ("6-8",     6,    8),
+        ("4-6",     4,    6),
+        ("2-4",     2,    4),
+        ("Under 2", 0,    2),
+    ]
+
+    line_vals = [4.5, 5.5, 6.5, 7.5, 8.5]
+
+    for tier_label, lo, hi in tier_defs:
+        tier_sub = resolved[(resolved["ks_score"] >= lo) & (resolved["ks_score"] < hi)]
+
+        # Overall tier rates (no line filter)
+        if len(tier_sub) >= 5:
+            over_rate  = tier_sub["over_bool"].mean()
+            under_rate = tier_sub["under_bool"].mean()
+            hit_rates[(tier_label, "any", "over")]  = over_rate
+            hit_rates[(tier_label, "any", "under")] = under_rate
+
+        # Tier × line rates
+        for line_val in line_vals:
+            sub = tier_sub[tier_sub["k_line"] == line_val]
+            if len(sub) >= 3:
+                hit_rates[(tier_label, line_val, "over")]  = sub["over_bool"].mean()
+                hit_rates[(tier_label, line_val, "under")] = sub["under_bool"].mean()
+
+    print(f"  KS hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks")
+    return hit_rates
+
+
+def get_score_tier(score: float) -> str:
+    if score >= 12:   return "12+"
+    if score >= 10:   return "10-12"
+    if score >= 8:    return "8-10"
+    if score >= 6:    return "6-8"
+    if score >= 4:    return "4-6"
+    if score >= 2:    return "2-4"
+    return "Under 2"
+
+
+def calc_ks_value(
+    score: float,
+    line: float,
+    over_odds: float,
+    under_odds: float,
+    hit_rates: dict,
+) -> tuple:
+    """
+    Returns (direction, hit_rate, breakeven, has_value, edge_str)
+    direction: 'OVER' or 'UNDER'
+    """
+    tier = get_score_tier(score)
+
+    # Determine signal direction based on score
+    if score < 4:
+        direction = "UNDER"
+        odds      = under_odds
+    elif score >= 6:
+        direction = "OVER"
+        odds      = over_odds
+    else:
+        # 4-6 range — check both, use whichever has value
+        direction = "OVER"
+        odds      = over_odds
+
+    if odds == 0 or line == 0:
+        return direction, 0.0, 0.0, False, "—"
+
+    # Look up hit rate — prefer tier × line, fall back to tier only
+    hit_rate = hit_rates.get((tier, line, direction.lower()))
+    if hit_rate is None:
+        hit_rate = hit_rates.get((tier, "any", direction.lower()))
+    if hit_rate is None:
+        return direction, 0.0, 0.0, False, "No data"
+
+    breakeven = american_to_implied(odds)
+    edge      = hit_rate - breakeven
+    edge_pct  = round(edge * 100, 1)
+    has_value = edge > 0
+
+    breakeven_american = implied_to_american(breakeven)
+    hit_rate_american  = implied_to_american(hit_rate)
+
+    edge_str = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
+
+    return direction, round(hit_rate * 100, 1), round(breakeven * 100, 1), has_value, edge_str
+
+
+def build_rows(
+    hr_df: pd.DataFrame,
+    ks_df: pd.DataFrame,
+    hrrbi_df: pd.DataFrame,
+    ks_hit_rates: dict,
+):
+    N = 7  # expanded to 7 cols for KS value section
 
     def pad(row):
         return list(row) + [""] * (N - len(row))
@@ -137,21 +300,17 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
 
     # ── HOME RUN PICKS ────────────────────────────────────────────────────
     rows.append((pad(["🏠  HOME RUN PICKS — Score ≥10.0 | +301 to +699 | Value Plays Only"]), "section_header_hr"))
-    rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", "Edge"]), "col_header_hr"))
+    rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", "Edge", ""]), "col_header_hr"))
 
     if hr_df.empty:
         rows.append((pad(["—", "No value plays today", ""]), "no_plays"))
     else:
         hr_clean = hr_df.copy()
-
-        # Remove non-data rows
         hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
         hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
             "Last Run|Batter|No qualifying|No value", na=False
         )]
-        hr_clean = hr_clean[
-            pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce") >= 1
-        ]
+        hr_clean = hr_clean[pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce") >= 1]
         hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
 
         print(f"  HR rows after cleaning: {len(hr_clean)}")
@@ -196,13 +355,75 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
                     edge = ""
                 if not batter or batter == "nan":
                     continue
-                rows.append((pad([rank, batter, team, hr_score, odds, edge]), "data_hr"))
+                rows.append((pad([rank, batter, team, hr_score, odds, edge, ""]), "data_hr"))
 
     rows.append((E[:], "spacer"))
 
-    # ── PITCHER STRIKEOUT PLAYS ───────────────────────────────────────────
-    rows.append((pad(["⚾  PITCHER STRIKEOUT PLAYS"]), "section_header_ks"))
-    rows.append((pad(["Rank", "Pitcher", "Team", "K Line", "Over Odds", "Signal"]), "col_header_ks"))
+    # ── PITCHER STRIKEOUT VALUE PLAYS ─────────────────────────────────────
+    rows.append((pad(["⚾  PITCHER STRIKEOUT VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_ks"))
+    rows.append((pad(["Rank", "Pitcher", "Team", "Line", "Direction", "Odds", "Edge"]), "col_header_ks"))
+
+    if ks_df.empty or not ks_hit_rates:
+        rows.append((pad(["—", "No value plays today"]), "no_plays"))
+    else:
+        value_plays = []
+
+        sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in ks_df.columns), None)
+
+        for _, row in ks_df.iterrows():
+            score      = safe_float(safe_val(row, "KS Score") or safe_val(row, "ks_score"))
+            line       = safe_float(safe_val(row, "K Line") or safe_val(row, "k_line"))
+            over_odds  = safe_float(safe_val(row, "Over Odds") or safe_val(row, "ks_over_odds") or safe_val(row, "over_odds"))
+            under_odds = safe_float(safe_val(row, "Under Odds") or safe_val(row, "ks_under_odds") or safe_val(row, "under_odds"))
+
+            if line == 0:
+                continue
+
+            direction, hit_rate, breakeven, has_value, edge_str = calc_ks_value(
+                score, line, over_odds, under_odds, ks_hit_rates
+            )
+
+            if not has_value:
+                continue
+
+            odds_display = over_odds if direction == "OVER" else under_odds
+            odds_str     = str(int(odds_display)) if odds_display != 0 else "—"
+            if odds_display > 0:
+                odds_str = f"+{odds_str}"
+
+            value_plays.append({
+                "rank":      safe_val(row, "Rank"),
+                "pitcher":   safe_val(row, "Pitcher") or safe_val(row, "pitcher_name"),
+                "team":      safe_val(row, "Team"),
+                "line":      str(line),
+                "direction": f"{direction} {line} {'✅' if direction == 'OVER' else '🔻'}",
+                "odds":      odds_str,
+                "edge":      edge_str,
+                "score":     score,
+                "direction_raw": direction,
+            })
+
+        if not value_plays:
+            rows.append((pad(["—", "No value plays today — no edge found vs hit rates"]), "no_plays"))
+        else:
+            # Sort by edge descending
+            value_plays.sort(key=lambda x: float(x["edge"].replace("%", "").replace("+", "")), reverse=True)
+            for i, play in enumerate(value_plays):
+                rows.append((pad([
+                    str(i + 1),
+                    play["pitcher"],
+                    play["team"],
+                    play["line"],
+                    play["direction"],
+                    play["odds"],
+                    play["edge"],
+                ]), f"data_ks_{play['direction_raw'].lower()}"))
+
+    rows.append((E[:], "spacer"))
+
+    # ── ALL KS SIGNALS (reference) ────────────────────────────────────────
+    rows.append((pad(["⚾  ALL KS SIGNALS — Reference"]), "section_header_ks_ref"))
+    rows.append((pad(["Rank", "Pitcher", "Team", "K Line", "Over Odds", "Signal", ""]), "col_header_ks"))
 
     if ks_df.empty:
         rows.append((pad(["—", "No plays today"]), "no_plays"))
@@ -216,18 +437,18 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
             for i in range(len(plays)):
                 row       = plays.iloc[i]
                 rank      = safe_val(row, "Rank", str(i + 1))
-                pitcher   = safe_val(row, "Pitcher")
+                pitcher   = safe_val(row, "Pitcher") or safe_val(row, "pitcher_name")
                 team      = safe_val(row, "Team")
-                k_line    = safe_val(row, "K Line")
-                over_odds = safe_val(row, "Over Odds")
+                k_line    = safe_val(row, "K Line") or safe_val(row, "k_line")
+                over_odds = safe_val(row, "Over Odds") or safe_val(row, "ks_over_odds")
                 signal    = safe_val(row, sig_col)
-                rows.append((pad([rank, pitcher, team, k_line, over_odds, signal]), "data_ks"))
+                rows.append((pad([rank, pitcher, team, k_line, over_odds, signal, ""]), "data_ks"))
 
     rows.append((E[:], "spacer"))
 
     # ── H+R+RBI PLAYS ─────────────────────────────────────────────────────
     rows.append((pad(["📊  H+R+RBI PLAYS"]), "section_header_hrrbi"))
-    rows.append((pad(["Rank", "Player", "Team", "Line", "Over Odds", "Signal"]), "col_header_hrrbi"))
+    rows.append((pad(["Rank", "Player", "Team", "Line", "Over Odds", "Signal", ""]), "col_header_hrrbi"))
 
     if hrrbi_df.empty:
         rows.append((pad(["—", "No plays today"]), "no_plays"))
@@ -246,7 +467,7 @@ def build_rows(hr_df: pd.DataFrame, ks_df: pd.DataFrame, hrrbi_df: pd.DataFrame)
                 line      = safe_val(row, "Line")
                 over_odds = safe_val(row, "Over Odds")
                 signal    = safe_val(row, sig_col)
-                rows.append((pad([rank, player, team, line, over_odds, signal]), "data_hrrbi"))
+                rows.append((pad([rank, player, team, line, over_odds, signal, ""]), "data_hrrbi"))
 
     return rows
 
@@ -257,12 +478,11 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         ws = sh.worksheet(DASHBOARD_SHEET)
         with_retry(lambda: ws.clear())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=6)
+        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=7)
 
-    # Unmerge everything first
     reqs_pre = [{"unmergeCells": {
         "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
-                  "startColumnIndex": 0, "endColumnIndex": 6}
+                  "startColumnIndex": 0, "endColumnIndex": 7}
     }}]
     try:
         with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
@@ -273,7 +493,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     with_retry(lambda: ws.update(data, value_input_option="RAW"))
 
     ws_id  = ws.id
-    n_cols = 6
+    n_cols = 7
     reqs   = []
 
     reqs.append({"repeatCell": {
@@ -295,13 +515,16 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
     }})
 
-    data_row_count = {"hr": 0, "ks": 0, "hrrbi": 0}
+    data_row_count = {"hr": 0, "ks": 0, "ks_over": 0, "ks_under": 0, "hrrbi": 0}
 
     for row_idx, (row_data, row_type) in enumerate(rows):
         r = row_idx
 
         if row_type.startswith("section_header"):
-            if "ks" in row_type:
+            if "ks_ref" in row_type:
+                color      = {"red": 0.047, "green": 0.250, "blue": 0.250}
+                text_color = COLOR_WHITE
+            elif "ks" in row_type:
                 color      = COLOR_TEAL
                 text_color = COLOR_WHITE
             elif "hrrbi" in row_type:
@@ -350,10 +573,24 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
             }})
 
         elif row_type.startswith("data"):
-            section = row_type.split("_")[1]
-            count   = data_row_count.get(section, 0)
-            bg      = COLOR_BG if count % 2 == 0 else COLOR_BG_ALT
-            data_row_count[section] = count + 1
+            # Determine section and alternating bg
+            if "ks_over" in row_type:
+                count = data_row_count.get("ks_over", 0)
+                data_row_count["ks_over"] = count + 1
+            elif "ks_under" in row_type:
+                count = data_row_count.get("ks_under", 0)
+                data_row_count["ks_under"] = count + 1
+            elif "ks" in row_type:
+                count = data_row_count.get("ks", 0)
+                data_row_count["ks"] = count + 1
+            elif "hrrbi" in row_type:
+                count = data_row_count.get("hrrbi", 0)
+                data_row_count["hrrbi"] = count + 1
+            else:
+                count = data_row_count.get("hr", 0)
+                data_row_count["hr"] = count + 1
+
+            bg = COLOR_BG if count % 2 == 0 else COLOR_BG_ALT
 
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -371,6 +608,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
+            # Rank col center
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
@@ -385,7 +623,45 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment)",
             }})
 
-            if row_type in ("data_ks", "data_hrrbi"):
+            # Color direction/signal column (col 4 for KS value, col 5 for reference/hrrbi)
+            if "ks_over" in row_type or "ks_under" in row_type:
+                # KS value play — color direction col (4) and edge col (6)
+                direction_val = str(row_data[4]).upper()
+                if "OVER" in direction_val:
+                    dir_bg = COLOR_GREEN_DIM
+                    dir_fg = COLOR_GREEN
+                else:
+                    dir_bg = COLOR_DARK_RED
+                    dir_fg = COLOR_WHITE
+
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 4, "endColumnIndex": 5},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": dir_bg,
+                        "textFormat": {"foregroundColor": dir_fg, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
+
+                # Edge col — always positive here since we filter for value
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 6, "endColumnIndex": 7},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": COLOR_GREEN_DIM,
+                        "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
+
+            elif row_type in ("data_ks", "data_hrrbi"):
                 signal_val = str(row_data[5]).upper()
                 if "OVER" in signal_val and "UNDER" not in signal_val:
                     sig_bg   = COLOR_GREEN
@@ -412,6 +688,23 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                 }})
 
+            elif row_type == "data_hr":
+                # Edge col (5) for HR
+                edge_val = str(row_data[5])
+                if "+" in edge_val:
+                    reqs.append({"repeatCell": {
+                        "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                                  "startColumnIndex": 5, "endColumnIndex": 6},
+                        "cell": {"userEnteredFormat": {
+                            "backgroundColor": COLOR_GREEN_DIM,
+                            "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                                           "fontFamily": "Roboto", "fontSize": 11},
+                            "horizontalAlignment": "CENTER",
+                            "verticalAlignment": "MIDDLE",
+                        }},
+                        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                    }})
+
         elif row_type == "no_plays":
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -429,7 +722,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-    col_widths = [55, 180, 70, 90, 110, 120]
+    col_widths = [55, 180, 70, 80, 140, 110, 100]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -478,12 +771,12 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
         ws    = sh.worksheet(DASHBOARD_SHEET)
         ws_id = ws.id
         with_retry(lambda: ws.insert_row(
-            [f"⏱  Last Updated: {now_et}", "", "", "", "", ""], index=1
+            [f"⏱  Last Updated: {now_et}", "", "", "", "", "", ""], index=1
         ))
         reqs = [
             {"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 6},
+                          "startColumnIndex": 0, "endColumnIndex": 7},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COLOR_HEADER_BG,
                     "textFormat": {
@@ -498,7 +791,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
             }},
             {"mergeCells": {
                 "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 6},
+                          "startColumnIndex": 0, "endColumnIndex": 7},
                 "mergeType": "MERGE_ALL",
             }},
             {"updateDimensionProperties": {
@@ -525,12 +818,22 @@ def main() -> None:
     ks_df    = read_sheet(gc, sheet_id, "Top_KS_Picks")
     time.sleep(2)
     hrrbi_df = read_sheet(gc, sheet_id, "Top_HRRBI_Picks")
+    time.sleep(2)
+
+    # Read KS_All_Scores for hit rate lookup — resolve_picks runs before dashboard now
+    print("Reading KS_All_Scores for hit rate lookup...")
+    ks_all_scores = read_sheet_raw(gc, sheet_id, "KS_All_Scores")
+    time.sleep(2)
 
     print(f"HR picks: {len(hr_df)} rows")
     print(f"KS picks: {len(ks_df)} rows")
     print(f"HRRBI picks: {len(hrrbi_df)} rows")
+    print(f"KS All Scores: {len(ks_all_scores)} rows")
 
-    rows = build_rows(hr_df, ks_df, hrrbi_df)
+    # Build KS hit rate lookup from resolved data
+    ks_hit_rates = build_ks_hit_rates(ks_all_scores)
+
+    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
     write_timestamp(gc, sheet_id)
