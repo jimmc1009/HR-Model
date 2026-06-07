@@ -138,9 +138,10 @@ def build_analysis(df: pd.DataFrame) -> dict:
     ]
     for col in numeric_features:
         if col in scored.columns:
-            scored[col] = scored[col].apply(safe_float)
+            # Use NaN for empty/missing so mean() ignores them correctly
+            scored[col] = scored[col].apply(lambda x: np.nan if str(x).strip() in ("", "nan", "None") else safe_float(x, np.nan))
         else:
-            scored[col] = 0.0
+            scored[col] = np.nan
 
     days_of_data = scored["date_dt"].nunique()
     total        = len(scored)
@@ -219,9 +220,14 @@ def build_analysis(df: pd.DataFrame) -> dict:
     for col, label in feature_labels.items():
         if col not in scored.columns:
             continue
-        yes_avg = round(hr_yes[col].mean(), 3) if not hr_yes.empty else 0.0
-        no_avg  = round(hr_no[col].mean(), 3)  if not hr_no.empty  else 0.0
-        diff    = round(yes_avg - no_avg, 3)
+        yes_vals = hr_yes[col].dropna()
+        no_vals  = hr_no[col].dropna()
+        # Skip if not enough data points on either side
+        if len(yes_vals) < 5 or len(no_vals) < 5:
+            continue
+        yes_avg  = round(yes_vals.mean(), 3)
+        no_avg   = round(no_vals.mean(), 3)
+        diff     = round(yes_avg - no_avg, 3)
         pct_diff = round((diff / no_avg * 100), 1) if no_avg != 0 else 0.0
         feature_separators.append({
             "label":    label,
