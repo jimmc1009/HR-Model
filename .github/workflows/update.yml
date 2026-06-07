@@ -85,37 +85,35 @@ jobs:
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python ks_picks.py
 
-     # ── Dashboard ─────────────────────────────────────────────────────────
-     - name: Run dashboard.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python dashboard.py
-
-     # ── Resolve picks ─────────────────────────────────────────────────────
+     # ── Resolve picks (before analysis and dashboard) ─────────────────────
      - name: Run resolve_picks.py
        env:
          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python resolve_picks.py
 
-     # ── HR Analysis ───────────────────────────────────────────────────────
+     # ── Analysis (uses resolved data) ─────────────────────────────────────
      - name: Run hr_analysis.py
        env:
          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python hr_analysis.py
 
-     # ── KS Analysis ───────────────────────────────────────────────────────
      - name: Run ks_analysis.py
        env:
          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python ks_analysis.py
 
-     # ── HRRBI Analysis ────────────────────────────────────────────────────
      - name: Run hrrbi_analysis.py
        env:
          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python hrrbi_analysis.py
+
+     # ── Dashboard (uses resolved data + analysis) ─────────────────────────
+     - name: Run dashboard.py
+       env:
+         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+       run: python dashboard.py
