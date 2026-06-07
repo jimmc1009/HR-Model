@@ -131,7 +131,8 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("8-10",    8,   10),
         ("6-8",     6,    8),
         ("4-6",     4,    6),
-        ("Under 4", 0,    4),
+        ("2-4",     2,    4),
+        ("Under 2", 0,    2),
     ]
 
     score_tiers = []
