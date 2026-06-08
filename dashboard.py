@@ -291,7 +291,7 @@ def build_rows(
     ks_hit_rates: dict,
     ks_today: pd.DataFrame = None,
 ):
-    N = 8  # expanded to 8 cols for KS value section
+    N = 9  # expanded to 9 cols for KS value section
 
     def pad(row):
         return list(row) + [""] * (N - len(row))
@@ -362,7 +362,7 @@ def build_rows(
 
     # ── PITCHER STRIKEOUT VALUE PLAYS ─────────────────────────────────────
     rows.append((pad(["⚾  PITCHER STRIKEOUT VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_ks"))
-    rows.append((pad(["Rank", "Pitcher", "Team", "Line", "Direction", "Odds", "Breakeven", "Edge"]), "col_header_ks"))
+    rows.append((pad(["Rank", "Pitcher", "Team", "Score", "Line", "Direction", "Odds", "Breakeven", "Edge"]), "col_header_ks"))
 
     ks_value_source = ks_today if (ks_today is not None and not ks_today.empty) else ks_df
     if ks_value_source.empty or not ks_hit_rates:
@@ -404,6 +404,7 @@ def build_rows(
                 "breakeven":  breakeven_american,
                 "edge":       edge_str,
                 "score":      score,
+                "score_str":  str(round(score, 1)),
                 "direction_raw": direction,
             })
 
@@ -417,6 +418,7 @@ def build_rows(
                     str(i + 1),
                     play["pitcher"],
                     play["team"],
+                    play["score_str"],
                     play["line"],
                     play["direction"],
                     play["odds"],
@@ -486,11 +488,11 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         ws = sh.worksheet(DASHBOARD_SHEET)
         with_retry(lambda: ws.clear())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=8)
+        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=9)
 
     reqs_pre = [{"unmergeCells": {
         "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": 200,
-                  "startColumnIndex": 0, "endColumnIndex": 8}
+                  "startColumnIndex": 0, "endColumnIndex": 9}
     }}]
     try:
         with_retry(lambda: sh.batch_update({"requests": reqs_pre}))
@@ -501,7 +503,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
     with_retry(lambda: ws.update(data, value_input_option="RAW"))
 
     ws_id  = ws.id
-    n_cols = 8
+    n_cols = 9
     reqs   = []
 
     reqs.append({"repeatCell": {
@@ -634,7 +636,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
             # Color direction/signal column (col 4 for KS value, col 5 for reference/hrrbi)
             if "ks_over" in row_type or "ks_under" in row_type:
                 # KS value play — color direction col (4) and edge col (6)
-                direction_val = str(row_data[4]).upper()
+                direction_val = str(row_data[5]).upper()
                 if "OVER" in direction_val:
                     dir_bg = COLOR_GREEN_DIM
                     dir_fg = COLOR_GREEN
@@ -644,7 +646,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
 
                 reqs.append({"repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                              "startColumnIndex": 4, "endColumnIndex": 5},
+                              "startColumnIndex": 5, "endColumnIndex": 6},
                     "cell": {"userEnteredFormat": {
                         "backgroundColor": dir_bg,
                         "textFormat": {"foregroundColor": dir_fg, "bold": True,
@@ -658,7 +660,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 # Breakeven col — grey, informational
                 reqs.append({"repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                              "startColumnIndex": 6, "endColumnIndex": 7},
+                              "startColumnIndex": 7, "endColumnIndex": 8},
                     "cell": {"userEnteredFormat": {
                         "backgroundColor": COLOR_HEADER_BG,
                         "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": False,
@@ -671,7 +673,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 # Edge col — green
                 reqs.append({"repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                              "startColumnIndex": 7, "endColumnIndex": 8},
+                              "startColumnIndex": 8, "endColumnIndex": 9},
                     "cell": {"userEnteredFormat": {
                         "backgroundColor": COLOR_GREEN_DIM,
                         "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
@@ -743,7 +745,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-    col_widths = [55, 180, 70, 80, 140, 90, 90, 80]
+    col_widths = [55, 170, 60, 60, 70, 130, 80, 90, 75]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -792,12 +794,12 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
         ws    = sh.worksheet(DASHBOARD_SHEET)
         ws_id = ws.id
         with_retry(lambda: ws.insert_row(
-            [f"⏱  Last Updated: {now_et}", "", "", "", "", "", "", ""], index=1
+            [f"⏱  Last Updated: {now_et}", "", "", "", "", "", "", "", ""], index=1
         ))
         reqs = [
             {"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 8},
+                          "startColumnIndex": 0, "endColumnIndex": 9},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COLOR_HEADER_BG,
                     "textFormat": {
@@ -812,7 +814,7 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
             }},
             {"mergeCells": {
                 "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": 8},
+                          "startColumnIndex": 0, "endColumnIndex": 9},
                 "mergeType": "MERGE_ALL",
             }},
             {"updateDimensionProperties": {
