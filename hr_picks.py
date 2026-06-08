@@ -31,7 +31,7 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.3   # raised from 1.0 — separator at 14.6% and improving
+PITCH_MATCHUP_WEIGHT = 1.4   # raised from 1.0 — separator at 14.6% and improving
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
 
@@ -48,10 +48,10 @@ MIN_BATTING_AVG  = 0.200
 SCORE_TIER_HIT_RATES = {
     "13+":      0.200,
     "12-13":    0.200,
-    "11-12":    0.200,
-    "10-11":    0.200,
-    "9-10":     0.120,
-    "8.5-9":    0.120,
+    "11-12":    0.273,
+    "10-11":    0.108,
+    "9-10":     0.184,
+    "8.5-9":    0.100,
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
