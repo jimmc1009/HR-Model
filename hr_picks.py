@@ -31,7 +31,7 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.3   # raised from 1.0 — separator at 14.6% and improving
+PITCH_MATCHUP_WEIGHT = 1.4   # raised from 1.0 — separator at 14.6% and improving
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
 
