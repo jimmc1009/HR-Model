@@ -239,6 +239,41 @@ def score_bb_pct(v: float, pa: float) -> float:
     if v >=  8.0: return 0.2
     return 0.0
 
+def score_opp_babip(v: float) -> float:
+    """BABIP allowed — high BABIP means more balls in play become hits"""
+    if v <= 0: return 0.0
+    if v >= 0.340: return  1.0
+    if v >= 0.320: return  0.6
+    if v >= 0.305: return  0.2
+    if v <= 0.250: return -0.8
+    if v <= 0.265: return -0.4
+    if v <= 0.275: return -0.1
+    return 0.0
+
+
+def score_opp_hr_per_fb(v: float) -> float:
+    """HR/FB% allowed — pitcher gives up HRs on fly balls, directly boosts H+R+RBI"""
+    if v >= 18.0: return  1.5
+    if v >= 15.0: return  1.0
+    if v >= 12.0: return  0.5
+    if v >= 10.0: return  0.1
+    if v <=  6.0: return -0.8
+    if v <=  8.0: return -0.4
+    return 0.0
+
+
+def score_opp_fps_pct(v: float) -> float:
+    """First pitch strike % — low FPS means more hitter counts, more walks, more baserunners"""
+    if v <= 0: return 0.0
+    if v <= 55.0: return  0.8
+    if v <= 58.0: return  0.4
+    if v <= 61.0: return  0.1
+    if v >= 70.0: return -0.8
+    if v >= 67.0: return -0.4
+    if v >= 64.0: return -0.1
+    return 0.0
+
+
 def score_opp_whip(v: float) -> float:
     if v >= 1.60: return 2.0
     if v >= 1.50: return 1.5
@@ -387,10 +422,13 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_roll_avg = score_rolling_avg(safe_float(row.get("avg_14d")), pa_14d)
     s_bat_ord  = score_bat_order(safe_float(row.get("avg_bat_order", 6)), pa)
     s_bb       = score_bb_pct(safe_float(row.get("bb_pct")), pa)
-    s_opp_whip = score_opp_whip(safe_float(row.get("opp_whip", 1.20), 1.20))
-    s_opp_k    = score_opp_k_pct(safe_float(row.get("opp_k_pct_season", 22.0), 22.0))
-    s_opp_bb   = score_opp_bb_pct(safe_float(row.get("opp_bb_pct_season", 8.0), 8.0))
-    s_opp_hh   = score_opp_hard_hit(safe_float(row.get("opp_hard_hit_pct", 38.0), 38.0))
+    s_opp_whip    = score_opp_whip(safe_float(row.get("opp_whip", 1.20), 1.20))
+    s_opp_k       = score_opp_k_pct(safe_float(row.get("opp_k_pct_season", 22.0), 22.0))
+    s_opp_bb      = score_opp_bb_pct(safe_float(row.get("opp_bb_pct_season", 8.0), 8.0))
+    s_opp_hh      = score_opp_hard_hit(safe_float(row.get("opp_hard_hit_pct", 38.0), 38.0))
+    s_opp_hr_fb   = score_opp_hr_per_fb(safe_float(row.get("opp_hr_per_fb", 10.0), 10.0))
+    s_opp_fps     = score_opp_fps_pct(safe_float(row.get("opp_fps_pct", 62.0), 62.0))
+    s_opp_babip   = score_opp_babip(safe_float(row.get("opp_babip", 0.290), 0.290))
     s_game_total = score_game_total(safe_float(row.get("game_total", 8.5), 8.5))
     s_park       = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
     s_weather    = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
@@ -403,6 +441,7 @@ def compute_hrrbi_score(row: pd.Series) -> float:
         s_ev_7d + s_hh_7d + s_roll_avg +
         s_bat_ord + s_bb +
         s_opp_whip + s_opp_k + s_opp_bb + s_opp_hh +
+        s_opp_hr_fb + s_opp_fps + s_opp_babip +
         s_game_total + s_park + s_weather + momentum_capped, 3
     )
 
@@ -550,6 +589,9 @@ def prepare_combined(
             "whip_proxy":                "opp_whip",
             "k_pct_season":              "opp_k_pct_season",
             "bb_pct_season":             "opp_bb_pct_season",
+            "first_pitch_strike_pct":    "opp_fps_pct",
+            "hr9":                       "opp_hr9",
+            "babip_allowed":             "opp_babip",
         }
         pitchers = pitchers.rename(columns={k: v for k, v in pitcher_rename.items() if k in pitchers.columns})
 
@@ -557,6 +599,7 @@ def prepare_combined(
             "batter_team", "opp_pitcher_name", "opp_pitcher_hand",
             "opp_pitcher_bbe", "opp_hard_hit_pct", "opp_barrel_pct",
             "opp_hr_per_fb", "opp_k_pct_season", "opp_bb_pct_season", "opp_whip",
+            "opp_fps_pct", "opp_hr9", "opp_babip",
         ] if c in pitchers.columns]
 
         if "batter_team" in pitchers.columns:
@@ -603,6 +646,10 @@ def prepare_combined(
         "opp_k_pct_season":  22.0,
         "opp_bb_pct_season": 8.0,
         "opp_hard_hit_pct":  38.0,
+        "opp_hr_per_fb":     10.0,
+        "opp_fps_pct":       62.0,
+        "opp_hr9":           1.1,
+        "opp_babip":         0.290,
         "park_hr_factor":    100.0,
         "hr_weather_boost":  0.0,
         "avg_bat_order":     5.0,
@@ -750,6 +797,9 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "opp_k_pct_season":  str(row.get("opp_k_pct_season", "")),
             "opp_bb_pct_season": str(row.get("opp_bb_pct_season", "")),
             "opp_hard_hit_pct":  str(row.get("opp_hard_hit_pct", "")),
+            "opp_hr_per_fb":     str(row.get("opp_hr_per_fb", "")),
+            "opp_fps_pct":       str(row.get("opp_fps_pct", "")),
+            "opp_babip":         str(row.get("opp_babip", "")),
             "game_total":        str(row.get("game_total", "")),
             "park_hr_factor":    str(row.get("park_hr_factor", "")),
             "over_hit":          "Pending",

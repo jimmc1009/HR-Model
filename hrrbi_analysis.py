@@ -236,6 +236,9 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("opp_k_pct_season",  "Opp K%"),
         ("opp_bb_pct_season", "Opp BB%"),
         ("opp_hard_hit_pct",  "Opp Hard Hit%"),
+        ("opp_hr_per_fb",     "Opp HR/FB%"),
+        ("opp_fps_pct",       "Opp FPS%"),
+        ("opp_babip",         "Opp BABIP"),
         # Game context
         ("game_total",        "Game Total"),
         ("park_hr_factor",    "Park HR Factor"),
