@@ -748,6 +748,15 @@ def build_season_stats_pitcher(bbe, full_df, probable_ids):
     season["hard_hit_pct_allowed"]      = (season["season_hard_hit_allowed"] / season["season_bbe_allowed"] * 100).round(2)
     season["avg_ev_allowed"]            = season["avg_ev_allowed"].round(2)
 
+    # BABIP allowed = (H - HR) / (BBE - HR)
+    # Measures how many balls in play become hits — high BABIP = more hits for batters
+    hits_allowed    = bbe.groupby("pitcher")["is_hit"].sum().rename("season_hits_allowed")
+    season          = season.merge(hits_allowed.reset_index(), on="pitcher", how="left")
+    season["season_hits_allowed"] = season["season_hits_allowed"].fillna(0)
+    babip_num       = season["season_hits_allowed"] - season["season_hr_allowed"]
+    babip_denom     = season["season_bbe_allowed"]  - season["season_hr_allowed"]
+    season["babip_allowed"] = (babip_num / babip_denom.replace(0, pd.NA)).round(3)
+
     if "pitcher_hand" not in season.columns:
         season["pitcher_hand"] = ""
 
