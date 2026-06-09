@@ -750,7 +750,9 @@ def build_season_stats_pitcher(bbe, full_df, probable_ids):
 
     # BABIP allowed = (H - HR) / (BBE - HR)
     # Measures how many balls in play become hits — high BABIP = more hits for batters
-    hits_allowed    = bbe.groupby("pitcher")["is_hit"].sum().rename("season_hits_allowed")
+    bbe_hits = bbe.copy()
+    bbe_hits["is_hit_calc"] = bbe_hits["events"].astype("string").str.lower().isin(HIT_EVENTS)
+    hits_allowed    = bbe_hits.groupby("pitcher")["is_hit_calc"].sum().rename("season_hits_allowed")
     season          = season.merge(hits_allowed.reset_index(), on="pitcher", how="left")
     season["season_hits_allowed"] = season["season_hits_allowed"].fillna(0)
     babip_num       = season["season_hits_allowed"] - season["season_hr_allowed"]
