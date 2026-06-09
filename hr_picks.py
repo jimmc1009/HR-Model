@@ -31,7 +31,7 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.4   # raised from 1.0 — separator at 14.6% and improving
+PITCH_MATCHUP_WEIGHT = 1.3   # raised from 1.0 — separator at 14.6% and improving
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
 
@@ -48,10 +48,10 @@ MIN_BATTING_AVG  = 0.200
 SCORE_TIER_HIT_RATES = {
     "13+":      0.200,
     "12-13":    0.200,
-    "11-12":    0.240,
-    "10-11":    0.150,
-    "9-10":     0.164,
-    "8.5-9":    0.100,
+    "11-12":    0.200,
+    "10-11":    0.200,
+    "9-10":     0.120,
+    "8.5-9":    0.120,
 }
 
 COLOR_BG         = {"red": 0.114, "green": 0.114, "blue": 0.114}
@@ -286,14 +286,20 @@ def score_pitcher_quality_penalty(
     return round(penalty * sample_weight, 3)
 
 
-# ── Platoon penalty only ───────────────────────────────────────────────────
+# ── Platoon score — two-way ────────────────────────────────────────────────
+# Rewards platoon advantages, penalizes disadvantages
+# Batter ISO splits + pitcher platoon barrel% for full matchup context
+# Weight: 0.8 (conservative until separator data confirms strength)
+# Cap: ±2.0 points before weight
 
-def compute_platoon_penalty(row: pd.Series) -> tuple:
+PLATOON_WEIGHT = 0.8
+
+def compute_platoon_score(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
     p_throws    = str(row.get("pitcher_hand", "")).strip().upper()
 
-    penalty = 0.0
-    parts   = []
+    score = 0.0
+    parts = []
 
     iso_vs_lhp = safe_float(row.get("vs_lhp_iso", 0))
     iso_vs_rhp = safe_float(row.get("vs_rhp_iso", 0))
@@ -303,33 +309,65 @@ def compute_platoon_penalty(row: pd.Series) -> tuple:
         iso_vs_opp  = iso_vs_rhp
         label       = f"{batter_hand}HH vs LHP"
         start_rate  = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
     elif p_throws == "R":
         iso_vs_this = iso_vs_rhp
         iso_vs_opp  = iso_vs_lhp
         label       = f"{batter_hand}HH vs RHP"
         start_rate  = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
     else:
         return 0.0, ""
 
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
+
+    # ── Batter ISO split — positive for advantage, negative for disadvantage
     if has_iso_data:
-        iso_gap = iso_vs_opp - iso_vs_this
-        if iso_gap >= 0.200:
-            penalty += 2.0
+        iso_gap = iso_vs_this - iso_vs_opp  # positive = batter favors this hand
+
+        if iso_gap >= 0.080:
+            score += 1.5
+            parts.append(f"✅ Platoon advantage ({label}) — ISO {iso_vs_this:.3f} vs this hand")
+        elif iso_gap >= 0.050:
+            score += 0.8
+            parts.append(f"📈 Platoon edge ({label}) — ISO {iso_vs_this:.3f} vs this hand")
+        elif iso_gap >= 0.025:
+            score += 0.3
+        elif iso_gap <= -0.200:
+            score -= 2.0
             parts.append(f"🚨 Severe platoon weakness ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap >= 0.140:
-            penalty += 1.2
+        elif iso_gap <= -0.140:
+            score -= 1.2
             parts.append(f"❌ Platoon disadvantage ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap >= 0.100:
-            penalty += 0.6
+        elif iso_gap <= -0.100:
+            score -= 0.6
             parts.append(f"⚠️ Moderate platoon weakness ({label})")
 
+    # ── Pitcher barrel% vs this batter hand
+    if pitcher_barrel_vs_hand > 0:
+        if pitcher_barrel_vs_hand >= 14:
+            score += 0.8
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {batter_hand}HH")
+        elif pitcher_barrel_vs_hand >= 11:
+            score += 0.4
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {batter_hand}HH")
+        elif pitcher_barrel_vs_hand >= 9:
+            score += 0.2
+        elif pitcher_barrel_vs_hand <= 4:
+            score -= 0.6
+            parts.append(f"⚠️ Pitcher elite vs {batter_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed")
+        elif pitcher_barrel_vs_hand <= 6:
+            score -= 0.3
+
+    # ── Start rate penalty
     if start_rate < 0.50:
         start_penalty = round((0.50 - start_rate) * 3.0, 3)
-        penalty      += start_penalty
+        score        -= start_penalty
         parts.append(f"⚠️ Rarely starts vs this hand ({start_rate:.0%})")
 
-    return round(penalty, 3), " | ".join(parts)
+    # Cap before weight
+    score = max(-2.0, min(2.0, score))
+    return round(score * PLATOON_WEIGHT, 3), " | ".join(parts)
 
 
 # ── Pitch matchup score ────────────────────────────────────────────────────
@@ -645,8 +683,8 @@ def prepare_combined(
     combined = combined.copy()
 
     # ── Compute components ─────────────────────────────────────────────────
-    platoon_results = combined.apply(compute_platoon_penalty, axis=1)
-    combined["platoon_penalty"] = platoon_results.apply(lambda x: x[0])
+    platoon_results = combined.apply(compute_platoon_score, axis=1)
+    combined["platoon_score"]   = platoon_results.apply(lambda x: x[0])
     combined["platoon_desc"]    = platoon_results.apply(lambda x: x[1])
 
     pitch_results = combined.apply(compute_pitch_matchup_score, axis=1)
@@ -675,9 +713,8 @@ def prepare_combined(
     combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.0)
     combined["bvp_capped"]           = combined["bvp_score"].clip(-0.5, 1.0)
     combined["momentum_capped"]      = combined["momentum_score"].clip(-0.5, 1.5)
-    combined["total_penalty"]        = (
-        combined["platoon_penalty"] + combined["pitch_penalty"]
-    ).clip(0, 3.0)
+    combined["platoon_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
+    combined["total_penalty"]        = combined["pitch_penalty"].clip(0, 2.0)
 
     # ── Final score ────────────────────────────────────────────────────────
     combined["score"] = (
@@ -699,7 +736,8 @@ def prepare_combined(
         # Context — capped
         combined["pitch_matchup_capped"] * PITCH_MATCHUP_WEIGHT +
         combined["bvp_capped"]           * BVP_WEIGHT +
-        combined["momentum_capped"]      * MOMENTUM_WEIGHT -
+        combined["momentum_capped"]      * MOMENTUM_WEIGHT +
+        combined["platoon_capped"] -
         combined["total_penalty"]
     ).round(3)
 
@@ -1470,6 +1508,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "hr_per_fb":              str(row.get("hr_per_fb", "")),
             "pull_rate":              str(row.get("pull_rate", "")),
             "platoon_matchup":        str(row.get("platoon_desc", "")),
+            "platoon_score":          str(row.get("platoon_score", "")),
             "pitch_matchup":          str(row.get("pitch_matchup_desc", "")),
             "pitcher_barrel_pct":     str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":      str(row.get("pitcher_hr_per_fb", "")),
