@@ -135,6 +135,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "pitcher_barrel_pct", "pitcher_hr_per_fb",
         "pitcher_barrel_vs_lhh", "pitcher_barrel_vs_rhh",
         "park_hr_factor", "weather_boost", "temp_f", "pitch_matchup_score",
+        "platoon_score",
     ]
     for col in numeric_features:
         if col in scored.columns:
@@ -215,6 +216,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "avg_ev_5d":              "Avg EV (5d)",
         "avg_ev_10d":             "Avg EV (10d)",
         "pitch_matchup_score":    "Pitch Matchup Score",
+        "platoon_score":          "Platoon Score",
     }
 
     for col, label in feature_labels.items():
