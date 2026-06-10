@@ -373,7 +373,7 @@ def build_rows(
     rows = []
 
     # ── HOME RUN VALUE PLAYS ─────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 11+ | +301 to +699"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Breakeven", "Edge", ""]), "col_header_hr"))
 
     if hr_df.empty or not hr_hit_rates:
@@ -421,27 +421,26 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter to actionable plays only — score 9.0+ and odds +301 to +699
+        # Filter to score 11+ and odds +301 to +699 — best tier, actionable odds
         hr_value_plays = [
             p for p in hr_value_plays
-            if float(p["score"]) >= 9.0
+            if float(p["score"]) >= 11.0
             and safe_float(p["odds"].replace("+", "")) >= 301
             and safe_float(p["odds"].replace("+", "")) <= 699
         ]
 
         if not hr_value_plays:
-            rows.append((pad(["—", "No value plays today — no qualifying picks (score 9+, +301 to +699)", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — no qualifying picks (score 11+, +301 to +699)", ""]), "no_plays"))
         else:
-            hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
+            hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
             for i, play in enumerate(hr_value_plays):
                 score_val = float(play["score"])
-                # Tier tag for clarity
-                if score_val >= 11:
-                    tier_tag = "🟢"  # strong tier
-                elif score_val >= 9:
-                    tier_tag = "🟡"  # moderate tier
+                if score_val >= 13:
+                    tier_tag = "🔥"
+                elif score_val >= 12:
+                    tier_tag = "🟢"
                 else:
-                    tier_tag = "⚪"
+                    tier_tag = "🟡"
                 rows.append((pad([
                     str(i + 1),
                     play["batter"],
@@ -451,7 +450,7 @@ def build_rows(
                     play["breakeven"],
                     play["edge"],
                     "",
-                ]), f"data_hr_{'strong' if score_val >= 11 else 'moderate'}"))
+                ]), f"data_hr_{'strong' if score_val >= 12 else 'moderate'}"))
 
     rows.append((E[:], "spacer"))
 
