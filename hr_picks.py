@@ -971,10 +971,24 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
     hr_df["is_hr"]     = hr_df["events"].astype("string").str.lower().eq("home_run")
     hr_events          = hr_df[hr_df["is_hr"]].copy()
 
-    hr_batter_ids = hr_events["batter"].dropna().astype(int).unique().tolist()
-    name_map      = {}
-    for i in range(0, len(hr_batter_ids), 50):
-        chunk = hr_batter_ids[i:i + 50]
+    # Build appeared lookup — all batters with any PA (not just HR hitters)
+    all_pa_events = {
+        "single", "double", "triple", "home_run", "field_out",
+        "grounded_into_double_play", "double_play", "triple_play",
+        "field_error", "fielders_choice", "fielders_choice_out",
+        "force_out", "strikeout", "strikeout_double_play", "other_out",
+        "walk", "hit_by_pitch", "sac_fly", "sac_fly_double_play",
+        "sac_bunt", "sac_bunt_double_play", "intent_walk",
+    }
+    appeared_df   = hr_df[hr_df["events"].astype("string").str.lower().isin(all_pa_events)].copy()
+    all_batter_ids = pd.concat([
+        hr_events["batter"].dropna().astype(int),
+        appeared_df["batter"].dropna().astype(int),
+    ]).unique().tolist()
+
+    name_map = {}
+    for i in range(0, len(all_batter_ids), 50):
+        chunk = all_batter_ids[i:i + 50]
         try:
             resp = requests.get(f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}", timeout=30)
             resp.raise_for_status()
@@ -991,7 +1005,13 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
     hr_events["date_str"]    = hr_events["game_date"].dt.strftime("%Y-%m-%d")
     hr_lookup = set(zip(hr_events["date_str"], hr_events["player_name"].str.lower().str.strip()))
 
+    appeared_df = appeared_df.copy()
+    appeared_df["player_name"] = appeared_df["batter"].map(lambda x: name_map.get(int(x), "") if pd.notna(x) else "")
+    appeared_df["date_str"]    = appeared_df["game_date"].dt.strftime("%Y-%m-%d")
+    appeared_lookup = set(zip(appeared_df["date_str"], appeared_df["player_name"].str.lower().str.strip()))
+
     resolved_count = 0
+    voided_count   = 0
     for idx, row in existing.iterrows():
         if row["hit_hr"] != "Pending" or row["date"] == today_str:
             continue
@@ -999,15 +1019,23 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
         pick_name = str(row["player_name"]).lower().strip()
         if not pick_date or not pick_name:
             existing.at[idx, "hit_hr"] = "No"
+        elif (pick_date, pick_name) in hr_lookup:
+            existing.at[idx, "hit_hr"] = "Yes"
+        elif (pick_date, pick_name) in appeared_lookup:
+            existing.at[idx, "hit_hr"] = "No"
         else:
-            existing.at[idx, "hit_hr"] = "Yes" if (pick_date, pick_name) in hr_lookup else "No"
+            # Not in any PA data — DNP/scratch, void
+            existing.at[idx, "hit_hr"] = "Void"
+            voided_count += 1
         resolved_count += 1
 
-    yes_count = sum(1 for d in pending_dates for _, r in existing.iterrows()
-                    if r["date"] == d and r["hit_hr"] == "Yes")
-    no_count  = sum(1 for d in pending_dates for _, r in existing.iterrows()
-                    if r["date"] == d and r["hit_hr"] == "No")
-    print(f"Resolved {resolved_count} picks. Yes: {yes_count} | No: {no_count} (pending dates only)")
+    yes_count  = sum(1 for d in pending_dates for _, r in existing.iterrows()
+                     if r["date"] == d and r["hit_hr"] == "Yes")
+    no_count   = sum(1 for d in pending_dates for _, r in existing.iterrows()
+                     if r["date"] == d and r["hit_hr"] == "No")
+    void_count = sum(1 for d in pending_dates for _, r in existing.iterrows()
+                     if r["date"] == d and r["hit_hr"] == "Void")
+    print(f"Resolved {resolved_count} picks. Yes: {yes_count} | No: {no_count} | Void: {void_count} (pending dates only)")
     ws.clear()
     ws.update([existing.columns.tolist()] + existing.astype(str).values.tolist())
     print("Picks_Log updated.")

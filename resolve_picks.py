@@ -137,8 +137,15 @@ def get_pitcher_ks_for_game(game_pk: int) -> dict:
     return result
 
 
-def get_batter_hrrbi_for_game(game_pk: int) -> dict:
-    result = {}
+def get_batter_hrrbi_for_game(game_pk: int) -> tuple:
+    """Returns (results dict, appeared_set).
+    results: name_norm -> H+R+RBI total for players who batted
+    appeared: set of name_norm for all players in the boxscore (batted or not)
+    Players in appeared but not results had 0 H+R+RBI.
+    Players NOT in appeared at all did not play (DNP) — should be voided.
+    """
+    results  = {}
+    appeared = set()
     try:
         url  = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
         resp = requests.get(url, timeout=15)
@@ -147,6 +154,12 @@ def get_batter_hrrbi_for_game(game_pk: int) -> dict:
         for side in ["home", "away"]:
             batters  = data.get("teams", {}).get(side, {}).get("batters", [])
             players  = data.get("teams", {}).get(side, {}).get("players", {})
+            # All players in roster (includes bench, did not play)
+            for player_key, player_data in players.items():
+                full_name = player_data.get("person", {}).get("fullName", "")
+                if full_name:
+                    appeared.add(normalize_name(full_name))
+            # Only batters who actually appeared get H+R+RBI totals
             for pid in batters:
                 player_key  = f"ID{pid}"
                 player_data = players.get(player_key, {})
@@ -156,10 +169,10 @@ def get_batter_hrrbi_for_game(game_pk: int) -> dict:
                 runs        = stats.get("runs", 0)
                 rbi         = stats.get("rbi", 0)
                 if full_name:
-                    result[normalize_name(full_name)] = int(hits) + int(runs) + int(rbi)
+                    results[normalize_name(full_name)] = int(hits) + int(runs) + int(rbi)
     except Exception as e:
         print(f"  WARNING: Could not fetch batter stats for game {game_pk}: {e}")
-    return result
+    return results, appeared
 
 
 def build_ks_results(dates: list) -> dict:
@@ -175,17 +188,58 @@ def build_ks_results(dates: list) -> dict:
     return results
 
 
-def build_hrrbi_results(dates: list) -> dict:
-    results = {}
+def get_batter_appeared_for_game(game_pk: int) -> tuple:
+    """Returns (hr_hitters set, appeared set) for a game.
+    hr_hitters: name_norm of players who hit a HR
+    appeared: name_norm of all players in the boxscore roster
+    """
+    hr_hitters = set()
+    appeared   = set()
+    try:
+        url  = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        for side in ["home", "away"]:
+            players = data.get("teams", {}).get(side, {}).get("players", {})
+            batters = data.get("teams", {}).get(side, {}).get("batters", [])
+            for player_key, player_data in players.items():
+                full_name = player_data.get("person", {}).get("fullName", "")
+                if full_name:
+                    appeared.add(normalize_name(full_name))
+            for pid in batters:
+                player_key  = f"ID{pid}"
+                player_data = players.get(player_key, {})
+                full_name   = player_data.get("person", {}).get("fullName", "")
+                stats       = player_data.get("stats", {}).get("batting", {})
+                home_runs   = int(stats.get("homeRuns", 0))
+                if full_name and home_runs > 0:
+                    hr_hitters.add(normalize_name(full_name))
+    except Exception as e:
+        print(f"  WARNING: Could not fetch batter data for game {game_pk}: {e}")
+    return hr_hitters, appeared
+
+
+def build_hrrbi_results(dates: list) -> tuple:
+    """Returns (results dict, appeared set).
+    results: (date, name_norm) -> H+R+RBI total
+    appeared: set of (date, name_norm) for all players in any boxscore that day
+    Players in appeared but missing from results had 0 H+R+RBI.
+    Players not in appeared at all are DNP — void their picks.
+    """
+    results  = {}
+    appeared = set()
     for game_date in dates:
         print(f"  Fetching HRRBI results for {game_date}...")
         game_pks = get_games_for_date(game_date)
         for pk in game_pks:
-            batter_stats = get_batter_hrrbi_for_game(pk)
+            batter_stats, game_appeared = get_batter_hrrbi_for_game(pk)
             for name_norm, total in batter_stats.items():
                 results[(game_date, name_norm)] = total
+            for name_norm in game_appeared:
+                appeared.add((game_date, name_norm))
         time.sleep(0.5)
-    return results
+    return results, appeared
 
 
 # ── Resolution ────────────────────────────────────────────────────────────
@@ -282,9 +336,10 @@ def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
     pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
     print(f"Resolving {len(pending)} pending HRRBI picks across {len(pending_dates)} dates...")
 
-    hrrbi_results = build_hrrbi_results(pending_dates)
+    hrrbi_results, hrrbi_appeared = build_hrrbi_results(pending_dates)
 
     resolved = 0
+    voided   = 0
     for idx, row in log.iterrows():
         if str(row.get("win", "")).strip() != "":
             continue
@@ -297,12 +352,19 @@ def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
         actual_total = hrrbi_results.get((row_date, player_norm))
 
         if actual_total is None:
-            log.at[idx, "win"] = "No"
+            # Check if player appeared in any boxscore that day
+            if (row_date, player_norm) in hrrbi_appeared:
+                # Player was in roster but didn't bat — DNP/scratch
+                log.at[idx, "win"] = "Void"
+                voided += 1
+            else:
+                # Not found at all — could be name mismatch, resolve as No
+                log.at[idx, "win"] = "No"
         else:
             log.at[idx, "win"] = "Yes" if actual_total > line else "No"
         resolved += 1
 
-    print(f"Resolved {resolved} HRRBI picks. Yes: {(log['win'] == 'Yes').sum()} | No: {(log['win'] == 'No').sum()}")
+    print(f"Resolved {resolved} HRRBI picks. Yes: {(log['win'] == 'Yes').sum()} | No: {(log['win'] == 'No').sum()} | Void: {voided}")
 
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
@@ -342,32 +404,21 @@ def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
     pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
     print(f"Resolving {len(pending)} pending HR_All_Scores across {len(pending_dates)} dates...")
 
-    hr_lookup = set()
+    hr_lookup      = set()
+    appeared_lookup = set()
     for game_date in pending_dates:
         print(f"  Fetching HR results for {game_date}...")
         game_pks = get_games_for_date(game_date)
         for pk in game_pks:
-            try:
-                url  = f"https://statsapi.mlb.com/api/v1/game/{pk}/boxscore"
-                resp = requests.get(url, timeout=15)
-                resp.raise_for_status()
-                data = resp.json()
-                for side in ["home", "away"]:
-                    batters  = data.get("teams", {}).get(side, {}).get("batters", [])
-                    players  = data.get("teams", {}).get(side, {}).get("players", {})
-                    for pid in batters:
-                        player_key  = f"ID{pid}"
-                        player_data = players.get(player_key, {})
-                        full_name   = player_data.get("person", {}).get("fullName", "")
-                        stats       = player_data.get("stats", {}).get("batting", {})
-                        home_runs   = int(stats.get("homeRuns", 0))
-                        if full_name and home_runs > 0:
-                            hr_lookup.add((game_date, normalize_name(full_name)))
-            except Exception as e:
-                print(f"  WARNING: Could not fetch HR data for game {pk}: {e}")
+            hr_hitters, appeared = get_batter_appeared_for_game(pk)
+            for name_norm in hr_hitters:
+                hr_lookup.add((game_date, name_norm))
+            for name_norm in appeared:
+                appeared_lookup.add((game_date, name_norm))
         time.sleep(0.5)
 
     resolved = 0
+    voided   = 0
     for idx, row in log.iterrows():
         if str(row.get("hit_hr", "")).strip() != "Pending":
             continue
@@ -375,12 +426,21 @@ def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
         if row_date == today_str or not row_date:
             continue
         player_norm = normalize_name(str(row.get("player_name", "")))
-        log.at[idx, "hit_hr"] = "Yes" if (row_date, player_norm) in hr_lookup else "No"
+        if (row_date, player_norm) in hr_lookup:
+            log.at[idx, "hit_hr"] = "Yes"
+        elif (row_date, player_norm) in appeared_lookup:
+            # Player was in roster but didn't hit HR — No
+            log.at[idx, "hit_hr"] = "No"
+        else:
+            # Not in any boxscore roster — DNP/scratch, void
+            log.at[idx, "hit_hr"] = "Void"
+            voided += 1
         resolved += 1
 
-    yes_count = (log["hit_hr"] == "Yes").sum()
-    no_count  = (log["hit_hr"] == "No").sum()
-    print(f"Resolved {resolved} HR_All_Scores. Yes: {yes_count} | No: {no_count}")
+    yes_count  = (log["hit_hr"] == "Yes").sum()
+    no_count   = (log["hit_hr"] == "No").sum()
+    void_count = (log["hit_hr"] == "Void").sum()
+    print(f"Resolved {resolved} HR_All_Scores. Yes: {yes_count} | No: {no_count} | Void: {void_count}")
 
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
@@ -490,9 +550,10 @@ def resolve_hrrbi_all_scores(gc: gspread.Client, sheet_id: str) -> None:
     pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
     print(f"Resolving {len(pending)} pending HRRBI_All_Scores across {len(pending_dates)} dates...")
 
-    hrrbi_results = build_hrrbi_results(pending_dates)
+    hrrbi_results, hrrbi_appeared = build_hrrbi_results(pending_dates)
 
     resolved = 0
+    voided   = 0
     for idx, row in log.iterrows():
         if str(row.get("actual_hrrbi", "")).strip() != "Pending":
             continue
@@ -510,6 +571,12 @@ def resolve_hrrbi_all_scores(gc: gspread.Client, sheet_id: str) -> None:
             log.at[idx, "actual_hrrbi"] = str(actual_total)
             log.at[idx, "over_hit"]     = "Yes" if actual_total > line else "No"
             log.at[idx, "under_hit"]    = "Yes" if actual_total < line else "No"
+        elif (row_date, player_norm) in hrrbi_appeared:
+            # Player was in roster but didn't bat — DNP/scratch, void it
+            log.at[idx, "actual_hrrbi"] = "Void"
+            log.at[idx, "over_hit"]     = "Void"
+            log.at[idx, "under_hit"]    = "Void"
+            voided += 1
         else:
             log.at[idx, "actual_hrrbi"] = "Not Found"
             log.at[idx, "over_hit"]     = "Not Found"
@@ -554,6 +621,9 @@ def build_scorecard(
         return
 
     scored = log[log["win"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    voided = log[log["win"].astype(str).str.strip().isin(["Void"])]
+    if not voided.empty:
+        print(f"  {len(voided)} voided picks excluded from scorecard (DNP)")
     if scored.empty:
         print(f"{sheet_name}: no scored picks yet — skipping.")
         return
