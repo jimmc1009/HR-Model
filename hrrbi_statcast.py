@@ -26,6 +26,7 @@ HRRBI_COLS = [
     "avg",
     "obp",
     "iso",
+    "batting_avg",
     "woba",
     "bb_pct",
     "k_pct",
@@ -115,6 +116,8 @@ def main() -> None:
         print(f"  Missing columns (will be skipped): {missing}")
 
     out = batters[available].copy()
+    if "batting_avg" in out.columns:
+        out = out.rename(columns={"batting_avg": "avg"})
 
     # Write to HRRBI_Statcast
     try:

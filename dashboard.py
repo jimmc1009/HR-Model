@@ -226,6 +226,78 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
     return hit_rates
 
 
+def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
+    """
+    Build hit rate lookup from HR_All_Scores resolved data.
+    Returns dict keyed by score_tier -> hit_rate
+    """
+    hit_rates = {}
+
+    if hr_all_scores.empty:
+        return hit_rates
+
+    resolved = hr_all_scores[
+        hr_all_scores["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])
+    ].copy()
+
+    if resolved.empty:
+        return hit_rates
+
+    resolved["hr_score"]  = resolved["hr_score"].apply(safe_float)
+    resolved["hit_bool"]  = resolved["hit_hr"].astype(str).str.strip() == "Yes"
+    resolved["odds_num"]  = resolved["consensus_odds"].apply(safe_float)
+
+    tier_defs = [
+        ("13+",    13,  999),
+        ("12-13",  12,   13),
+        ("11-12",  11,   12),
+        ("10-11",  10,   11),
+        ("9-10",    9,   10),
+        ("8.5-9",   8.5,  9),
+    ]
+
+    for tier_label, lo, hi in tier_defs:
+        sub = resolved[(resolved["hr_score"] >= lo) & (resolved["hr_score"] < hi)]
+        if len(sub) >= 5:
+            hit_rates[tier_label] = sub["hit_bool"].mean()
+
+    print(f"  HR hit rate lookup built: {len(hit_rates)} tiers from {len(resolved)} resolved picks")
+    return hit_rates
+
+
+def get_hr_score_tier(score: float) -> str:
+    if score >= 13:   return "13+"
+    if score >= 12:   return "12-13"
+    if score >= 11:   return "11-12"
+    if score >= 10:   return "10-11"
+    if score >= 9:    return "9-10"
+    return "8.5-9"
+
+
+def calc_hr_value(
+    score: float,
+    odds: float,
+    hit_rates: dict,
+) -> tuple:
+    """
+    Returns (hit_rate_pct, breakeven_american, has_value, edge_str)
+    """
+    tier = get_hr_score_tier(score)
+    hit_rate = hit_rates.get(tier)
+    if hit_rate is None or odds <= 0:
+        return 0.0, "—", False, "No data"
+
+    implied_odds = american_to_implied(odds)
+    edge         = hit_rate - implied_odds
+    edge_pct     = round(edge * 100, 1)
+    has_value    = edge > 0
+
+    breakeven_american = implied_to_american(hit_rate)
+    edge_str           = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
+
+    return round(hit_rate * 100, 1), breakeven_american, has_value, edge_str
+
+
 def get_score_tier(score: float) -> str:
     if score >= 12:   return "12+"
     if score >= 10:   return "10-12"
@@ -290,6 +362,8 @@ def build_rows(
     hrrbi_df: pd.DataFrame,
     ks_hit_rates: dict,
     ks_today: pd.DataFrame = None,
+    hr_hit_rates: dict = None,
+    hr_today: pd.DataFrame = None,
 ):
     N = 9  # expanded to 9 cols for KS value section
 
@@ -299,64 +373,75 @@ def build_rows(
     E    = pad([])
     rows = []
 
-    # ── HOME RUN PICKS ────────────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN PICKS — Score ≥10.0 | +301 to +699 | Value Plays Only"]), "section_header_hr"))
-    rows.append((pad(["Rank", "Batter", "Team", "HR Score", "Odds", "Edge", ""]), "col_header_hr"))
+    # ── HOME RUN VALUE PLAYS ─────────────────────────────────────────────
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 11+ | +301 to +699"]), "section_header_hr"))
+    rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
 
-    if hr_df.empty:
+    hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
+    if hr_source.empty or not hr_hit_rates:
         rows.append((pad(["—", "No value plays today", ""]), "no_plays"))
     else:
-        hr_clean = hr_df.copy()
-        hr_clean = hr_clean[hr_clean.iloc[:, 1].astype(str).str.strip() != ""]
-        hr_clean = hr_clean[~hr_clean.iloc[:, 1].astype(str).str.contains(
-            "Last Run|Batter|No qualifying|No value", na=False
-        )]
-        hr_clean = hr_clean[pd.to_numeric(hr_clean.iloc[:, 0], errors="coerce") >= 1]
-        hr_clean = hr_clean.drop_duplicates(subset=[hr_clean.columns[0]], keep="first")
+        hr_value_plays = []
 
-        print(f"  HR rows after cleaning: {len(hr_clean)}")
-        if "Edge" in hr_clean.columns:
-            print(f"  Edge column found. Sample values: {hr_clean['Edge'].head(5).tolist()}")
-            hr_clean = hr_clean[hr_clean["Edge"].apply(edge_is_positive_or_neutral)]
-            print(f"  HR rows after edge filter: {len(hr_clean)}")
-        else:
-            print("  WARNING: Edge column not found in Top_HR_Picks")
-            hr_clean = pd.DataFrame()
-
-        if hr_clean.empty:
-            rows.append((pad(["—", "No value plays today — check Top_HR_Picks for full list", ""]), "no_plays"))
-        else:
-            cols = hr_clean.columns.tolist()
-            for i in range(len(hr_clean)):
-                try:
-                    rank = str(int(pd.to_numeric(hr_clean.iloc[i, 0], errors="coerce")))
-                except Exception:
-                    rank = str(i + 1)
-                try:
-                    batter = str(hr_clean.iloc[i, 1]).strip()
-                except Exception:
-                    batter = ""
-                try:
-                    team = str(hr_clean.iloc[i, 3]).strip()
-                except Exception:
-                    team = ""
-                try:
-                    hr_score = str(hr_clean.iloc[i, cols.index("HR Score")]).strip() if "HR Score" in cols else ""
-                except Exception:
-                    hr_score = ""
-                try:
-                    odds = str(hr_clean.iloc[i, cols.index("Consensus Odds")]).strip() if "Consensus Odds" in cols else ""
-                    if odds and odds not in ("", "nan"):
-                        odds = f"+{odds}" if not odds.startswith("+") else odds
-                except Exception:
-                    odds = ""
-                try:
-                    edge = str(hr_clean.iloc[i, cols.index("Edge")]).strip() if "Edge" in cols else ""
-                except Exception:
-                    edge = ""
+        for _, row in hr_source.iterrows():
+            try:
+                batter   = str(row.get("player_name", "")).strip()
                 if not batter or batter == "nan":
                     continue
-                rows.append((pad([rank, batter, team, hr_score, odds, edge, ""]), "data_hr"))
+                team     = str(row.get("team", "")).strip()
+                hr_score = safe_float(row.get("hr_score", 0))
+                odds_raw = str(row.get("consensus_odds", "")).strip()
+                odds_val = safe_float(odds_raw.replace("+", "")) if odds_raw not in ("", "nan") else 0.0
+
+                if odds_val <= 0 or hr_score <= 0:
+                    continue
+
+                hit_rate, breakeven, has_value, edge_str = calc_hr_value(hr_score, odds_val, hr_hit_rates)
+                # Show all qualifying picks — edge calc not reliable yet with small samples
+
+                odds_display = f"+{int(odds_val)}" if odds_val > 0 else str(int(odds_val))
+                hr_value_plays.append({
+                    "batter":    batter,
+                    "team":      team,
+                    "score":     str(round(hr_score, 1)),
+                    "odds":      odds_display,
+                    "breakeven": breakeven,
+                    "edge":      edge_str,
+                    "edge_num":  float(edge_str.replace("%", "").replace("+", "")),
+                })
+            except Exception:
+                continue
+
+        # Filter to score 11+ and odds +301 to +699 — best tier, actionable odds
+        hr_value_plays = [
+            p for p in hr_value_plays
+            if float(p["score"]) >= 11.0
+            and safe_float(p["odds"].replace("+", "")) >= 301
+            and safe_float(p["odds"].replace("+", "")) <= 699
+        ]
+
+        if not hr_value_plays:
+            rows.append((pad(["—", "No value plays today — no qualifying picks (score 11+, +301 to +699)", ""]), "no_plays"))
+        else:
+            hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
+            for i, play in enumerate(hr_value_plays):
+                score_val = float(play["score"])
+                if score_val >= 13:
+                    tier_tag = "🔥"
+                elif score_val >= 12:
+                    tier_tag = "🟢"
+                else:
+                    tier_tag = "🟡"
+                rows.append((pad([
+                    str(i + 1),
+                    play["batter"],
+                    play["team"],
+                    f"{tier_tag} {play['score']}",
+                    play["odds"],
+                    "",
+                    "",
+                    "",
+                ]), f"data_hr_{'strong' if score_val >= 12 else 'moderate'}"))
 
     rows.append((E[:], "spacer"))
 
@@ -711,13 +796,38 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                 }})
 
-            elif row_type == "data_hr":
-                # Edge col (5) for HR
-                edge_val = str(row_data[5])
+            elif row_type in ("data_hr", "data_hr_strong", "data_hr_moderate"):
+                # Score col (3) — green for strong tier, gold for moderate
+                score_col_color = COLOR_GREEN if "strong" in row_type else {"red": 1.0, "green": 0.843, "blue": 0.0} if "moderate" in row_type else COLOR_WHITE
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 3, "endColumnIndex": 4},
+                    "cell": {"userEnteredFormat": {
+                        "textFormat": {"foregroundColor": score_col_color, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                    }},
+                    "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+                }})
+                # Breakeven col (5) — grey informational
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 5, "endColumnIndex": 6},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": COLOR_HEADER_BG,
+                        "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": False,
+                                       "fontFamily": "Roboto Mono", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
+                # Edge col (6) for HR — green
+                edge_val = str(row_data[6])
                 if "+" in edge_val:
                     reqs.append({"repeatCell": {
                         "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                                  "startColumnIndex": 5, "endColumnIndex": 6},
+                                  "startColumnIndex": 6, "endColumnIndex": 7},
                         "cell": {"userEnteredFormat": {
                             "backgroundColor": COLOR_GREEN_DIM,
                             "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
@@ -848,6 +958,11 @@ def main() -> None:
     ks_all_scores = read_sheet_raw(gc, sheet_id, "KS_All_Scores")
     time.sleep(2)
 
+    # Read HR_All_Scores for hit rate lookup
+    print("Reading HR_All_Scores for hit rate lookup...")
+    hr_all_scores = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
+    time.sleep(2)
+
     print(f"HR picks: {len(hr_df)} rows")
     print(f"KS picks: {len(ks_df)} rows")
     print(f"HRRBI picks: {len(hrrbi_df)} rows")
@@ -856,13 +971,22 @@ def main() -> None:
     # Build KS hit rate lookup from resolved data
     ks_hit_rates = build_ks_hit_rates(ks_all_scores)
 
+    # Build HR hit rate lookup from resolved data
+    hr_hit_rates = build_hr_hit_rates(hr_all_scores)
+
+    # For HR value finder — use today's rows from HR_All_Scores (full universe)
+    from datetime import date as _date2
+    _today_str = _date2.today().strftime("%Y-%m-%d")
+    hr_today = hr_all_scores[hr_all_scores["date"].astype(str).str.strip() == _today_str].copy() if not hr_all_scores.empty else pd.DataFrame()
+    print(f"HR today's scores for value finder: {len(hr_today)} players")
+
     # For value finder — use today's rows from KS_All_Scores (full universe)
     from datetime import date as _date
     today_str = _date.today().strftime("%Y-%m-%d")
     ks_today  = ks_all_scores[ks_all_scores["date"].astype(str).str.strip() == today_str].copy() if not ks_all_scores.empty else pd.DataFrame()
     print(f"KS today's scores for value finder: {len(ks_today)} pitchers")
 
-    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates, ks_today)
+    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates, ks_today, hr_hit_rates, hr_today)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
     write_timestamp(gc, sheet_id)

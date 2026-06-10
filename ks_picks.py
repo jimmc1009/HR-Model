@@ -458,8 +458,7 @@ def calc_prop_signal(row: pd.Series) -> str:
 
     if score >= OVER_SCORE and edge >= OVER_EDGE:
         return f"OVER {line} ✅"
-    if score >= LEAN_OVER_SCORE and edge >= LEAN_OVER_EDGE:
-        return f"LEAN OVER {line}"
+    # LEAN OVER removed — market over-pricing makes lean signals unprofitable
     return "—"
 
 
