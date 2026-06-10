@@ -421,21 +421,37 @@ def build_rows(
             except Exception:
                 continue
 
+        # Filter to actionable plays only — score 9.0+ and odds +301 to +699
+        hr_value_plays = [
+            p for p in hr_value_plays
+            if float(p["score"]) >= 9.0
+            and safe_float(p["odds"].replace("+", "")) >= 301
+            and safe_float(p["odds"].replace("+", "")) <= 699
+        ]
+
         if not hr_value_plays:
-            rows.append((pad(["—", "No value plays today — no edge found vs hit rates", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — no qualifying picks (score 9+, +301 to +699)", ""]), "no_plays"))
         else:
             hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
             for i, play in enumerate(hr_value_plays):
+                score_val = float(play["score"])
+                # Tier tag for clarity
+                if score_val >= 11:
+                    tier_tag = "🟢"  # strong tier
+                elif score_val >= 9:
+                    tier_tag = "🟡"  # moderate tier
+                else:
+                    tier_tag = "⚪"
                 rows.append((pad([
                     str(i + 1),
                     play["batter"],
                     play["team"],
-                    play["score"],
+                    f"{tier_tag} {play['score']}",
                     play["odds"],
                     play["breakeven"],
                     play["edge"],
                     "",
-                ]), "data_hr"))
+                ]), f"data_hr_{'strong' if score_val >= 11 else 'moderate'}"))
 
     rows.append((E[:], "spacer"))
 
@@ -790,7 +806,19 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                     "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                 }})
 
-            elif row_type == "data_hr":
+            elif row_type in ("data_hr", "data_hr_strong", "data_hr_moderate"):
+                # Score col (3) — green for strong tier, gold for moderate
+                score_col_color = COLOR_GREEN if "strong" in row_type else {"red": 1.0, "green": 0.843, "blue": 0.0} if "moderate" in row_type else COLOR_WHITE
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 3, "endColumnIndex": 4},
+                    "cell": {"userEnteredFormat": {
+                        "textFormat": {"foregroundColor": score_col_color, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                    }},
+                    "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+                }})
                 # Breakeven col (5) — grey informational
                 reqs.append({"repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
