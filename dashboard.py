@@ -375,7 +375,7 @@ def build_rows(
 
     # ── HOME RUN VALUE PLAYS ─────────────────────────────────────────────
     rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 11+ | +301 to +699"]), "section_header_hr"))
-    rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Breakeven", "Edge", ""]), "col_header_hr"))
+    rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
     if hr_source.empty or not hr_hit_rates:
@@ -397,9 +397,7 @@ def build_rows(
                     continue
 
                 hit_rate, breakeven, has_value, edge_str = calc_hr_value(hr_score, odds_val, hr_hit_rates)
-
-                if not has_value:
-                    continue
+                # Show all qualifying picks — edge calc not reliable yet with small samples
 
                 odds_display = f"+{int(odds_val)}" if odds_val > 0 else str(int(odds_val))
                 hr_value_plays.append({
@@ -440,8 +438,8 @@ def build_rows(
                     play["team"],
                     f"{tier_tag} {play['score']}",
                     play["odds"],
-                    play["breakeven"],
-                    play["edge"],
+                    "",
+                    "",
                     "",
                 ]), f"data_hr_{'strong' if score_val >= 12 else 'moderate'}"))
 
