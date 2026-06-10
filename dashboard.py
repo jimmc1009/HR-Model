@@ -977,7 +977,9 @@ def main() -> None:
     hr_hit_rates = build_hr_hit_rates(hr_all_scores)
 
     # For HR value finder — use today's rows from HR_All_Scores (full universe)
-    hr_today = hr_all_scores[hr_all_scores["date"].astype(str).str.strip() == today_str].copy() if not hr_all_scores.empty else pd.DataFrame()
+    from datetime import date as _date2
+    _today_str = _date2.today().strftime("%Y-%m-%d")
+    hr_today = hr_all_scores[hr_all_scores["date"].astype(str).str.strip() == _today_str].copy() if not hr_all_scores.empty else pd.DataFrame()
     print(f"HR today's scores for value finder: {len(hr_today)} players")
 
     # For value finder — use today's rows from KS_All_Scores (full universe)
