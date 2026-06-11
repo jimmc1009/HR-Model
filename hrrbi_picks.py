@@ -252,13 +252,14 @@ def score_opp_babip(v: float) -> float:
 
 
 def score_opp_hr_per_fb(v: float) -> float:
-    """HR/FB% allowed — pitcher gives up HRs on fly balls, directly boosts H+R+RBI"""
+    """HR/FB% allowed — +15.3% STRONG+ separator, raised max contribution"""
+    if v >= 20.0: return  2.0
     if v >= 18.0: return  1.5
-    if v >= 15.0: return  1.0
-    if v >= 12.0: return  0.5
-    if v >= 10.0: return  0.1
-    if v <=  6.0: return -0.8
-    if v <=  8.0: return -0.4
+    if v >= 15.0: return  1.2
+    if v >= 12.0: return  0.7
+    if v >= 10.0: return  0.2
+    if v <=  6.0: return -1.0
+    if v <=  8.0: return -0.5
     return 0.0
 
 
@@ -475,7 +476,7 @@ def calc_prop_signal(row: pd.Series) -> str:
     if over_odds < MIN_ODDS_FOR_SIGNAL:
         return "—"
 
-    if score >= 11.0:
+    if score >= 12.0:
         return f"OVER {line} ✅"
     if score >= 9.0:
         return f"LEAN OVER {line}"
