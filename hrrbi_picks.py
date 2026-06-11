@@ -40,7 +40,8 @@ MAX_PER_TEAM         = 2
 TOP_N                = 15
 
 # Signal filters
-MIN_ODDS_FOR_SIGNAL  = -110
+MIN_ODDS_FOR_SIGNAL  = 100   # data shows +100 to +120 is sweet spot
+MAX_ODDS_FOR_SIGNAL  = 120   # +121+ underperforming across all tiers
 MAX_LINE_FOR_SIGNAL  = 1.5
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
@@ -473,7 +474,7 @@ def calc_prop_signal(row: pd.Series) -> str:
         return "—"
     if line > MAX_LINE_FOR_SIGNAL:
         return "—"
-    if over_odds < MIN_ODDS_FOR_SIGNAL:
+    if over_odds < MIN_ODDS_FOR_SIGNAL or over_odds > MAX_ODDS_FOR_SIGNAL:
         return "—"
 
     if score >= 12.0:
