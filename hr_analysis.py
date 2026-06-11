@@ -296,8 +296,10 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("8.5-9",   8.5,   9),
     ]
     odds_defs = [
+        ("≤ +300",       0,   301),
         ("+301 to +499", 301, 500),
         ("+500 to +699", 500, 700),
+        ("+700+",        700, 9999),
     ]
     if "odds_num" in scored.columns:
         for tier_label, t_lo, t_hi in tier_defs:
