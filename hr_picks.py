@@ -31,7 +31,7 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.5   # raised from 1.3 — separator at 11.9% and climbing
+PITCH_MATCHUP_WEIGHT = 1.7   # raised from 1.5 — separator at 15.0% STRONG+
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
 
@@ -46,11 +46,11 @@ MIN_BATTING_AVG  = 0.200
 
 # ── Score tier hit rates (from HR_Analysis, updated as data accumulates) ───
 SCORE_TIER_HIT_RATES = {
-    "13+":    0.200,  # 7 picks — too small, keep blended
-    "12-13":  0.273,  # 11 picks — updated
-    "11-12":  0.228,  # 31 picks — updated
-    "10-11":  0.146,  # 41 picks — updated
-    "9-10":   0.164,  # 65 picks — updated
+    "13+":    0.200,  # 9 picks — too small, keep blended
+    "12-13":  0.250,  # 16 picks — updated
+    "11-12":  0.194,  # 36 picks — updated
+    "10-11":  0.176,  # 51 picks — updated
+    "9-10":   0.158,  # 76 picks — updated
     "8.5-9":  0.100,  # keep floor
 }
 
@@ -292,7 +292,7 @@ def score_pitcher_quality_penalty(
 # Weight: 0.8 (conservative until separator data confirms strength)
 # Cap: ±2.0 points before weight
 
-PLATOON_WEIGHT = 1.2  # raised from 0.8 — separator at +162.7% STRONG+
+PLATOON_WEIGHT = 1.4  # raised from 1.2 — separator at +137.0% STRONG+
 
 def compute_platoon_score(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
