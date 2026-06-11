@@ -370,6 +370,15 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
     )
 
+    # ── Score Tier × Odds Zone ────────────────────────────────────────────
+    if analysis.get("tier_odds_rows"):
+        add_section(
+            "💰  SCORE TIER × ODDS ZONE",
+            ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
+            analysis["tier_odds_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+        )
+
     # ── Rolling Trends ────────────────────────────────────────────────────
     add_section(
         "📈  ROLLING TRENDS",
@@ -461,6 +470,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "💰  BY ODDS ZONE":         (COLOR_GOLD,      COLOR_GOLD_DIM),
         "🌬️  BY WIND CONDITION":    (COLOR_TEAL,      COLOR_TEAL_DIM),
         "🔄  BY PLATOON MATCHUP":   (COLOR_BLUE,      COLOR_BLUE_DIM),
+        "💰  SCORE TIER × ODDS ZONE": (COLOR_GOLD,      COLOR_GOLD_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,     COLOR_GREEN_DIM),
         "features":                  (COLOR_PURPLE,    COLOR_PURPLE_DIM),
     }
