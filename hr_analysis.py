@@ -285,6 +285,39 @@ def build_analysis(df: pd.DataFrame) -> dict:
             rate = round(h / n * 100, 1)
             platoon_rows.append({"label": label, "total": n, "hits": h, "rate": rate})
 
+    # ── Score Tier × Odds Zone cross-tab ─────────────────────────────────
+    tier_odds_rows = []
+    tier_defs = [
+        ("13+",    13,   999),
+        ("12-13",  12,    13),
+        ("11-12",  11,    12),
+        ("10-11",  10,    11),
+        ("9-10",    9,    10),
+        ("8.5-9",   8.5,   9),
+    ]
+    odds_defs = [
+        ("≤ +300",       0,   301),
+        ("+301 to +499", 301, 500),
+        ("+500 to +699", 500, 700),
+        ("+700+",        700, 9999),
+    ]
+    if "odds_num" in scored.columns:
+        for tier_label, t_lo, t_hi in tier_defs:
+            tier_sub = scored[(scored["hr_score"] >= t_lo) & (scored["hr_score"] < t_hi)]
+            if tier_sub.empty:
+                continue
+            for odds_label, o_lo, o_hi in odds_defs:
+                sub = tier_sub[(tier_sub["odds_num"] >= o_lo) & (tier_sub["odds_num"] < o_hi)]
+                if len(sub) < 3:
+                    continue
+                n    = len(sub)
+                h    = int(sub["hit_bool"].sum())
+                rate = round(h / n * 100, 1)
+                tier_odds_rows.append({
+                    "label": f"{tier_label} | {odds_label}",
+                    "total": n, "hits": h, "rate": rate,
+                })
+
     return {
         "days_of_data":       days_of_data,
         "total":              total,
@@ -296,6 +329,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "wind_rows":          wind_rows,
         "roll_rows":          roll_rows,
         "platoon_rows":       platoon_rows,
+        "tier_odds_rows":     tier_odds_rows,
     }
 
 
@@ -369,6 +403,15 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         analysis["platoon_rows"],
         lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
     )
+
+    # ── Score Tier × Odds Zone ────────────────────────────────────────────
+    if analysis.get("tier_odds_rows"):
+        add_section(
+            "💰  SCORE TIER × ODDS ZONE",
+            ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
+            analysis["tier_odds_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+        )
 
     # ── Rolling Trends ────────────────────────────────────────────────────
     add_section(
@@ -461,6 +504,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "💰  BY ODDS ZONE":         (COLOR_GOLD,      COLOR_GOLD_DIM),
         "🌬️  BY WIND CONDITION":    (COLOR_TEAL,      COLOR_TEAL_DIM),
         "🔄  BY PLATOON MATCHUP":   (COLOR_BLUE,      COLOR_BLUE_DIM),
+        "💰  SCORE TIER × ODDS ZONE": (COLOR_GOLD,      COLOR_GOLD_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,     COLOR_GREEN_DIM),
         "features":                  (COLOR_PURPLE,    COLOR_PURPLE_DIM),
     }

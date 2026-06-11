@@ -272,13 +272,55 @@ def build_analysis(df: pd.DataFrame) -> dict:
     # Sort by absolute % difference
     separators.sort(key=lambda x: abs(safe_float(x["% Difference"].replace("%", "").replace("+", ""))), reverse=True)
 
+    # ── Score Tier × Odds Zone cross-tab ─────────────────────────────────
+    if "over_odds" in resolved.columns:
+        resolved["odds_num"] = resolved["over_odds"].apply(safe_float)
+    else:
+        resolved["odds_num"] = 0.0
+
+    tier_odds_rows = []
+    hrrbi_tier_defs = [
+        ("13-15",  13.0, 15.0),
+        ("11-13",  11.0, 13.0),
+        ("9-11",    9.0, 11.0),
+        ("7-9",     7.0,  9.0),
+        ("Under 7", 0.0,  7.0),
+    ]
+    odds_defs = [
+        ("Minus odds",   -999,   0),
+        ("+100 to +110",  100, 111),
+        ("+111 to +120",  111, 121),
+        ("+121+",         121, 999),
+    ]
+    for tier_label, t_lo, t_hi in hrrbi_tier_defs:
+        tier_sub = resolved[(resolved["hrrbi_score"] >= t_lo) & (resolved["hrrbi_score"] < t_hi)]
+        if tier_sub.empty:
+            continue
+        for odds_label, o_lo, o_hi in odds_defs:
+            if o_lo < 0:
+                sub = tier_sub[tier_sub["odds_num"] < 0]
+            else:
+                sub = tier_sub[(tier_sub["odds_num"] >= o_lo) & (tier_sub["odds_num"] < o_hi)]
+            if len(sub) < 3:
+                continue
+            total = len(sub)
+            hits  = int(sub["over_bool"].sum())
+            rate  = round(hits / total * 100, 1)
+            tier_odds_rows.append({
+                "Score Tier | Odds": f"{tier_label} | {odds_label}",
+                "Total":     total,
+                "Over Hits": hits,
+                "Over Rate %": f"{rate}%",
+            })
+
     return {
-        "summary":     summary,
-        "score_tiers": score_tiers,
-        "signals":     signals,
-        "bat_order":   bat_order_rows,
-        "rolling":     rolling,
-        "separators":  separators,
+        "summary":        summary,
+        "score_tiers":    score_tiers,
+        "signals":        signals,
+        "bat_order":      bat_order_rows,
+        "rolling":        rolling,
+        "separators":     separators,
+        "tier_odds_rows": tier_odds_rows,
     }
 
 
@@ -351,6 +393,17 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             r["Over Rate %"], "", "", "", "",
         ])
     all_values.append(["", "", "", "", "", "", "", ""])
+
+    # Score Tier × Odds Zone
+    if analysis.get("tier_odds_rows"):
+        all_values.append(["💰  SCORE TIER × ODDS ZONE", "", "", "", "", "", "", ""])
+        all_values.append(["Score Tier | Odds", "Total", "Over Hits", "Over Rate %", "", "", "", ""])
+        for r in analysis.get("tier_odds_rows", []):
+            all_values.append([
+                r["Score Tier | Odds"], str(r["Total"]), str(r["Over Hits"]),
+                r["Over Rate %"], "", "", "", "",
+            ])
+        all_values.append(["", "", "", "", "", "", "", ""])
 
     # Feature Separators
     all_values.append(["🔬  FEATURE SEPARATORS — Over vs Non-Over", "", "", "", "", "", "", ""])
@@ -426,9 +479,9 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         if i < 3:
             continue
         cell = str(row[0]).strip()
-        if any(cell.startswith(s) for s in ["🎯", "📢", "📋", "📈", "🔬"]):
+        if any(cell.startswith(s) for s in ["🎯", "📢", "📋", "📈", "🔬", "💰"]):
             section_header_rows.append(i)
-        elif cell in ["Score Tier", "Signal", "Bat Order", "Period", "Feature"]:
+        elif cell in ["Score Tier", "Signal", "Bat Order", "Period", "Feature", "Score Tier | Odds"]:
             col_header_rows.append(i)
         elif any(str(v).strip() for v in row):
             data_rows_info.append(i)
