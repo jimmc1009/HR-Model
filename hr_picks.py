@@ -46,11 +46,11 @@ MIN_BATTING_AVG  = 0.200
 
 # ── Score tier hit rates (from HR_Analysis, updated as data accumulates) ───
 SCORE_TIER_HIT_RATES = {
-    "13+":    0.200,  # 9 picks — too small, keep blended
-    "12-13":  0.250,  # 16 picks — updated
-    "11-12":  0.194,  # 36 picks — updated
-    "10-11":  0.176,  # 51 picks — updated
-    "9-10":   0.158,  # 76 picks — updated
+    "13+":    0.200,  # 13 picks — still too small
+    "12-13":  0.294,  # 17 picks — updated
+    "11-12":  0.184,  # 38 picks — updated
+    "10-11":  0.211,  # 57 picks — updated, now best meaningful-sample tier
+    "9-10":   0.159,  # 88 picks — updated
     "8.5-9":  0.100,  # keep floor
 }
 
