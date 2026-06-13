@@ -37,7 +37,8 @@ OVER_SCORE      = 6.0   # lowered from 8.0 — data shows 6-8 tier hitting 64.7%
 OVER_EDGE       = 0.4
 LEAN_OVER_SCORE = 4.0   # lowered from 5.0
 LEAN_OVER_EDGE  = 0.15
-UNDER_SCORE     = 4.0   # sub-4 scores hitting UNDER at 59.3%
+# UNDER signal now combo-specific (score tier + line) — see calc_prop_signal
+# Under2|4.5: 69.6% (n=46), Under2|5.5: 80.0% (n=15), 4-6|6.5: 100% (small sample)
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
@@ -451,9 +452,10 @@ def calc_prop_signal(row: pd.Series) -> str:
 
     edge = proj - line
 
-    # UNDER signal — low scores hit under at 59.3%
-    # No score > 0 gate — negative scores are even stronger under signals
-    if score < UNDER_SCORE:
+    # UNDER signal — combo-specific score tier + line, based on resolved data
+    if score < 2.0 and line in (4.5, 5.5):
+        return f"UNDER {line} 🔻"
+    if score < 6.0 and line == 6.5:
         return f"UNDER {line} 🔻"
 
     if score >= OVER_SCORE and edge >= OVER_EDGE:
