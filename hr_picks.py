@@ -515,6 +515,7 @@ def prepare_combined(
     bvp: pd.DataFrame,
     lineups: pd.DataFrame,
     active_roster: pd.DataFrame = None,
+    weather: pd.DataFrame = None,
 ) -> pd.DataFrame:
     if batters.empty or pitchers.empty:
         print("Missing batter or pitcher data.")
@@ -640,6 +641,17 @@ def prepare_combined(
         combined["park_hr_factor"] = 100.0
         combined["park_name"]      = ""
 
+    # ── Weather merge (reference-only — logged for analysis, not scored) ───
+    if weather is not None and not weather.empty:
+        weather = weather.copy()
+        weather.columns = [c.strip() for c in weather.columns]
+        weather_cols = [c for c in ["home_team", "hr_weather_boost", "wind_context", "temp_f"] if c in weather.columns]
+        if "home_team" in weather_cols:
+            combined = combined.merge(weather[weather_cols], on="home_team", how="left")
+    if "hr_weather_boost" not in combined.columns: combined["hr_weather_boost"] = 0.0
+    if "wind_context" not in combined.columns:     combined["wind_context"]     = ""
+    if "temp_f" not in combined.columns:           combined["temp_f"]           = 0.0
+
     # ── BA filter ──────────────────────────────────────────────────────────
     if "batting_avg" in combined.columns:
         combined["batting_avg"] = combined["batting_avg"].apply(safe_float)
@@ -669,6 +681,7 @@ def prepare_combined(
         "batting_avg", "park_hr_factor",
         "avg_ev_7d", "avg_ev_5d", "avg_ev_10d",
         "avg_la_7d", "avg_la_season", "pull_rate",
+        "hr_weather_boost", "temp_f",
     ]
     dynamic_cols = [c for c in combined.columns
                     if c.startswith("pitcher_iso_allowed_")
@@ -1543,6 +1556,9 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "pitcher_barrel_vs_lhh":  str(row.get("pitcher_vs_lhh_barrel_pct", "")),
             "pitcher_barrel_vs_rhh":  str(row.get("pitcher_vs_rhh_barrel_pct", "")),
             "park_hr_factor":         str(row.get("park_hr_factor", "")),
+            "hr_weather_boost":       str(row.get("hr_weather_boost", "")),
+            "wind_context":           str(row.get("wind_context", "")),
+            "temp_f":                 str(row.get("temp_f", "")),
             "momentum_score":         str(row.get("momentum_score", "")),
             "momentum_desc":          str(row.get("momentum_desc", "")),
             "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
@@ -1579,6 +1595,7 @@ def main() -> None:
     lineups       = read_sheet(gc, sheet_id, "Confirmed_Lineups")
     active_roster = read_sheet(gc, sheet_id, "Active_Rosters")
     odds_df       = read_sheet(gc, sheet_id, "HR_Odds")
+    weather       = read_sheet(gc, sheet_id, "Weather")
 
     print(f"Batters: {len(batters)} rows")
     print(f"Pitchers: {len(pitchers)} rows")
@@ -1587,8 +1604,9 @@ def main() -> None:
     print(f"Confirmed Lineups: {len(lineups)} rows")
     print(f"Active Roster: {len(active_roster)} rows")
     print(f"HR Odds: {len(odds_df)} rows")
+    print(f"Weather: {len(weather)} rows")
 
-    combined = prepare_combined(batters, pitchers, parks, bvp, lineups, active_roster)
+    combined = prepare_combined(batters, pitchers, parks, bvp, lineups, active_roster, weather)
 
     if combined.empty:
         print("WARNING: No combined data.")
