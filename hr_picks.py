@@ -31,7 +31,7 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.7   # raised from 1.5 — separator at 15.0% STRONG+
+PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
 
@@ -46,11 +46,11 @@ MIN_BATTING_AVG  = 0.200
 
 # ── Score tier hit rates (from HR_Analysis, updated as data accumulates) ───
 SCORE_TIER_HIT_RATES = {
-    "13+":    0.300,  # 20 picks — updated, strong
-    "12-13":  0.278,  # 18 picks — updated
-    "11-12":  0.171,  # 41 picks — updated, weakest meaningful tier
-    "10-11":  0.219,  # 64 picks — updated, best meaningful-sample tier
-    "9-10":   0.174,  # 109 picks — updated
+    "13+":    0.269,  # 26 picks — updated
+    "12-13":  0.333,  # 24 picks — updated, now top tier
+    "11-12":  0.149,  # 47 picks — updated, persistent weak spot
+    "10-11":  0.206,  # 68 picks — updated, consistent strong tier
+    "9-10":   0.176,  # 125 picks — updated
     "8.5-9":  0.100,  # keep floor
 }
 
