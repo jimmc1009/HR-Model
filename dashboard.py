@@ -447,6 +447,87 @@ def build_rows(
 
     rows.append((E[:], "spacer"))
 
+    # ── 3-LEG HR PARLAY (high platoon score, +301-499 odds, diversified) ──
+    rows.append((pad(["🎰  3-LEG HR PARLAY — Platoon Score Focus"]), "section_header_parlay"))
+    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Platoon", "", ""]), "col_header_parlay"))
+
+    if hr_source.empty:
+        rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
+    else:
+        parlay_candidates = []
+
+        for _, row in hr_source.iterrows():
+            try:
+                batter   = str(row.get("player_name", "")).strip()
+                if not batter or batter == "nan":
+                    continue
+                team     = str(row.get("team", "")).strip()
+                opp_pit  = str(row.get("pitcher_name", "")).strip()
+                hr_score = safe_float(row.get("hr_score", 0))
+                platoon  = safe_float(row.get("platoon_score", 0))
+                odds_raw = str(row.get("consensus_odds", "")).strip()
+                odds_val = safe_float(odds_raw.replace("+", "")) if odds_raw not in ("", "nan") else 0.0
+
+                if hr_score < 10.0 or odds_val <= 0:
+                    continue
+
+                parlay_candidates.append({
+                    "batter":   batter,
+                    "team":     team,
+                    "opp_pit":  opp_pit,
+                    "score":    hr_score,
+                    "platoon":  platoon,
+                    "odds":     odds_val,
+                })
+            except Exception:
+                continue
+
+        # Preferred zone: +301-499, fallback +500-699, then <=+300/+700+
+        def zone_rank(odds):
+            if 301 <= odds <= 499: return 0
+            if 500 <= odds <= 699: return 1
+            return 2
+
+        parlay_candidates.sort(key=lambda x: (zone_rank(x["odds"]), -x["platoon"]))
+
+        # Pick top 3, diversified by opposing pitcher (different games)
+        selected   = []
+        used_games = set()
+        for c in parlay_candidates:
+            if len(selected) >= 3:
+                break
+            if c["opp_pit"] and c["opp_pit"] in used_games:
+                continue
+            selected.append(c)
+            if c["opp_pit"]:
+                used_games.add(c["opp_pit"])
+
+        # Fill remaining slots if diversification left us short
+        if len(selected) < 3:
+            for c in parlay_candidates:
+                if len(selected) >= 3:
+                    break
+                if c not in selected:
+                    selected.append(c)
+
+        if not selected:
+            rows.append((pad(["—", "No parlay candidates today (need score 10+ with odds)", ""]), "no_plays"))
+        else:
+            for i, c in enumerate(selected):
+                odds_display = f"+{int(c['odds'])}"
+                rows.append((pad([
+                    str(i + 1),
+                    c["batter"],
+                    c["team"],
+                    f"{c['score']:.1f}",
+                    odds_display,
+                    f"{c['platoon']:.3f}",
+                    "",
+                    "",
+                ]), "data_parlay"))
+
+    rows.append((E[:], "spacer"))
+
     # ── PITCHER STRIKEOUT VALUE PLAYS ─────────────────────────────────────
     rows.append((pad(["⚾  PITCHER STRIKEOUT VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_ks"))
     rows.append((pad(["Rank", "Pitcher", "Team", "Score", "Line", "Direction", "Odds", "Breakeven", "Edge"]), "col_header_ks"))
@@ -626,6 +707,9 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                 text_color = COLOR_WHITE
             elif "hrrbi" in row_type:
                 color      = COLOR_BLUE
+                text_color = COLOR_WHITE
+            elif "parlay" in row_type:
+                color      = {"red": 0.541, "green": 0.165, "blue": 0.557}  # purple
                 text_color = COLOR_WHITE
             else:
                 color      = COLOR_GOLD
@@ -839,6 +923,30 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                         }},
                         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
                     }})
+
+        elif row_type == "data_parlay":
+            # Score col (3) — gold accent
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 3, "endColumnIndex": 4},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": COLOR_GOLD, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 11},
+                    "horizontalAlignment": "CENTER",
+                }},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }})
+            # Platoon col (5) — green accent
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 5, "endColumnIndex": 6},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": COLOR_GREEN, "bold": False,
+                                   "fontFamily": "Roboto Mono", "fontSize": 11},
+                    "horizontalAlignment": "CENTER",
+                }},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }})
 
         elif row_type == "no_plays":
             reqs.append({"repeatCell": {
