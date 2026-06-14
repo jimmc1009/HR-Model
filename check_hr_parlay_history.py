@@ -1,15 +1,13 @@
 """
 check_hr_parlay_history.py
-Diagnostic: for each day in HR_All_Scores, look at the top-N scored
-players and check how many actually hit a HR. Reports the realistic
-historical hit rate for "top 3 by score" parlays, plus breaks down
-which score tiers / odds ranges tend to produce winning combos.
+Diagnostic: for each day in HR_All_Scores, look at ALL players scoring
+10+ and check how many actually hit a HR. Reports days where 3+ hit
+(a 3-leg parlay would have been possible), and analyzes what those
+winning players had in common (tier, odds range, platoon, features).
 """
 
 import os
 import time
-import unicodedata
-from itertools import combinations
 
 import pandas as pd
 import numpy as np
@@ -23,8 +21,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-TOP_N      = 10   # consider top N scored players each day as parlay candidates
-LEG_COUNT  = 3    # parlay size
+MIN_SCORE = 10.0
+LEG_COUNT = 3
 
 
 def get_gspread_client() -> gspread.Client:
@@ -63,9 +61,15 @@ def get_score_tier(score: float) -> str:
     if score >= 12:   return "12-13"
     if score >= 11:   return "11-12"
     if score >= 10:   return "10-11"
-    if score >= 9:    return "9-10"
-    if score >= 8.5:  return "8.5-9"
-    return "Under 8.5"
+    return "Under 10"
+
+
+def get_odds_zone(odds: float) -> str:
+    if odds <= 0:    return "No Odds"
+    if odds <= 300:  return "<= +300"
+    if odds <= 499:  return "+301 to +499"
+    if odds <= 699:  return "+500 to +699"
+    return "+700+"
 
 
 def main():
@@ -84,79 +88,90 @@ def main():
     df["date"]     = df["date"].astype(str).str.strip()
     df["odds_num"] = df["consensus_odds"].apply(lambda x: safe_float(x, 0))
 
+    for col in ["platoon_score", "barrel_pct_7d", "barrel_pct_5d", "season_barrel_pct",
+                "hr_per_fb", "hr_per_pa", "pitch_matchup_score", "momentum_score"]:
+        if col in df.columns:
+            df[col] = df[col].apply(safe_float)
+
     # Only resolved rows
     resolved = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
     resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
 
-    dates = sorted(resolved["date"].unique())
-    print(f"Analyzing {len(dates)} resolved days, top {TOP_N} players/day, {LEG_COUNT}-leg parlays\n")
+    candidates = resolved[resolved["hr_score"] >= MIN_SCORE].copy()
+    dates = sorted(candidates["date"].unique())
+
+    print(f"Analyzing {len(dates)} days with score >= {MIN_SCORE} candidates\n")
 
     days_with_3_hits = 0
     total_days       = 0
+    total_candidates = 0
+    total_hits       = 0
 
-    # Track which tier/odds combos appear in winning parlay legs
-    winning_leg_tiers = {}
-    all_leg_tiers     = {}
+    winning_players = []  # all players who hit on a 3+-hit day
 
     for d in dates:
-        day_df = resolved[resolved["date"] == d].copy()
+        day_df = candidates[candidates["date"] == d].copy()
         if day_df.empty:
             continue
 
-        top = day_df.sort_values("hr_score", ascending=False).head(TOP_N)
-        if len(top) < LEG_COUNT:
-            continue
+        total_days       += 1
+        total_candidates += len(day_df)
 
-        total_days += 1
-        hits = top[top["hit_bool"]]
-
-        # Tally tiers for all candidates
-        for _, r in top.iterrows():
-            tier = get_score_tier(r["hr_score"])
-            all_leg_tiers[tier] = all_leg_tiers.get(tier, 0) + 1
+        hits = day_df[day_df["hit_bool"]]
+        total_hits += len(hits)
 
         if len(hits) >= LEG_COUNT:
             days_with_3_hits += 1
-            print(f"{d}: {len(hits)} of top {TOP_N} hit (3+ leg parlay possible)")
+            print(f"{d}: {len(hits)} of {len(day_df)} candidates (score>=10) hit")
             for _, r in hits.iterrows():
+                winning_players.append(r)
                 tier = get_score_tier(r["hr_score"])
-                winning_leg_tiers[tier] = winning_leg_tiers.get(tier, 0) + 1
-                print(f"    - {r['player_name']:25s} score={r['hr_score']:.2f} odds={r['consensus_odds']}")
+                zone = get_odds_zone(r["odds_num"])
+                print(f"    - {r['player_name']:25s} score={r['hr_score']:.2f} tier={tier:8s} odds={r['consensus_odds']:>6s} zone={zone}")
 
     print()
     print("=" * 60)
-    print(f"Days with {LEG_COUNT}+ hits in top {TOP_N}: {days_with_3_hits} / {total_days}")
+    print(f"Days with {LEG_COUNT}+ hits among score>=10 candidates: {days_with_3_hits} / {total_days}")
     if total_days:
         print(f"  Rate: {days_with_3_hits/total_days*100:.1f}%")
+    print(f"\nOverall: {total_hits} hits / {total_candidates} candidates scoring >= {MIN_SCORE} ({total_hits/total_candidates*100:.1f}% hit rate)" if total_candidates else "")
     print("=" * 60)
 
-    print("\nTier distribution — ALL top-N candidates:")
-    for tier, n in sorted(all_leg_tiers.items(), key=lambda x: -x[1]):
+    if not winning_players:
+        print("\nNo days with 3+ hits among 10+ scores yet — not enough data.")
+        return
+
+    wdf = pd.DataFrame(winning_players)
+
+    print("\n--- What winning players (on 3+-hit days) had in common ---\n")
+
+    # Score tier distribution
+    wdf["tier"] = wdf["hr_score"].apply(get_score_tier)
+    print("Score tier distribution:")
+    for tier, n in wdf["tier"].value_counts().items():
         print(f"  {tier:10s}: {n}")
 
-    print("\nTier distribution — WINNING legs (on 3+-hit days):")
-    for tier, n in sorted(winning_leg_tiers.items(), key=lambda x: -x[1]):
-        win_rate_in_tier = n / all_leg_tiers.get(tier, 1) * 100
-        print(f"  {tier:10s}: {n}  (hit rate within tier on these days: {win_rate_in_tier:.1f}%)")
+    # Odds zone distribution
+    wdf["odds_zone"] = wdf["odds_num"].apply(get_odds_zone)
+    print("\nOdds zone distribution:")
+    for zone, n in wdf["odds_zone"].value_counts().items():
+        print(f"  {zone:14s}: {n}")
 
-    # ── "Top 3 by score" parlay simulation ──────────────────────────────
-    print("\n" + "=" * 60)
-    print(f"SIMULATION: pick exactly top {LEG_COUNT} by score each day — would it cash?")
-    print("=" * 60)
-    cashed = 0
-    sim_days = 0
-    for d in dates:
-        day_df = resolved[resolved["date"] == d].copy()
-        if len(day_df) < LEG_COUNT:
-            continue
-        top3 = day_df.sort_values("hr_score", ascending=False).head(LEG_COUNT)
-        sim_days += 1
-        if top3["hit_bool"].all():
-            cashed += 1
-            names = ", ".join(top3["player_name"].tolist())
-            print(f"  {d}: CASHED — {names}")
+    # Average feature values among winners vs all candidates
+    print("\nFeature averages — winners (3+-hit days) vs all 10+ candidates:")
+    for col in ["platoon_score", "barrel_pct_7d", "barrel_pct_5d", "season_barrel_pct",
+                "hr_per_fb", "hr_per_pa", "pitch_matchup_score", "momentum_score"]:
+        if col in wdf.columns and col in candidates.columns:
+            w_avg = wdf[col].mean()
+            c_avg = candidates[col].mean()
+            diff  = w_avg - c_avg
+            print(f"  {col:22s}: winners={w_avg:7.3f}  all_candidates={c_avg:7.3f}  diff={diff:+.3f}")
 
-    print(f"\nTop-3-by-score parlay would have cashed {cashed} / {sim_days} days ({cashed/sim_days*100:.1f}%)" if sim_days else "No data")
+    # Platoon matchup text
+    if "platoon_matchup" in wdf.columns:
+        print("\nPlatoon matchup breakdown (winners):")
+        for val, n in wdf["platoon_matchup"].value_counts().head(5).items():
+            print(f"  {str(val)[:50]:50s}: {n}")
 
 
 if __name__ == "__main__":
