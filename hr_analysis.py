@@ -125,7 +125,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
     scored["hr_score"]    = scored["hr_score"].apply(safe_float)
     scored["date_dt"]     = pd.to_datetime(scored["date"], errors="coerce")
     scored["odds_num"]    = scored["consensus_odds"].apply(lambda x: safe_float(x, 0))
-    scored["wind_bucket"] = scored["wind"].apply(parse_wind)
+    scored["wind_bucket"] = scored.get("wind_context", pd.Series("", index=scored.index)).apply(parse_wind)
 
     numeric_features = [
         "barrel_pct_7d", "season_barrel_pct", "barrel_pct_5d", "barrel_pct_10d",
@@ -209,7 +209,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "pitcher_barrel_pct":     "Pitcher Barrel% Allowed",
         "pitcher_hr_per_fb":      "Pitcher HR/FB%",
         "park_hr_factor":         "Park HR Factor",
-        "weather_boost":          "Weather Boost",
+        "hr_weather_boost":       "Weather Boost",
         "temp_f":                 "Temperature (°F)",
         "barrel_pct_5d":          "Barrel% (5d)",
         "barrel_pct_10d":         "Barrel% (10d)",
