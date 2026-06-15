@@ -449,7 +449,7 @@ def build_rows(
 
     # ── 3-LEG HR PARLAY (high platoon score, +301-499 odds, diversified) ──
     rows.append((pad(["🎰  3-LEG HR PARLAY — Platoon Score Focus"]), "section_header_parlay"))
-    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Matchup", "", ""]), "col_header_parlay"))
+    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Platoon", "", ""]), "col_header_parlay"))
 
     if hr_source.empty:
         rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
@@ -488,13 +488,10 @@ def build_rows(
             except Exception:
                 continue
 
-        # Preferred zone: +301-499, fallback +500-699, then <=+300/+700+
-        def zone_rank(odds):
-            if 301 <= odds <= 499: return 0
-            if 500 <= odds <= 699: return 1
-            return 2
-
-        parlay_candidates.sort(key=lambda x: (zone_rank(x["odds"]), -x["matchup"]))
+        # Rank by platoon score alone — combined matchup score showed no
+        # discriminating power (winners 2.023 vs all 2.002), while platoon
+        # alone showed a real gap (winners 0.528 vs all 0.337)
+        parlay_candidates.sort(key=lambda x: -x["platoon"])
 
         # Pick top 3, diversified by opposing pitcher (different games)
         selected   = []
@@ -527,7 +524,7 @@ def build_rows(
                     c["team"],
                     f"{c['score']:.1f}",
                     odds_display,
-                    f"{c['matchup']:.2f}",
+                    f"{c['platoon']:.3f}",
                     "",
                     "",
                 ]), "data_parlay"))
