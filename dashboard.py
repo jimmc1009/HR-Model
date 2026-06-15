@@ -449,7 +449,7 @@ def build_rows(
 
     # ── 3-LEG HR PARLAY (high platoon score, +301-499 odds, diversified) ──
     rows.append((pad(["🎰  3-LEG HR PARLAY — Platoon Score Focus"]), "section_header_parlay"))
-    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Platoon", "", ""]), "col_header_parlay"))
+    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Matchup", "", ""]), "col_header_parlay"))
 
     if hr_source.empty:
         rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
@@ -465,19 +465,25 @@ def build_rows(
                 opp_pit  = str(row.get("pitcher_name", "")).strip()
                 hr_score = safe_float(row.get("hr_score", 0))
                 platoon  = safe_float(row.get("platoon_score", 0))
+                pitch_mu = safe_float(row.get("pitch_matchup_score", 0))
                 odds_raw = str(row.get("consensus_odds", "")).strip()
                 odds_val = safe_float(odds_raw.replace("+", "")) if odds_raw not in ("", "nan") else 0.0
 
                 if hr_score < 10.0 or odds_val <= 0:
                     continue
 
+                # Combined matchup score — platoon (handedness) + pitch matchup (pitch-type specific)
+                matchup_score = platoon + pitch_mu
+
                 parlay_candidates.append({
-                    "batter":   batter,
-                    "team":     team,
-                    "opp_pit":  opp_pit,
-                    "score":    hr_score,
-                    "platoon":  platoon,
-                    "odds":     odds_val,
+                    "batter":     batter,
+                    "team":       team,
+                    "opp_pit":    opp_pit,
+                    "score":      hr_score,
+                    "platoon":    platoon,
+                    "pitch_mu":   pitch_mu,
+                    "matchup":    matchup_score,
+                    "odds":       odds_val,
                 })
             except Exception:
                 continue
@@ -488,7 +494,7 @@ def build_rows(
             if 500 <= odds <= 699: return 1
             return 2
 
-        parlay_candidates.sort(key=lambda x: (zone_rank(x["odds"]), -x["platoon"]))
+        parlay_candidates.sort(key=lambda x: (zone_rank(x["odds"]), -x["matchup"]))
 
         # Pick top 3, diversified by opposing pitcher (different games)
         selected   = []
@@ -521,7 +527,7 @@ def build_rows(
                     c["team"],
                     f"{c['score']:.1f}",
                     odds_display,
-                    f"{c['platoon']:.3f}",
+                    f"{c['matchup']:.2f}",
                     "",
                     "",
                 ]), "data_parlay"))
