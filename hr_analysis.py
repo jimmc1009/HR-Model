@@ -134,7 +134,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "iso", "hr_per_pa", "hr_per_fb", "pull_rate",
         "pitcher_barrel_pct", "pitcher_hr_per_fb",
         "pitcher_barrel_vs_lhh", "pitcher_barrel_vs_rhh",
-        "park_hr_factor", "weather_boost", "temp_f", "pitch_matchup_score",
+        "park_hr_factor", "hr_weather_boost", "temp_f", "pitch_matchup_score",
         "platoon_score",
     ]
     for col in numeric_features:
