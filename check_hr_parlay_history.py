@@ -93,6 +93,12 @@ def main():
         if col in df.columns:
             df[col] = df[col].apply(safe_float)
 
+    # Combined matchup score — same as dashboard parlay picker (platoon + pitch matchup)
+    if "platoon_score" in df.columns and "pitch_matchup_score" in df.columns:
+        df["matchup_score"] = df["platoon_score"] + df["pitch_matchup_score"]
+    else:
+        df["matchup_score"] = 0.0
+
     # Only resolved rows
     resolved = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
     resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
@@ -159,8 +165,9 @@ def main():
 
     # Average feature values among winners vs all candidates
     print("\nFeature averages — winners (3+-hit days) vs all 10+ candidates:")
-    for col in ["platoon_score", "barrel_pct_7d", "barrel_pct_5d", "season_barrel_pct",
-                "hr_per_fb", "hr_per_pa", "pitch_matchup_score", "momentum_score"]:
+    for col in ["matchup_score", "platoon_score", "pitch_matchup_score",
+                "barrel_pct_7d", "barrel_pct_5d", "season_barrel_pct",
+                "hr_per_fb", "hr_per_pa", "momentum_score"]:
         if col in wdf.columns and col in candidates.columns:
             w_avg = wdf[col].mean()
             c_avg = candidates[col].mean()
