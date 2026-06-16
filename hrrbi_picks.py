@@ -436,7 +436,8 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_weather    = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
 
     momentum_score, _ = compute_momentum_score(row)
-    momentum_capped   = max(-2.0, min(2.0, momentum_score))
+    # Reduced to 0.5x — separator trending -27.2% STRONG— across 4 readings
+    momentum_capped   = max(-2.0, min(2.0, momentum_score)) * 0.5
 
     return round(
         s_avg + s_woba + s_obp + s_ld + s_gb + s_hh_s +
