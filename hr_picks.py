@@ -46,11 +46,11 @@ MIN_BATTING_AVG  = 0.200
 
 # ── Score tier hit rates (from HR_Analysis, updated as data accumulates) ───
 SCORE_TIER_HIT_RATES = {
-    "13+":    0.269,  # 26 picks — updated
-    "12-13":  0.333,  # 24 picks — updated, now top tier
-    "11-12":  0.149,  # 47 picks — updated, persistent weak spot
-    "10-11":  0.206,  # 68 picks — updated, consistent strong tier
-    "9-10":   0.176,  # 125 picks — updated
+    "13+":    0.256,  # 39 picks — updated
+    "12-13":  0.310,  # 29 picks — updated, top tier
+    "11-12":  0.150,  # 60 picks — updated, persistent weak spot
+    "10-11":  0.182,  # 88 picks — updated, stabilizing
+    "9-10":   0.189,  # 148 picks — updated, now above 10-11
     "8.5-9":  0.100,  # keep floor
 }
 
@@ -292,7 +292,7 @@ def score_pitcher_quality_penalty(
 # Weight: 0.8 (conservative until separator data confirms strength)
 # Cap: ±2.0 points before weight
 
-PLATOON_WEIGHT = 1.6  # raised from 1.4 — separator at +223.1% STRONG+
+PLATOON_WEIGHT = 1.8  # raised from 1.6 — separator at +203.8% STRONG+
 
 def compute_platoon_score(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
