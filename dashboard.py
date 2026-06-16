@@ -215,10 +215,10 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
             hit_rates[(tier_label, "any", "over")]  = over_rate
             hit_rates[(tier_label, "any", "under")] = under_rate
 
-        # Tier × line rates
+        # Tier × line rates — min 8 picks for combo-specific hit rates
         for line_val in line_vals:
             sub = tier_sub[tier_sub["k_line"] == line_val]
-            if len(sub) >= 3:
+            if len(sub) >= 8:
                 hit_rates[(tier_label, line_val, "over")]  = sub["over_bool"].mean()
                 hit_rates[(tier_label, line_val, "under")] = sub["under_bool"].mean()
 
@@ -318,42 +318,52 @@ def calc_ks_value(
     """
     Returns (direction, hit_rate, breakeven, has_value, edge_str)
     direction: 'OVER' or 'UNDER'
+
+    Checks BOTH directions for every pick using actual combo-specific hit rates
+    (tier × line), then surfaces whichever has genuine positive edge vs real odds.
+    Never infers direction from score alone — the data decides.
+    Min hit rate thresholds: UNDER >= 58%, OVER >= 55% to qualify.
     """
+    if line == 0:
+        return "UNDER", 0.0, 0.0, False, "—"
+
     tier = get_score_tier(score)
 
-    # Determine signal direction based on score
-    if score < 4:
-        direction = "UNDER"
-        odds      = under_odds
-    elif score >= 6:
-        direction = "OVER"
-        odds      = over_odds
-    else:
-        # 4-6 range — check both, use whichever has value
-        direction = "OVER"
-        odds      = over_odds
+    best_direction = None
+    best_edge      = -999
+    best_hit_rate  = 0.0
+    best_breakeven = 0.0
 
-    if odds == 0 or line == 0:
-        return direction, 0.0, 0.0, False, "—"
+    for direction, odds, min_hr in [("UNDER", under_odds, 0.58), ("OVER", over_odds, 0.55)]:
+        if odds == 0:
+            continue
 
-    # Look up hit rate — prefer tier × line, fall back to tier only
-    hit_rate = hit_rates.get((tier, line, direction.lower()))
-    if hit_rate is None:
-        hit_rate = hit_rates.get((tier, "any", direction.lower()))
-    if hit_rate is None:
-        return direction, 0.0, 0.0, False, "No data"
+        # Prefer tier × line combo, fall back to tier only
+        hit_rate = hit_rates.get((tier, line, direction.lower()))
+        if hit_rate is None:
+            hit_rate = hit_rates.get((tier, "any", direction.lower()))
+        if hit_rate is None:
+            continue
 
-    implied_odds  = american_to_implied(odds)
-    edge          = hit_rate - implied_odds
-    edge_pct      = round(edge * 100, 1)
-    has_value     = edge > 0
+        # Require minimum hit rate to qualify — filters out noisy small-sample combos
+        if hit_rate < min_hr:
+            continue
 
-    # Breakeven = the odds you need to break even at this hit rate
-    # e.g. hit rate 68.2% → breakeven odds = -214
-    breakeven_american = implied_to_american(hit_rate)
-    edge_str           = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
+        implied = american_to_implied(odds)
+        edge    = hit_rate - implied
 
-    return direction, round(hit_rate * 100, 1), breakeven_american, has_value, edge_str
+        if edge > best_edge:
+            best_edge      = edge
+            best_direction = direction
+            best_hit_rate  = hit_rate
+            best_breakeven = implied_to_american(hit_rate)
+
+    if best_direction is None or best_edge <= 0:
+        return "UNDER", 0.0, 0.0, False, "No edge"
+
+    edge_pct = round(best_edge * 100, 1)
+    edge_str = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
+    return best_direction, round(best_hit_rate * 100, 1), best_breakeven, True, edge_str
 
 
 def build_rows(
@@ -374,7 +384,7 @@ def build_rows(
     rows = []
 
     # ── HOME RUN VALUE PLAYS ─────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 10+ | +301 to +699"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 10+ (excl 11-12) | +301 to +699"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
@@ -412,16 +422,18 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter to score 10+ and odds +301 to +699 — 10-11 tier confirmed strong over 2 weeks
+        # Filter: score 10+ (excluding 11-12 tier — 29 picks at 6.9% in +301-499, confirmed weak)
+        # and odds +301 to +699
         hr_value_plays = [
             p for p in hr_value_plays
-            if float(p["score"]) >= 10.0
+            if (float(p["score"]) >= 12.0 or float(p["score"]) < 11.0)
+            and float(p["score"]) >= 10.0
             and safe_float(p["odds"].replace("+", "")) >= 301
             and safe_float(p["odds"].replace("+", "")) <= 699
         ]
 
         if not hr_value_plays:
-            rows.append((pad(["—", "No value plays today — no qualifying picks (score 10+, +301 to +699)", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — no qualifying picks (score 10+ excl 11-12, +301 to +699)", ""]), "no_plays"))
         else:
             hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
             for i, play in enumerate(hr_value_plays):
