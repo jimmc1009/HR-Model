@@ -666,8 +666,9 @@ def prepare_combined(
                     columns={"away_team": "batter_team_away", "game_total": "game_total_away"}
                 )
                 batters = batters.merge(away_totals, left_on="batter_team", right_on="batter_team_away", how="left")
-                batters.loc[missing_total, "game_total"] = batters.loc[missing_total, "game_total_away"]
                 if "game_total_away" in batters.columns:
+                    missing_total = batters["game_total"].isna()
+                    batters.loc[missing_total, "game_total"] = batters.loc[missing_total, "game_total_away"].values
                     batters = batters.drop(columns=["game_total_away", "batter_team_away"], errors="ignore")
 
     defaults = {
