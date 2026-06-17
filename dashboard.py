@@ -384,7 +384,7 @@ def build_rows(
     rows = []
 
     # ── HOME RUN VALUE PLAYS ─────────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 10+ (excl 11-12) | +301 to +699"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 12+ | +301 to +699"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
@@ -422,18 +422,18 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter: score 10+ (excluding 11-12 tier — 29 picks at 6.9% in +301-499, confirmed weak)
-        # and odds +301 to +699
+        # Filter: score 12+ and odds +301 to +699
+        # 12-13 hits 34.1%, 13+ hits 33.6% — both clearly +EV in this odds range
+        # 10-11 (21.3%) and 9-10 (21.3%) excluded — borderline at best vs +301 breakeven
         hr_value_plays = [
             p for p in hr_value_plays
-            if (float(p["score"]) >= 12.0 or float(p["score"]) < 11.0)
-            and float(p["score"]) >= 10.0
+            if float(p["score"]) >= 12.0
             and safe_float(p["odds"].replace("+", "")) >= 301
             and safe_float(p["odds"].replace("+", "")) <= 699
         ]
 
         if not hr_value_plays:
-            rows.append((pad(["—", "No value plays today — no qualifying picks (score 10+ excl 11-12, +301 to +699)", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — no qualifying picks (score 12+, +301 to +699)", ""]), "no_plays"))
         else:
             hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
             for i, play in enumerate(hr_value_plays):
