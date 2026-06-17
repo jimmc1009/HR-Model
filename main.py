@@ -359,9 +359,10 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
         ev, la = row["launch_speed"], row["launch_angle"]
         if pd.isna(ev) or pd.isna(la) or ev < 98:
             return False
-        # Fixed: lower floor drops to 4° at 116+ mph to match Savant's barrel definition
-        min_la = max(26 - (ev - 98), 8) if ev < 116 else max(26 - (ev - 98), 4)
-        max_la = min(30 + (ev - 98), 50)
+        if ev >= 116:
+            return 8 <= la <= 50
+        min_la = max(26 - (ev - 98), 8)
+        max_la = min(30 + 2.5 * (ev - 98), 50)
         return min_la <= la <= max_la
 
     df["is_barrel"]   = df.apply(is_barrel, axis=1)
