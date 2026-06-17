@@ -359,7 +359,11 @@ def add_flags(df: pd.DataFrame) -> pd.DataFrame:
         ev, la = row["launch_speed"], row["launch_angle"]
         if pd.isna(ev) or pd.isna(la) or ev < 98:
             return False
-        return max(26 - (ev - 98), 8) <= la <= min(30 + (ev - 98), 50)
+        if ev >= 116:
+            return 8 <= la <= 50
+        min_la = max(26 - (ev - 98), 8)
+        max_la = min(30 + 2.5 * (ev - 98), 50)
+        return min_la <= la <= max_la
 
     df["is_barrel"]   = df.apply(is_barrel, axis=1)
     df["is_hard_hit"] = df["launch_speed"] >= 95
@@ -397,22 +401,18 @@ def filter_bbe(df: pd.DataFrame) -> pd.DataFrame:
         "sac_fly_double_play", "sac_bunt", "sac_bunt_double_play",
         "other_out",
     }
+    # Fixed: removed launch_angle requirement (Savant counts BBEs without LA data)
+    # Widened speed range from 50-120 to 40-125 to match Savant's BBE counting
     bbe = df[
         df["events"].astype("string").str.lower().isin(batted_ball_events) &
         df["launch_speed"].notna() &
-        df["launch_speed"].between(50, 120) &
-        df["launch_angle"].notna() &
-        df["launch_angle"].between(-90, 90)
+        df["launch_speed"].between(40, 125)
     ].copy()
     dedupe = [c for c in ["game_pk", "at_bat_number", "batter"] if c in bbe.columns]
     if dedupe:
         bbe = bbe.drop_duplicates(subset=dedupe)
     return bbe
 
-
-# DROP-IN REPLACEMENT for build_handedness_start_rates in main.py
-# Fix: uses starting pitcher handedness (first pitcher per game) instead of
-# any pitcher handedness, which was inflating team game counts incorrectly.
 
 def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "p_throws" not in df.columns:
@@ -429,15 +429,10 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return pd.DataFrame()
 
-    # ── Identify starting pitcher handedness per game ─────────────────────
-    # The starting pitcher is the one who threw in the lowest at_bat_number
-    # in inning 1. This avoids counting relief pitcher handedness.
     if "at_bat_number" in df.columns and "inning" in df.columns:
         inning1 = df[pd.to_numeric(df["inning"], errors="coerce") == 1].copy()
         inning1["at_bat_number"] = pd.to_numeric(inning1["at_bat_number"], errors="coerce")
 
-        # Get the minimum at_bat_number per game per pitching team
-        # pitching team = opposite of batting team
         if "inning_topbot" in inning1.columns:
             inning1["pitching_team"] = inning1.apply(
                 lambda r: str(r["home_team"]).strip()
@@ -453,7 +448,6 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
             [["game_pk", "pitching_team", "p_throws", "home_team", "away_team"]]
         )
 
-        # Map game_pk → starter handedness for home and away separately
         home_starters = starter_hand[
             starter_hand["pitching_team"] == starter_hand["home_team"]
         ][["game_pk", "p_throws"]].rename(columns={"p_throws": "home_starter_hand"})
@@ -465,19 +459,15 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         game_starters = home_starters.merge(away_starters, on="game_pk", how="outer")
 
     else:
-        # Fallback — use first pitch per game as before if columns missing
         game_starters = None
 
     if game_starters is not None and not game_starters.empty:
-        # For each batter appearance, determine which starter hand they faced
-        # Batters face the opposing starter: home batters face away starter, vice versa
         batter_games = df.drop_duplicates(
             subset=[c for c in ["game_pk", "batter"] if c in df.columns]
         )[["game_pk", "batter", "batting_team", "home_team", "away_team"]].copy()
 
         batter_games = batter_games.merge(game_starters, on="game_pk", how="left")
 
-        # Home batters face away starter, away batters face home starter
         def get_starter_hand(row):
             if str(row.get("batting_team", "")).strip() == str(row.get("home_team", "")).strip():
                 return row.get("away_starter_hand", "")
@@ -487,7 +477,6 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         batter_games["opp_starter_hand"] = batter_games.apply(get_starter_hand, axis=1)
         batter_games = batter_games[batter_games["opp_starter_hand"].isin(["L", "R"])].copy()
 
-        # Team games vs each starter hand
         team_vs_lhp = (
             batter_games[batter_games["opp_starter_hand"] == "L"]
             .drop_duplicates(subset=["game_pk", "batting_team"])
@@ -503,7 +492,6 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
             .reset_index(name="team_games_vs_rhp")
         )
 
-        # Batter games vs each starter hand
         batter_vs_lhp = (
             batter_games[batter_games["opp_starter_hand"] == "L"]
             .groupby(["batter", "batting_team"])["game_pk"]
@@ -518,7 +506,6 @@ def build_handedness_start_rates(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     else:
-        # Fallback to original logic
         game_df = df.drop_duplicates(
             subset=[c for c in ["game_pk", "batter"] if c in df.columns]
         ).copy()
@@ -743,7 +730,6 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
             print("  WARNING: Cannot determine batting team for team K stats")
             return pd.DataFrame()
 
-    # ── K% ────────────────────────────────────────────────────────────────
     pa_df = df[df["events"].astype("string").str.lower().isin(PA_EVENTS)].copy()
     pa_df = pa_df.drop_duplicates(
         subset=[c for c in ["game_pk", "at_bat_number", "batter"] if c in pa_df.columns]
@@ -760,7 +746,6 @@ def build_team_k_stats(df: pd.DataFrame) -> pd.DataFrame:
         k_stats["team_k"] / k_stats["team_pa"].replace(0, np.nan) * 100
     ).round(1)
 
-    # ── Chase rate and whiff rate ──────────────────────────────────────────
     if "zone" in df.columns and "description" in df.columns:
         pitch_df = df[df["description"].astype("string").str.lower().isin({
             "swinging_strike", "swinging_strike_blocked", "foul", "foul_tip",
@@ -1023,7 +1008,6 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
                 ).reset_index()
                 barrel_pivot.columns = ["batter"] + [f"barrel_pct_vs_{c}" for c in barrel_pivot.columns if c != "batter"]
 
-                # Add BBE count per pitch type for regression in hr_picks.py
                 bbe_pivot = pitch_grp.pivot_table(
                     index="batter", columns="pitch_type", values="bbe_count", fill_value=np.nan
                 ).reset_index()
@@ -1113,7 +1097,6 @@ def write_dataframe_to_sheet(
     ws.update(values, value_input_option="USER_ENTERED")
 
 
-
 def get_today_teams() -> Set[str]:
     today_str = date.today().strftime("%Y-%m-%d")
     try:
@@ -1172,7 +1155,6 @@ def main() -> None:
     raw_df["game_date"] = pd.to_datetime(raw_df["game_date"])
     print(f"Pulled {len(raw_df):,} Statcast rows for 2026 season")
 
-    # ── Build batter features ──────────────────────────────────────────────
     batter_df = build_batter_features(raw_df, today_teams)
     print(f"Built {len(batter_df)} batter rows")
 
@@ -1206,14 +1188,12 @@ def main() -> None:
         write_dataframe_to_sheet(gc, sheet_id, "Batter_Statcast_2026", batter_df)
         print("Written to Batter_Statcast_2026")
 
-    # ── Build team K stats ─────────────────────────────────────────────────
     print("Building team K stats...")
     team_k_df = build_team_k_stats(raw_df)
     if not team_k_df.empty:
         write_dataframe_to_sheet(gc, sheet_id, "Team_K_Rates", team_k_df)
         print(f"Written {len(team_k_df)} rows to Team_K_Rates")
 
-    # ── Build BvP history ──────────────────────────────────────────────────
     print("Building batter vs pitcher history...")
     bvp_df = build_vs_pitcher_stats(raw_df)
     if not bvp_df.empty:
@@ -1228,7 +1208,6 @@ def main() -> None:
     else:
         print("No BvP data to write.")
 
-    # ── Active rosters ─────────────────────────────────────────────────────
     print("Fetching active rosters...")
     active_roster_ids = get_active_roster_ids()
     if active_roster_ids:
@@ -1238,7 +1217,6 @@ def main() -> None:
     else:
         print("No active roster data to write.")
 
-    # ── Confirmed lineups ──────────────────────────────────────────────────
     print("Fetching confirmed lineups...")
     lineups = get_today_confirmed_lineups()
     if lineups:
