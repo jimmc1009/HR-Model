@@ -334,7 +334,7 @@ def calc_ks_value(
     best_hit_rate  = 0.0
     best_breakeven = 0.0
 
-    for direction, odds, min_hr in [("UNDER", under_odds, 0.58), ("OVER", over_odds, 0.55)]:
+    for direction, odds, min_hr in [("UNDER", under_odds, 0.63), ("OVER", over_odds, 0.58)]:
         if odds == 0:
             continue
 
