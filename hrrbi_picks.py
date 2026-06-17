@@ -629,6 +629,32 @@ def prepare_combined(
     if not game_totals.empty:
         game_totals = game_totals.copy()
         game_totals.columns = [c.strip() for c in game_totals.columns]
+
+        # Convert full team names to abbreviations to match batter_team
+        TEAM_NAME_TO_ABBR = {
+            "arizona diamondbacks": "AZ",   "atlanta braves": "ATL",
+            "baltimore orioles": "BAL",      "boston red sox": "BOS",
+            "chicago cubs": "CHC",           "chicago white sox": "CWS",
+            "cincinnati reds": "CIN",        "cleveland guardians": "CLE",
+            "colorado rockies": "COL",       "detroit tigers": "DET",
+            "houston astros": "HOU",         "kansas city royals": "KC",
+            "los angeles angels": "LAA",     "los angeles dodgers": "LAD",
+            "miami marlins": "MIA",          "milwaukee brewers": "MIL",
+            "minnesota twins": "MIN",        "new york mets": "NYM",
+            "new york yankees": "NYY",       "athletics": "ATH",
+            "oakland athletics": "ATH",      "philadelphia phillies": "PHI",
+            "pittsburgh pirates": "PIT",     "san diego padres": "SD",
+            "san francisco giants": "SF",    "seattle mariners": "SEA",
+            "st. louis cardinals": "STL",    "tampa bay rays": "TB",
+            "texas rangers": "TEX",          "toronto blue jays": "TOR",
+            "washington nationals": "WSH",
+        }
+        for col in ["home_team", "away_team"]:
+            if col in game_totals.columns:
+                game_totals[col] = game_totals[col].apply(
+                    lambda x: TEAM_NAME_TO_ABBR.get(str(x).lower().strip(), str(x).strip())
+                )
+
         if "home_team" in game_totals.columns and "game_total" in game_totals.columns:
             batters = batters.merge(
                 game_totals[["home_team", "game_total"]],

@@ -34,6 +34,7 @@ MIN_BBE_7D_PARTIAL = 5
 PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
+WEATHER_WEIGHT       = 1.0   # light weight — +10.5% Positive, 2 readings
 
 # ── Pick criteria ──────────────────────────────────────────────────────────
 MIN_SCORE_FLOOR  = 10.0
@@ -46,11 +47,11 @@ MIN_BATTING_AVG  = 0.200
 
 # ── Score tier hit rates (from HR_Analysis, updated as data accumulates) ───
 SCORE_TIER_HIT_RATES = {
-    "13+":    0.256,  # 39 picks — updated
-    "12-13":  0.310,  # 29 picks — updated, top tier
-    "11-12":  0.150,  # 60 picks — updated, persistent weak spot
-    "10-11":  0.182,  # 88 picks — updated, stabilizing
-    "9-10":   0.189,  # 148 picks — updated, now above 10-11
+    "13+":    0.336,  # 11 picks — updated
+    "12-13":  0.341,  # 41 picks — updated, consistent top tier
+    "11-12":  0.132,  # 68 picks — updated, confirmed weak
+    "10-11":  0.182,  # 108 picks — updated, stable
+    "9-10":   0.177,  # 186 picks — updated
     "8.5-9":  0.100,  # keep floor
 }
 
@@ -266,6 +267,28 @@ def score_pitcher_hr_per_fb(v: float) -> float:
     if v >= 15: return 0.3
     if v >= 13: return 0.2
     if v >= 10: return 0.1
+    return 0.0
+
+
+def score_weather_boost(v: float) -> float:
+    """Weather Boost — +10.5% Positive, two consistent readings"""
+    if v >= 1.5:  return 0.4
+    if v >= 1.0:  return 0.3
+    if v >= 0.5:  return 0.2
+    if v >= 0.0:  return 0.0
+    if v >= -0.5: return -0.1
+    return -0.2
+
+
+def score_wind_context(wind: str) -> float:
+    """Wind context — Roof/Neutral 19.6% (174 picks), Blowing IN 8.3%"""
+    w = str(wind).lower().strip()
+    if "roof" in w or "neutral" in w or "dome" in w:
+        return 0.5
+    if "out" in w:
+        return 0.1
+    if "in" in w:
+        return -0.3
     return 0.0
 
 
@@ -750,7 +773,9 @@ def prepare_combined(
         combined["pitch_matchup_capped"] * PITCH_MATCHUP_WEIGHT +
         combined["bvp_capped"]           * BVP_WEIGHT +
         combined["momentum_capped"]      * MOMENTUM_WEIGHT +
-        combined["platoon_capped"] -
+        combined["platoon_capped"] +
+        combined["hr_weather_boost"].apply(score_weather_boost) * WEATHER_WEIGHT +
+        combined["wind_context"].apply(score_wind_context) -
         combined["total_penalty"]
     ).round(3)
 

@@ -154,20 +154,27 @@ def get_batter_hrrbi_for_game(game_pk: int) -> tuple:
         for side in ["home", "away"]:
             batters  = data.get("teams", {}).get(side, {}).get("batters", [])
             players  = data.get("teams", {}).get(side, {}).get("players", {})
-            # All players in roster (includes bench, did not play)
+            # Only players with 2+ PA count as "appeared" (starters)
+            # 0 PA = DNP/scratched → void, 1 PA = pinch hitter → void
             for player_key, player_data in players.items():
                 full_name = player_data.get("person", {}).get("fullName", "")
-                if full_name:
+                stats     = player_data.get("stats", {}).get("batting", {})
+                pa        = int(stats.get("plateAppearances", 0) or 0)
+                if full_name and pa >= 2:
                     appeared.add(normalize_name(full_name))
-            # Only batters who actually appeared get H+R+RBI totals
+            # Only players with 2+ PA get H+R+RBI totals (starters)
+            # 0 PA = DNP/scratched → void, 1 PA = pinch hitter → void
             for pid in batters:
                 player_key  = f"ID{pid}"
                 player_data = players.get(player_key, {})
                 full_name   = player_data.get("person", {}).get("fullName", "")
                 stats       = player_data.get("stats", {}).get("batting", {})
-                hits        = stats.get("hits", 0)
-                runs        = stats.get("runs", 0)
-                rbi         = stats.get("rbi", 0)
+                pa   = int(stats.get("plateAppearances", 0) or 0)
+                if pa < 2:
+                    continue
+                hits = stats.get("hits", 0)
+                runs = stats.get("runs", 0)
+                rbi  = stats.get("rbi", 0)
                 if full_name:
                     results[normalize_name(full_name)] = int(hits) + int(runs) + int(rbi)
     except Exception as e:
@@ -191,7 +198,10 @@ def build_ks_results(dates: list) -> dict:
 def get_batter_appeared_for_game(game_pk: int) -> tuple:
     """Returns (hr_hitters set, appeared set) for a game.
     hr_hitters: name_norm of players who hit a HR
-    appeared: name_norm of all players in the boxscore roster
+    appeared: name_norm of players with 2+ plate appearances (starters)
+    0 PA = DNP/scratched → void
+    1 PA = pinch hitter → void (matches book grading)
+    2+ PA = starter → valid resolution
     """
     hr_hitters = set()
     appeared   = set()
@@ -203,17 +213,18 @@ def get_batter_appeared_for_game(game_pk: int) -> tuple:
         for side in ["home", "away"]:
             players = data.get("teams", {}).get(side, {}).get("players", {})
             batters = data.get("teams", {}).get(side, {}).get("batters", [])
-            for player_key, player_data in players.items():
-                full_name = player_data.get("person", {}).get("fullName", "")
-                if full_name:
-                    appeared.add(normalize_name(full_name))
             for pid in batters:
                 player_key  = f"ID{pid}"
                 player_data = players.get(player_key, {})
                 full_name   = player_data.get("person", {}).get("fullName", "")
                 stats       = player_data.get("stats", {}).get("batting", {})
-                home_runs   = int(stats.get("homeRuns", 0))
-                if full_name and home_runs > 0:
+                pa        = int(stats.get("plateAppearances", 0) or 0)
+                home_runs = int(stats.get("homeRuns", 0) or 0)
+                if not full_name:
+                    continue
+                if pa >= 2:
+                    appeared.add(normalize_name(full_name))
+                if home_runs > 0:
                     hr_hitters.add(normalize_name(full_name))
     except Exception as e:
         print(f"  WARNING: Could not fetch batter data for game {game_pk}: {e}")
