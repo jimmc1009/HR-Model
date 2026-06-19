@@ -2,12 +2,14 @@
 hrrbi_statcast.py
 Lightweight reader — copies batter data from Batter_Statcast_2026
 into HRRBI_Statcast with all columns needed for momentum scoring.
-"""
 
+Updated: pulls team runs per game from MLB Stats API and merges onto
+each batter row. Momentum weight zeroed out in hrrbi_picks.py.
+"""
 import os
 import json
 import time
-
+import requests
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -71,6 +73,18 @@ HRRBI_COLS = [
     "speed_score",
 ]
 
+# MLB team abbreviation map — ESPN/API abbr -> our internal abbr
+ESPN_TO_MLB = {
+    "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
+    "BAL": "BAL", "CIN": "CIN", "NYY": "NYY", "TOR": "TOR",
+    "COL": "COL", "OAK": "ATH", "CLE": "CLE", "CHC": "CHC",
+    "SEA": "SEA", "PHI": "PHI", "DET": "DET", "ARI": "AZ",
+    "TB":  "TB",  "SD":  "SD",  "STL": "STL", "ATL": "ATL",
+    "KC":  "KC",  "LAA": "LAA", "NYM": "NYM", "MIA": "MIA",
+    "MIN": "MIN", "PIT": "PIT", "TEX": "TEX", "SF":  "SF",
+    "CWS": "CWS", "BOS": "BOS", "CHW": "CWS",
+}
+
 
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -96,13 +110,55 @@ def with_retry(func, retries: int = 4, wait: int = 25):
                 raise
 
 
+def get_team_runs_per_game() -> dict:
+    """
+    Fetch season runs scored per game for all MLB teams from the Stats API.
+    Returns dict: team_abbr -> runs_per_game (float)
+    """
+    runs_per_game = {}
+    try:
+        url  = "https://statsapi.mlb.com/api/v1/teams?sportId=1&season=2026"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        team_ids = {}
+        for team in resp.json().get("teams", []):
+            tid  = team.get("id")
+            abbr = team.get("abbreviation", "")
+            abbr = ESPN_TO_MLB.get(str(abbr).strip(), str(abbr).strip())
+            if tid and abbr:
+                team_ids[tid] = abbr
+
+        print(f"  Found {len(team_ids)} teams — fetching season stats...")
+
+        stats_url = "https://statsapi.mlb.com/api/v1/teams/stats?sportId=1&season=2026&stats=season&group=hitting"
+        resp2     = requests.get(stats_url, timeout=15)
+        resp2.raise_for_status()
+
+        for entry in resp2.json().get("stats", []):
+            for split in entry.get("splits", []):
+                tid   = split.get("team", {}).get("id")
+                stat  = split.get("stat", {})
+                games = int(stat.get("gamesPlayed", 0) or 0)
+                runs  = int(stat.get("runs", 0) or 0)
+                abbr  = team_ids.get(tid)
+                if abbr and games > 0:
+                    runs_per_game[abbr] = round(runs / games, 2)
+
+        print(f"  Team runs/game built for {len(runs_per_game)} teams")
+
+    except Exception as e:
+        print(f"  WARNING: Could not fetch team runs/game: {e}")
+
+    return runs_per_game
+
+
 def main() -> None:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
     gc       = get_gspread_client()
 
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
 
-    # Read Batter_Statcast_2026
+    # ── Read Batter_Statcast_2026 ──────────────────────────────────────────
     print("Reading Batter_Statcast_2026...")
     ws      = sh.worksheet("Batter_Statcast_2026")
     data    = with_retry(lambda: ws.get_all_records())
@@ -116,22 +172,43 @@ def main() -> None:
         print(f"  Missing columns (will be skipped): {missing}")
 
     out = batters[available].copy()
+
     if "batting_avg" in out.columns:
         out = out.rename(columns={"batting_avg": "avg"})
 
-    # Write to HRRBI_Statcast
+    # ── Fetch and merge team runs per game ────────────────────────────────
+    print("Fetching team runs per game from MLB Stats API...")
+    runs_map = get_team_runs_per_game()
+
+    if runs_map:
+        team_col = "team" if "team" in out.columns else None
+        if team_col:
+            out["team_runs_per_game"] = out[team_col].apply(
+                lambda t: runs_map.get(str(t).strip(), "")
+            )
+            filled = (out["team_runs_per_game"] != "").sum()
+            print(f"  team_runs_per_game populated for {filled} batters")
+        else:
+            out["team_runs_per_game"] = ""
+            print("  WARNING: No team column found — team_runs_per_game skipped")
+    else:
+        out["team_runs_per_game"] = ""
+        print("  WARNING: No runs data — team_runs_per_game will be empty")
+
+    # ── Write to HRRBI_Statcast ───────────────────────────────────────────
     try:
         ws_out = sh.worksheet("HRRBI_Statcast")
         with_retry(lambda: ws_out.clear())
     except gspread.WorksheetNotFound:
-        ws_out = sh.add_worksheet(title="HRRBI_Statcast", rows=500, cols=len(available) + 5)
+        ws_out = sh.add_worksheet(
+            title="HRRBI_Statcast", rows=500, cols=len(available) + 10
+        )
 
     values = [out.columns.tolist()] + out.fillna("").astype(str).values.tolist()
     with_retry(lambda: ws_out.update(values))
-    print(f"HRRBI_Statcast: {len(out)} batters")
-    print("Written to HRRBI_Statcast")
+    print(f"HRRBI_Statcast: {len(out)} batters written")
 
-    # Team_K_Rates is built by main.py with full pitch-level chase/whiff data — do not overwrite here.
+    # Team_K_Rates is built by main.py — do not overwrite here.
     print("Team_K_Rates built by main.py — skipping.")
 
 
