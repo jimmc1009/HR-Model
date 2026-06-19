@@ -973,7 +973,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
     }})
 
     try:
-        with_retry(lambda: ws.batch_update({"requests": reqs}))
+        with_retry(lambda: sh.batch_update({"requests": reqs}))
     except APIError as e:
         print(f"HRRBI formatting failed: {e}")
 
