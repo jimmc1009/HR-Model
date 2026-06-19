@@ -3,6 +3,10 @@ hrrbi_picks.py
 H+R+RBI model — value focused, targets 1.5 lines at plus odds.
 Reads from HRRBI_Statcast, Pitcher_Statcast_2026, Park_Factors,
 Weather, Game_Totals, HRRBI_Odds sheets.
+
+Updated:
+- Momentum weight zeroed out (separator -22% STRONG—)
+- Team runs per game added as scoring feature
 """
 
 import os
@@ -40,8 +44,8 @@ MAX_PER_TEAM         = 2
 TOP_N                = 15
 
 # Signal filters
-MIN_ODDS_FOR_SIGNAL  = 100   # data shows +100 to +120 is sweet spot
-MAX_ODDS_FOR_SIGNAL  = 120   # +121+ underperforming across all tiers
+MIN_ODDS_FOR_SIGNAL  = 100
+MAX_ODDS_FOR_SIGNAL  = 120
 MAX_LINE_FOR_SIGNAL  = 1.5
 
 COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
@@ -241,7 +245,6 @@ def score_bb_pct(v: float, pa: float) -> float:
     return 0.0
 
 def score_opp_babip(v: float) -> float:
-    """BABIP allowed — high BABIP means more balls in play become hits"""
     if v <= 0: return 0.0
     if v >= 0.340: return  1.0
     if v >= 0.320: return  0.6
@@ -251,9 +254,8 @@ def score_opp_babip(v: float) -> float:
     if v <= 0.275: return -0.1
     return 0.0
 
-
 def score_opp_hr_per_fb(v: float) -> float:
-    """HR/FB% allowed — +15.3% STRONG+ separator, raised max contribution"""
+    """HR/FB% allowed — +7.4% Positive separator — highest pitcher feature signal."""
     if v >= 20.0: return  2.0
     if v >= 18.0: return  1.5
     if v >= 15.0: return  1.2
@@ -263,9 +265,7 @@ def score_opp_hr_per_fb(v: float) -> float:
     if v <=  8.0: return -0.5
     return 0.0
 
-
 def score_opp_fps_pct(v: float) -> float:
-    """First pitch strike % — low FPS means more hitter counts, more walks, more baserunners"""
     if v <= 0: return 0.0
     if v <= 55.0: return  0.8
     if v <= 58.0: return  0.4
@@ -274,7 +274,6 @@ def score_opp_fps_pct(v: float) -> float:
     if v >= 67.0: return -0.4
     if v >= 64.0: return -0.1
     return 0.0
-
 
 def score_opp_whip(v: float) -> float:
     if v >= 1.60: return 2.0
@@ -335,10 +334,30 @@ def score_weather_hits(boost: float) -> float:
     if boost <= -0.5: return -0.2
     return 0.0
 
+def score_team_runs_per_game(v: float) -> float:
+    """
+    Team runs scored per game — captures run environment for R and RBI prediction.
+    High-scoring teams create more opportunities for H+R+RBI to accumulate.
+    New feature replacing momentum weight which showed -22% STRONG— separation.
+    """
+    if v <= 0: return 0.0
+    if v >= 5.5: return  1.5
+    if v >= 5.0: return  1.0
+    if v >= 4.5: return  0.5
+    if v >= 4.0: return  0.1
+    if v <= 3.5: return -0.5
+    if v <= 3.0: return -1.0
+    return 0.0
 
-# ── Momentum scoring ──────────────────────────────────────────────────────
+
+# ── Momentum scoring — kept for logging/analysis but weight zeroed ────────
 
 def compute_momentum_score(row: pd.Series) -> tuple:
+    """
+    Momentum scoring — kept for logging and analysis tracking.
+    Weight is zeroed out in compute_hrrbi_score() based on feature
+    separator showing -22% STRONG— separation (hurting model).
+    """
     score = 0.0
     parts = []
 
@@ -431,13 +450,16 @@ def compute_hrrbi_score(row: pd.Series) -> float:
     s_opp_hr_fb   = score_opp_hr_per_fb(safe_float(row.get("opp_hr_per_fb", 10.0), 10.0))
     s_opp_fps     = score_opp_fps_pct(safe_float(row.get("opp_fps_pct", 62.0), 62.0))
     s_opp_babip   = score_opp_babip(safe_float(row.get("opp_babip", 0.290), 0.290))
-    s_game_total = score_game_total(safe_float(row.get("game_total", 8.5), 8.5))
-    s_park       = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
-    s_weather    = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
+    s_game_total  = score_game_total(safe_float(row.get("game_total", 8.5), 8.5))
+    s_park        = score_park_hits(safe_float(row.get("park_hr_factor", 100), 100))
+    s_weather     = score_weather_hits(safe_float(row.get("hr_weather_boost", 0)))
 
-    momentum_score, _ = compute_momentum_score(row)
-    # Reduced to 0.5x — separator trending -27.2% STRONG— across 4 readings
-    momentum_capped   = max(-2.0, min(2.0, momentum_score)) * 0.5
+    # Team runs per game — new feature replacing momentum
+    s_team_runs = score_team_runs_per_game(safe_float(row.get("team_runs_per_game", 0)))
+
+    # Momentum — zeroed out. Score still computed for logging/analysis.
+    # Feature separator showed -22% STRONG— separation (hurting model).
+    # momentum_capped * 0.0 = no contribution to score.
 
     return round(
         s_avg + s_woba + s_obp + s_ld + s_gb + s_hh_s +
@@ -445,7 +467,8 @@ def compute_hrrbi_score(row: pd.Series) -> float:
         s_bat_ord + s_bb +
         s_opp_whip + s_opp_k + s_opp_bb + s_opp_hh +
         s_opp_hr_fb + s_opp_fps + s_opp_babip +
-        s_game_total + s_park + s_weather + momentum_capped, 3
+        s_game_total + s_park + s_weather +
+        s_team_runs, 3
     )
 
 
@@ -500,10 +523,6 @@ def build_reason(row: pd.Series) -> str:
         elif roll <= 0.200:
             reasons.append(f"❄️ .{int(roll * 1000)} avg last 14 days — cold")
 
-    momentum_score, momentum_desc = compute_momentum_score(row)
-    if momentum_desc:
-        reasons.append(momentum_desc)
-
     woba = safe_float(row.get("woba"))
     if woba >= 0.360:
         reasons.append(f"⚡ wOBA {woba:.3f}")
@@ -517,6 +536,12 @@ def build_reason(row: pd.Series) -> str:
         reasons.append("📋 Leadoff/2-hole — max run scoring spot")
     elif order <= 5.0:
         reasons.append(f"📋 Bats {order:.1f} — prime RBI spot")
+
+    team_runs = safe_float(row.get("team_runs_per_game", 0))
+    if team_runs >= 5.0:
+        reasons.append(f"🏃 Team scores {team_runs:.2f} runs/game — high run environment")
+    elif team_runs > 0 and team_runs <= 3.5:
+        reasons.append(f"⚠️ Team scores {team_runs:.2f} runs/game — low run environment")
 
     whip = safe_float(row.get("opp_whip", 1.20), 1.20)
     if whip >= 1.35:
@@ -533,6 +558,10 @@ def build_reason(row: pd.Series) -> str:
         reasons.append(f"✅ Opp K% {opp_k:.1f}% — contact-friendly matchup")
     elif opp_k >= 28.0:
         reasons.append(f"⚠️ Opp K% {opp_k:.1f}% — strikeout risk")
+
+    opp_hr_fb = safe_float(row.get("opp_hr_per_fb", 10.0), 10.0)
+    if opp_hr_fb >= 15.0:
+        reasons.append(f"💣 Opp HR/FB% {opp_hr_fb:.1f}% — gives up extra bases")
 
     game_total = safe_float(row.get("game_total", 8.5), 8.5)
     if game_total >= 9.5:
@@ -630,7 +659,6 @@ def prepare_combined(
         game_totals = game_totals.copy()
         game_totals.columns = [c.strip() for c in game_totals.columns]
 
-        # Convert full team names to abbreviations to match batter_team
         TEAM_NAME_TO_ABBR = {
             "arizona diamondbacks": "AZ",   "atlanta braves": "ATL",
             "baltimore orioles": "BAL",      "boston red sox": "BOS",
@@ -672,25 +700,26 @@ def prepare_combined(
                     batters = batters.drop(columns=["game_total_away", "batter_team_away"], errors="ignore")
 
     defaults = {
-        "opp_whip":          1.20,
-        "opp_k_pct_season":  22.0,
-        "opp_bb_pct_season": 8.0,
-        "opp_hard_hit_pct":  38.0,
-        "opp_hr_per_fb":     10.0,
-        "opp_fps_pct":       62.0,
-        "opp_hr9":           1.1,
-        "opp_babip":         0.290,
-        "park_hr_factor":    100.0,
-        "hr_weather_boost":  0.0,
-        "avg_bat_order":     5.0,
-        "ld_pct":            0.0,
-        "gb_pct":            42.0,
-        "bb_pct":            0.0,
-        "avg_ev_14d":        0.0,
-        "hard_hit_pct_14d":  0.0,
-        "barrel_pct_14d":    0.0,
-        "bbe_14d":           0.0,
-        "game_total":        8.5,
+        "opp_whip":            1.20,
+        "opp_k_pct_season":    22.0,
+        "opp_bb_pct_season":   8.0,
+        "opp_hard_hit_pct":    38.0,
+        "opp_hr_per_fb":       10.0,
+        "opp_fps_pct":         62.0,
+        "opp_hr9":             1.1,
+        "opp_babip":           0.290,
+        "park_hr_factor":      100.0,
+        "hr_weather_boost":    0.0,
+        "avg_bat_order":       5.0,
+        "ld_pct":              0.0,
+        "gb_pct":              42.0,
+        "bb_pct":              0.0,
+        "avg_ev_14d":          0.0,
+        "hard_hit_pct_14d":    0.0,
+        "barrel_pct_14d":      0.0,
+        "bbe_14d":             0.0,
+        "game_total":          8.5,
+        "team_runs_per_game":  0.0,
     }
     for col, val in defaults.items():
         if col not in batters.columns:
@@ -759,7 +788,6 @@ def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) -> None:
-    """Log all scored batters to HRRBI_All_Scores for analysis."""
     today_str = date.today().strftime("%Y-%m-%d")
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
 
@@ -773,7 +801,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
         else:
             existing = pd.DataFrame()
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="HRRBI_All_Scores", rows=10000, cols=30)
+        ws       = sh.add_worksheet(title="HRRBI_All_Scores", rows=10000, cols=32)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
@@ -783,7 +811,6 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
         print("No scored batters to log to HRRBI_All_Scores.")
         return
 
-    # Only log batters with a valid line and odds — excludes nan rows from analysis
     combined = combined.copy()
     combined["hrrbi_line"] = combined["hrrbi_line"].apply(lambda x: safe_float(x, 0))
     combined["hrrbi_over_odds"] = combined["hrrbi_over_odds"].apply(lambda x: safe_float(x, 0))
@@ -802,39 +829,40 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
     new_rows = []
     for _, row in sorted_df.iterrows():
         new_rows.append({
-            "date":              today_str,
-            "rank":              str(row.get("all_scores_rank", "")),
-            "player_name":       str(row.get("player_name", "")),
-            "team":              str(row.get("batter_team", "")),
-            "hrrbi_score":       str(row.get("hrrbi_score", "")),
-            "hrrbi_line":        str(row.get("hrrbi_line", "")),
-            "over_odds":         str(row.get("hrrbi_over_odds", "")),
-            "prop_signal":       str(row.get("prop_signal", "")),
-            "confidence":        str(row.get("confidence", "")),
-            "avg":               str(row.get("avg", "")),
-            "woba":              str(row.get("woba", "")),
-            "obp":               str(row.get("obp", "")),
-            "ld_pct":            str(row.get("ld_pct", "")),
-            "gb_pct":            str(row.get("gb_pct", "")),
+            "date":                today_str,
+            "rank":                str(row.get("all_scores_rank", "")),
+            "player_name":         str(row.get("player_name", "")),
+            "team":                str(row.get("batter_team", "")),
+            "hrrbi_score":         str(row.get("hrrbi_score", "")),
+            "hrrbi_line":          str(row.get("hrrbi_line", "")),
+            "over_odds":           str(row.get("hrrbi_over_odds", "")),
+            "prop_signal":         str(row.get("prop_signal", "")),
+            "confidence":          str(row.get("confidence", "")),
+            "avg":                 str(row.get("avg", "")),
+            "woba":                str(row.get("woba", "")),
+            "obp":                 str(row.get("obp", "")),
+            "ld_pct":              str(row.get("ld_pct", "")),
+            "gb_pct":              str(row.get("gb_pct", "")),
             "hard_hit_pct_season": str(row.get("hard_hit_pct_season", "")),
-            "avg_ev_7d":         str(row.get("avg_ev_7d", "")),
-            "hard_hit_pct_7d":   str(row.get("hard_hit_pct_7d", "")),
-            "avg_14d":           str(row.get("avg_14d", "")),
-            "avg_bat_order":     str(row.get("avg_bat_order", "")),
-            "bb_pct":            str(row.get("bb_pct", "")),
-            "momentum_score":    str(row.get("momentum_score", "")),
-            "opp_whip":          str(row.get("opp_whip", "")),
-            "opp_k_pct_season":  str(row.get("opp_k_pct_season", "")),
-            "opp_bb_pct_season": str(row.get("opp_bb_pct_season", "")),
-            "opp_hard_hit_pct":  str(row.get("opp_hard_hit_pct", "")),
-            "opp_hr_per_fb":     str(row.get("opp_hr_per_fb", "")),
-            "opp_fps_pct":       str(row.get("opp_fps_pct", "")),
-            "opp_babip":         str(row.get("opp_babip", "")),
-            "game_total":        str(row.get("game_total", "")),
-            "park_hr_factor":    str(row.get("park_hr_factor", "")),
-            "over_hit":          "Pending",
-            "under_hit":         "Pending",
-            "actual_hrrbi":      "Pending",
+            "avg_ev_7d":           str(row.get("avg_ev_7d", "")),
+            "hard_hit_pct_7d":     str(row.get("hard_hit_pct_7d", "")),
+            "avg_14d":             str(row.get("avg_14d", "")),
+            "avg_bat_order":       str(row.get("avg_bat_order", "")),
+            "bb_pct":              str(row.get("bb_pct", "")),
+            "momentum_score":      str(row.get("momentum_score", "")),
+            "team_runs_per_game":  str(row.get("team_runs_per_game", "")),
+            "opp_whip":            str(row.get("opp_whip", "")),
+            "opp_k_pct_season":    str(row.get("opp_k_pct_season", "")),
+            "opp_bb_pct_season":   str(row.get("opp_bb_pct_season", "")),
+            "opp_hard_hit_pct":    str(row.get("opp_hard_hit_pct", "")),
+            "opp_hr_per_fb":       str(row.get("opp_hr_per_fb", "")),
+            "opp_fps_pct":         str(row.get("opp_fps_pct", "")),
+            "opp_babip":           str(row.get("opp_babip", "")),
+            "game_total":          str(row.get("game_total", "")),
+            "park_hr_factor":      str(row.get("park_hr_factor", "")),
+            "over_hit":            "Pending",
+            "under_hit":           "Pending",
+            "actual_hrrbi":        "Pending",
         })
 
     if not new_rows:
@@ -864,20 +892,21 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
         ws = sh.add_worksheet(title="Top_HRRBI_Picks", rows=100, cols=15)
 
     output_cols = {
-        "rank":             "Rank",
-        "player_name":      "Batter",
-        "batter_team":      "Team",
-        "opp_pitcher_name": "Opp Pitcher",
-        "hrrbi_line":       "Line",
-        "hrrbi_over_odds":  "Over Odds",
-        "hrrbi_under_odds": "Under Odds",
-        "prop_signal":      "Signal",
-        "game_total":       "Game Total",
-        "opp_whip":         "Opp WHIP",
-        "opp_k_pct_season": "Opp K%",
-        "opp_bb_pct_season":"Opp BB%",
-        "reason":           "Key Reasons",
-        "confidence":       "Confidence",
+        "rank":               "Rank",
+        "player_name":        "Batter",
+        "batter_team":        "Team",
+        "opp_pitcher_name":   "Opp Pitcher",
+        "hrrbi_line":         "Line",
+        "hrrbi_over_odds":    "Over Odds",
+        "hrrbi_under_odds":   "Under Odds",
+        "prop_signal":        "Signal",
+        "game_total":         "Game Total",
+        "team_runs_per_game": "Team R/G",
+        "opp_whip":           "Opp WHIP",
+        "opp_k_pct_season":   "Opp K%",
+        "opp_bb_pct_season":  "Opp BB%",
+        "reason":             "Key Reasons",
+        "confidence":         "Confidence",
     }
 
     available = {k: v for k, v in output_cols.items() if k in picks.columns}
@@ -922,7 +951,7 @@ def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame)
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-    col_widths = [45, 160, 55, 160, 55, 80, 85, 150, 80, 80, 65, 65, 320, 90]
+    col_widths = [45, 160, 55, 160, 55, 80, 85, 150, 80, 75, 80, 65, 65, 320, 90]
     for i, w in enumerate(col_widths[:n_cols]):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
@@ -1063,7 +1092,6 @@ def main() -> None:
         print("WARNING: No combined H+R+RBI data.")
         return
 
-    # Log all scores BEFORE diversity cap
     log_all_scores(gc, sheet_id, combined)
     time.sleep(5)
 
@@ -1084,7 +1112,7 @@ def main() -> None:
 
     print(f"\nTop {len(picks)} H+R+RBI Picks:")
     print(picks[["rank", "player_name", "batter_team", "hrrbi_score", "confidence",
-                 "momentum_score", "prop_signal", "game_total"]].to_string(index=False))
+                 "momentum_score", "team_runs_per_game", "prop_signal", "game_total"]].to_string(index=False))
 
     write_picks_to_sheet(gc, sheet_id, picks)
     time.sleep(5)
