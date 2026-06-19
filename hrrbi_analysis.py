@@ -2,6 +2,9 @@
 hrrbi_analysis.py
 Analyzes HRRBI_All_Scores to surface feature separators, score tiers,
 signal performance, and rolling trends. Mirrors hr_analysis.py structure.
+
+Updated: granular odds buckets in Score Tier × Odds Zone cross-tab
+to distinguish -110 vs -130 vs -155 vs worse, giving real breakeven picture.
 """
 
 import os
@@ -89,6 +92,14 @@ def read_sheet_raw(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame
         return pd.DataFrame()
 
 
+def american_to_implied(odds: float) -> float:
+    """Convert American odds to implied probability (breakeven %)."""
+    if odds >= 0:
+        return 100.0 / (odds + 100.0)
+    else:
+        return abs(odds) / (abs(odds) + 100.0)
+
+
 def signal_label(pct_diff: float, threshold_strong: float = 15.0, threshold_positive: float = 7.0) -> str:
     abs_diff = abs(pct_diff)
     if abs_diff >= threshold_strong:
@@ -156,18 +167,18 @@ def build_analysis(df: pd.DataFrame) -> dict:
     # ── By Signal ──────────────────────────────────────────────────────────
     signals = []
     if "prop_signal" in resolved.columns:
-        for sig in ["OVER 1.5 ✅", "LEAN OVER 1.5", "No Signal"]:
-            if sig == "No Signal":
+        for sig_label in ["OVER 1.5 ✅", "LEAN OVER 1.5", "No Signal"]:
+            if sig_label == "No Signal":
                 sub = resolved[~resolved["prop_signal"].astype(str).str.contains("OVER", na=False)]
             else:
-                sub = resolved[resolved["prop_signal"].astype(str).str.contains(sig.replace(" ✅", ""), na=False)]
+                sub = resolved[resolved["prop_signal"].astype(str).str.contains(sig_label.replace(" ✅", ""), na=False)]
             if sub.empty:
                 continue
             total = len(sub)
             hits  = int(sub["over_bool"].sum())
             rate  = round(hits / total * 100, 1)
             signals.append({
-                "Signal":    sig,
+                "Signal":    sig_label,
                 "Total":     total,
                 "Over Hits": hits,
                 "Over Rate %": f"{rate}%",
@@ -214,9 +225,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
 
     # ── Feature Separators ────────────────────────────────────────────────
     features = [
-        # Score — most important, validates the model itself
         ("hrrbi_score",       "HRRBI Score"),
-        # Batter — season stats
         ("avg",               "Season AVG"),
         ("woba",              "wOBA"),
         ("obp",               "OBP"),
@@ -224,14 +233,11 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("ld_pct",            "LD%"),
         ("gb_pct",            "GB%"),
         ("hard_hit_pct_season", "Hard Hit% (Season)"),
-        # Batter — recent form
         ("avg_ev_7d",         "Avg EV (7d)"),
         ("hard_hit_pct_7d",   "Hard Hit% (7d)"),
         ("avg_14d",           "AVG (14d)"),
         ("momentum_score",    "Momentum Score"),
-        # Lineup context
         ("avg_bat_order",     "Avg Bat Order"),
-        # Pitcher matchup
         ("opp_whip",          "Opp WHIP"),
         ("opp_k_pct_season",  "Opp K%"),
         ("opp_bb_pct_season", "Opp BB%"),
@@ -239,7 +245,6 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("opp_hr_per_fb",     "Opp HR/FB%"),
         ("opp_fps_pct",       "Opp FPS%"),
         ("opp_babip",         "Opp BABIP"),
-        # Game context
         ("game_total",        "Game Total"),
         ("park_hr_factor",    "Park HR Factor"),
     ]
@@ -269,10 +274,12 @@ def build_analysis(df: pd.DataFrame) -> dict:
             "Signal":         signal_label(pct_diff),
         })
 
-    # Sort by absolute % difference
     separators.sort(key=lambda x: abs(safe_float(x["% Difference"].replace("%", "").replace("+", ""))), reverse=True)
 
     # ── Score Tier × Odds Zone cross-tab ─────────────────────────────────
+    # Granular odds buckets so breakeven is meaningful:
+    # Minus odds split into -110 or better / -111 to -130 / -131 to -155 / -156 or worse
+    # Plus odds kept as before
     if "over_odds" in resolved.columns:
         resolved["odds_num"] = resolved["over_odds"].apply(safe_float)
     else:
@@ -286,31 +293,59 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("7-9",     7.0,  9.0),
         ("Under 7", 0.0,  7.0),
     ]
+
+    # Granular odds buckets with breakeven % shown in label
+    # Minus odds: lower number = worse odds (more negative)
+    # -110 breakeven: 52.4% | -130 breakeven: 56.5% | -156 breakeven: 60.9%
     odds_defs = [
-        ("Minus odds",   -999,   0),
-        ("+100 to +110",  100, 111),
-        ("+111 to +120",  111, 121),
-        ("+121+",         121, 999),
+        ("-110 or better (BE: 52.4%)",  -110,    0),   # -110 to -100 (even money)
+        ("-111 to -130 (BE: 52-56%)",   -130, -110),
+        ("-131 to -155 (BE: 56-61%)",   -155, -130),
+        ("-156 or worse (BE: 61%+)",    -999, -155),
+        ("+100 to +110 (BE: 47-48%)",    100,  111),
+        ("+111 to +120 (BE: 45-47%)",    111,  121),
+        ("+121+ (BE: <45%)",             121,  999),
     ]
+
     for tier_label, t_lo, t_hi in hrrbi_tier_defs:
         tier_sub = resolved[(resolved["hrrbi_score"] >= t_lo) & (resolved["hrrbi_score"] < t_hi)]
         if tier_sub.empty:
             continue
         for odds_label, o_lo, o_hi in odds_defs:
-            if o_lo < 0:
-                sub = tier_sub[tier_sub["odds_num"] < 0]
+            # Minus odds buckets (negative numbers, lower = worse)
+            if o_hi <= 0:
+                sub = tier_sub[
+                    (tier_sub["odds_num"] >= o_lo) &
+                    (tier_sub["odds_num"] < o_hi)
+                ]
+            # Plus odds buckets
             else:
-                sub = tier_sub[(tier_sub["odds_num"] >= o_lo) & (tier_sub["odds_num"] < o_hi)]
+                sub = tier_sub[
+                    (tier_sub["odds_num"] >= o_lo) &
+                    (tier_sub["odds_num"] < o_hi)
+                ]
+
             if len(sub) < 3:
                 continue
-            total = len(sub)
-            hits  = int(sub["over_bool"].sum())
-            rate  = round(hits / total * 100, 1)
+
+            total    = len(sub)
+            hits     = int(sub["over_bool"].sum())
+            rate     = round(hits / total * 100, 1)
+
+            # Calculate actual edge vs midpoint of odds bucket for context
+            # Use actual odds mean for edge calc
+            avg_odds = sub["odds_num"].mean()
+            breakeven = round(american_to_implied(avg_odds) * 100, 1)
+            edge      = round(rate - breakeven, 1)
+            edge_str  = f"+{edge}%" if edge >= 0 else f"{edge}%"
+
             tier_odds_rows.append({
                 "Score Tier | Odds": f"{tier_label} | {odds_label}",
                 "Total":     total,
                 "Over Hits": hits,
                 "Over Rate %": f"{rate}%",
+                "Breakeven": f"{breakeven}%",
+                "Edge":      edge_str,
             })
 
     return {
@@ -394,14 +429,14 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         ])
     all_values.append(["", "", "", "", "", "", "", ""])
 
-    # Score Tier × Odds Zone
+    # Score Tier × Odds Zone — now with Breakeven and Edge columns
     if analysis.get("tier_odds_rows"):
-        all_values.append(["💰  SCORE TIER × ODDS ZONE", "", "", "", "", "", "", ""])
-        all_values.append(["Score Tier | Odds", "Total", "Over Hits", "Over Rate %", "", "", "", ""])
+        all_values.append(["💰  SCORE TIER × ODDS ZONE — Granular Breakeven Analysis", "", "", "", "", "", "", ""])
+        all_values.append(["Score Tier | Odds", "Total", "Over Hits", "Over Rate %", "Breakeven %", "Edge vs BE", "", ""])
         for r in analysis.get("tier_odds_rows", []):
             all_values.append([
                 r["Score Tier | Odds"], str(r["Total"]), str(r["Over Hits"]),
-                r["Over Rate %"], "", "", "", "",
+                r["Over Rate %"], r["Breakeven"], r["Edge"], "", "",
             ])
         all_values.append(["", "", "", "", "", "", "", ""])
 
@@ -460,33 +495,24 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
     }})
 
-    # Section headers and column headers
+    # Walk rows for section/col/data formatting
     section_header_rows = []
     col_header_rows     = []
     data_rows_info      = []
 
-    row_idx = 3
-    sections = [
-        ("score_tiers", 5),
-        ("signals",     5),
-        ("bat_order",   5),
-        ("rolling",     5),
-        ("separators",  5),
-    ]
-
-    # Walk through all_values to find section/col/data rows
     for i, row in enumerate(all_values):
         if i < 3:
             continue
         cell = str(row[0]).strip()
         if any(cell.startswith(s) for s in ["🎯", "📢", "📋", "📈", "🔬", "💰"]):
             section_header_rows.append(i)
-        elif cell in ["Score Tier", "Signal", "Bat Order", "Period", "Feature", "Score Tier | Odds"]:
+        elif cell in ["Score Tier", "Signal", "Bat Order", "Period", "Feature",
+                      "Score Tier | Odds", "Score Tier | Odds Zone"]:
             col_header_rows.append(i)
         elif any(str(v).strip() for v in row):
             data_rows_info.append(i)
 
-    # Section headers — blue
+    # Section headers
     for r in section_header_rows:
         reqs.append({"repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
@@ -514,7 +540,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
         }})
 
-    # Data rows — alternating + color rate cells
+    # Data rows
     data_counter = 0
     for r in data_rows_info:
         bg = COLOR_BG if data_counter % 2 == 0 else COLOR_BG_ALT
@@ -526,35 +552,66 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor)",
         }})
 
-        # Color the Over Rate % column (col 3)
+        # Color Over Rate % (col 3)
         rate_str = str(all_values[r][3]).replace("%", "").strip()
         try:
             rate_val = float(rate_str)
             if rate_val >= 60:
                 rate_bg = COLOR_GREEN_DIM; rate_fg = COLOR_GREEN
-            elif rate_val >= 50:
+            elif rate_val >= 55:
                 rate_bg = {"red": 0.039, "green": 0.120, "blue": 0.039}
                 rate_fg = COLOR_GREEN
-            elif rate_val <= 35:
+            elif rate_val >= 50:
+                rate_bg = bg; rate_fg = COLOR_WHITE
+            elif rate_val <= 40:
                 rate_bg = COLOR_RED_DIM; rate_fg = COLOR_RED
             else:
                 rate_bg = bg; rate_fg = COLOR_WHITE
-            reqs.append({"repeatCell": {
-                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                          "startColumnIndex": 3, "endColumnIndex": 4},
-                "cell": {"userEnteredFormat": {
-                    "backgroundColor": rate_bg,
-                    "textFormat": {"foregroundColor": rate_fg, "bold": rate_val >= 60 or rate_val <= 35},
-                    "horizontalAlignment": "CENTER",
-                }},
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }})
+            if rate_val >= 55 or rate_val <= 40:
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 3, "endColumnIndex": 4},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": rate_bg,
+                        "textFormat": {"foregroundColor": rate_fg,
+                                       "bold": rate_val >= 60 or rate_val <= 40},
+                        "horizontalAlignment": "CENTER",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                }})
         except (ValueError, TypeError):
             pass
 
-        # Color signal column (col 5) for feature separators
+        # Color Edge column (col 5) for tier × odds rows
+        edge_str = str(all_values[r][5]).strip() if len(all_values[r]) > 5 else ""
+        if edge_str and ("+" in edge_str or (edge_str.startswith("-") and "%" in edge_str)):
+            try:
+                edge_val = float(edge_str.replace("%", "").replace("+", ""))
+                if edge_val >= 5:
+                    e_bg = COLOR_GREEN_DIM; e_fg = COLOR_GREEN
+                elif edge_val >= 0:
+                    e_bg = {"red": 0.039, "green": 0.120, "blue": 0.039}
+                    e_fg = COLOR_GREEN
+                elif edge_val < 0:
+                    e_bg = COLOR_RED_DIM; e_fg = COLOR_RED
+                else:
+                    e_bg = bg; e_fg = COLOR_WHITE
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 5, "endColumnIndex": 6},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": e_bg,
+                        "textFormat": {"foregroundColor": e_fg, "bold": abs(edge_val) >= 5},
+                        "horizontalAlignment": "CENTER",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                }})
+            except (ValueError, TypeError):
+                pass
+
+        # Color signal column (col 5) for feature separator rows
         signal_str = str(all_values[r][5]).strip() if len(all_values[r]) > 5 else ""
-        if signal_str:
+        if signal_str and "STRONG" in signal_str or "Positive" in signal_str or "Negative" in signal_str:
             if "STRONG +" in signal_str:
                 sig_bg = COLOR_GREEN_DIM; sig_fg = COLOR_GREEN
             elif "STRONG —" in signal_str:
@@ -578,8 +635,8 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
             }})
 
-    # Column widths
-    col_widths = [200, 90, 90, 100, 110, 140, 80, 80]
+    # Column widths — expanded for longer odds labels
+    col_widths = [260, 90, 90, 100, 110, 110, 80, 80]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
