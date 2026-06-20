@@ -46,6 +46,13 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python hrrbi_analysis.py
 
+      # ── Diagnostics ───────────────────────────────────────────────────────
+      - name: Run diagnose_1112.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python diagnose_1112.py
+
       # ── Dashboard ─────────────────────────────────────────────────────────
       - name: Run dashboard.py
         env:
