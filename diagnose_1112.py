@@ -75,7 +75,7 @@ def main() -> None:
         return
 
     # Filter to model start date
-    MODEL_START = "2026-06-02"
+    MODEL_START = "2026-06-09"
     resolved["date_dt"] = pd.to_datetime(resolved["date"], errors="coerce")
     resolved = resolved[resolved["date_dt"] >= pd.Timestamp(MODEL_START)].copy()
     print(f"  {len(resolved)} rows after model start date filter ({MODEL_START})")
