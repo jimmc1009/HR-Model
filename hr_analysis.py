@@ -22,7 +22,10 @@ SCOPES = [
 ]
 
 # Model rebuild date — only analyze data from this date forward
-MODEL_START_DATE = "2026-06-02"
+# Updated from 2026-06-02 to 2026-06-09 to exclude early dates where
+# avg_ev_7d was missing for some players due to Statcast API gaps,
+# which was corrupting the 11-12 tier analysis.
+MODEL_START_DATE = "2026-06-09"
 
 COLOR_BG        = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
@@ -224,7 +227,6 @@ def build_analysis(df: pd.DataFrame) -> dict:
             continue
         yes_vals = hr_yes[col].dropna()
         no_vals  = hr_no[col].dropna()
-        # Skip if not enough data points on either side
         if len(yes_vals) < 5 or len(no_vals) < 5:
             continue
         yes_avg  = round(yes_vals.mean(), 3)
@@ -454,7 +456,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     total_cols = 8
     reqs       = []
 
-    # Base style — all cells centered
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -467,7 +468,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy,horizontalAlignment)",
     }})
 
-    # Label column (col 0) — left aligned
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": 1},
