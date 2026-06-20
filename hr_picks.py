@@ -33,7 +33,7 @@ MIN_BBE_7D_PARTIAL = 5
 # ── Weights (based on feature separator analysis) ──────────────────────────
 PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
-MOMENTUM_WEIGHT      = 1.0   # new — rewards barrel% surge above season average
+MOMENTUM_WEIGHT      = 0.5   # reduced from 1.0 — momentum trending negative in analysis
 WEATHER_WEIGHT       = 1.0   # light weight — +10.5% Positive, 2 readings
 
 # ── Pick criteria ──────────────────────────────────────────────────────────
@@ -310,11 +310,6 @@ def score_pitcher_quality_penalty(
 
 
 # ── Platoon score — two-way ────────────────────────────────────────────────
-# Rewards platoon advantages, penalizes disadvantages
-# Batter ISO splits + pitcher platoon barrel% for full matchup context
-# Weight: 0.8 (conservative until separator data confirms strength)
-# Cap: ±2.0 points before weight
-
 PLATOON_WEIGHT = 1.8  # raised from 1.6 — separator at +203.8% STRONG+
 
 def compute_platoon_score(row: pd.Series) -> tuple:
@@ -344,9 +339,8 @@ def compute_platoon_score(row: pd.Series) -> tuple:
 
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
-    # ── Batter ISO split — positive for advantage, negative for disadvantage
     if has_iso_data:
-        iso_gap = iso_vs_this - iso_vs_opp  # positive = batter favors this hand
+        iso_gap = iso_vs_this - iso_vs_opp
 
         if iso_gap >= 0.080:
             score += 1.5
@@ -366,7 +360,6 @@ def compute_platoon_score(row: pd.Series) -> tuple:
             score -= 0.6
             parts.append(f"⚠️ Moderate platoon weakness ({label})")
 
-    # ── Pitcher barrel% vs this batter hand
     if pitcher_barrel_vs_hand > 0:
         if pitcher_barrel_vs_hand >= 14:
             score += 0.8
@@ -382,13 +375,11 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         elif pitcher_barrel_vs_hand <= 6:
             score -= 0.3
 
-    # ── Start rate penalty
     if start_rate < 0.50:
         start_penalty = round((0.50 - start_rate) * 3.0, 3)
         score        -= start_penalty
         parts.append(f"⚠️ Rarely starts vs this hand ({start_rate:.0%})")
 
-    # Cap before weight
     score = max(-2.0, min(2.0, score))
     return round(score * PLATOON_WEIGHT, 3), " | ".join(parts)
 
@@ -664,7 +655,7 @@ def prepare_combined(
         combined["park_hr_factor"] = 100.0
         combined["park_name"]      = ""
 
-    # ── Weather merge (reference-only — logged for analysis, not scored) ───
+    # ── Weather merge ──────────────────────────────────────────────────────
     if weather is not None and not weather.empty:
         weather = weather.copy()
         weather.columns = [c.strip() for c in weather.columns]
@@ -778,6 +769,20 @@ def prepare_combined(
         combined["wind_context"].apply(score_wind_context) -
         combined["total_penalty"]
     ).round(3)
+
+    # ── BBE 7d score cap ───────────────────────────────────────────────────
+    # Players with fewer than 5 batted ball events in the last 7 days have
+    # missing/unreliable recent data. Without recent BBE confirmation, their
+    # score is built from season stats + context only, which inflates the
+    # 11-12 tier with players who don't have the recent form to back it up.
+    # Cap these players at 10.99 so they stay in the 10-11 tier where the
+    # data actually supports them.
+    low_bbe_mask = combined["bbe_7d"] < MIN_BBE_7D_PARTIAL
+    if low_bbe_mask.any():
+        combined.loc[low_bbe_mask, "score"] = combined.loc[
+            low_bbe_mask, "score"
+        ].clip(upper=10.99)
+        print(f"BBE 7d cap applied: {low_bbe_mask.sum()} players capped at 10.99")
 
     return combined
 
@@ -1009,7 +1014,6 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
     hr_df["is_hr"]     = hr_df["events"].astype("string").str.lower().eq("home_run")
     hr_events          = hr_df[hr_df["is_hr"]].copy()
 
-    # Build appeared lookup — all batters with any PA (not just HR hitters)
     all_pa_events = {
         "single", "double", "triple", "home_run", "field_out",
         "grounded_into_double_play", "double_play", "triple_play",
@@ -1062,7 +1066,6 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
         elif (pick_date, pick_name) in appeared_lookup:
             existing.at[idx, "hit_hr"] = "No"
         else:
-            # Not in any PA data — DNP/scratch, void
             existing.at[idx, "hit_hr"] = "Void"
             voided_count += 1
         resolved_count += 1
