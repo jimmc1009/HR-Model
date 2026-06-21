@@ -271,13 +271,19 @@ def score_pitcher_hr_per_fb(v: float) -> float:
 
 
 def score_weather_boost(v: float) -> float:
-    """Weather Boost — +10.5% Positive, two consistent readings"""
-    if v >= 1.5:  return 0.4
-    if v >= 1.0:  return 0.3
+    """Weather Boost — +25.2% STRONG+ separator (clean data).
+    Progressive tiers to reflect full range of boost values from weather.py
+    (boost can reach +3.0 on strong blowing-out days, -6.0 blowing in).
+    Max contribution raised from 0.4 to 0.8, penalties increased for wind-in.
+    """
+    if v >= 2.5:  return 0.8
+    if v >= 1.5:  return 0.6
+    if v >= 1.0:  return 0.4
     if v >= 0.5:  return 0.2
     if v >= 0.0:  return 0.0
-    if v >= -0.5: return -0.1
-    return -0.2
+    if v >= -0.5: return -0.2
+    if v >= -1.5: return -0.4
+    return -0.6
 
 
 def score_wind_context(wind: str) -> float:
