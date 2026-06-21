@@ -99,22 +99,18 @@ def in_parlay_pool(score: float, odds: float) -> bool:
 def compute_selector(row) -> float:
     """
     Combined leg selector score.
-    Weights based on feature separator strength from HR_Analysis:
-      Platoon:        +129.2% STRONG+  — primary selector
-      Season barrel%: +27.6%  STRONG+  — normalized to similar scale
-      HR/FB%:         +21.5%  STRONG+  — normalized to similar scale
-      Weather boost:  +25.2%  STRONG+  — direct contribution
+    Weights based on actual parlay leg winner analysis:
+      Platoon:  winners 2.431 vs pool 1.300 = +1.131 gap (dominant)
+      HR/FB%:   winners 25.2  vs pool 23.6  = +1.522 gap (meaningful)
+      Season barrel%, weather: barely separating — excluded
+      Momentum, barrel% 7d: negative on winning legs — excluded
     """
-    platoon       = safe_float(row.get("platoon_score", 0))
-    season_barrel = safe_float(row.get("season_barrel_pct", 0))
-    hr_per_fb     = safe_float(row.get("hr_per_fb", 0))
-    weather       = safe_float(row.get("hr_weather_boost", 0))
+    platoon   = safe_float(row.get("platoon_score", 0))
+    hr_per_fb = safe_float(row.get("hr_per_fb", 0))
 
     return (
         platoon +
-        (season_barrel / 20) +
-        (hr_per_fb / 30) +
-        (weather * 0.5)
+        (hr_per_fb / 20)
     )
 
 
