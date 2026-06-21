@@ -469,9 +469,15 @@ def build_rows(
 
     rows.append((E[:], "spacer"))
 
-    # ── 3-LEG HR PARLAY (high platoon score, +301-499 odds, diversified) ──
-    rows.append((pad(["🎰  3-LEG HR PARLAY — Platoon Score Focus"]), "section_header_parlay"))
-    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Platoon", "", ""]), "col_header_parlay"))
+    # ── 3-LEG HR PARLAY ──────────────────────────────────────────────────
+    # Pool definition (data-driven):
+    #   10-11 | +301-499  — 26.7% hit rate
+    #   12+   | +301-499  — 30.4% hit rate
+    #   13+   | up to +499 — 27.6% at ≤+300, 26.9% at +301-499
+    # Leg selector: combined score of platoon + season barrel + HR/FB + weather
+    # All confirmed positive separators from feature analysis
+    rows.append((pad(["🎰  3-LEG HR PARLAY — Best Legs by Combined Selector"]), "section_header_parlay"))
+    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Selector", "", ""]), "col_header_parlay"))
 
     if hr_source.empty:
         rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
@@ -480,38 +486,55 @@ def build_rows(
 
         for _, row in hr_source.iterrows():
             try:
-                batter   = str(row.get("player_name", "")).strip()
+                batter       = str(row.get("player_name", "")).strip()
                 if not batter or batter == "nan":
                     continue
-                team     = str(row.get("team", "")).strip()
-                opp_pit  = str(row.get("pitcher_name", "")).strip()
-                hr_score = safe_float(row.get("hr_score", 0))
-                platoon  = safe_float(row.get("platoon_score", 0))
-                pitch_mu = safe_float(row.get("pitch_matchup_score", 0))
-                odds_raw = str(row.get("consensus_odds", "")).strip()
-                odds_val = safe_float(odds_raw.replace("+", "")) if odds_raw not in ("", "nan") else 0.0
+                team         = str(row.get("team", "")).strip()
+                opp_pit      = str(row.get("pitcher_name", "")).strip()
+                hr_score     = safe_float(row.get("hr_score", 0))
+                platoon      = safe_float(row.get("platoon_score", 0))
+                season_barrel= safe_float(row.get("season_barrel_pct", 0))
+                hr_per_fb    = safe_float(row.get("hr_per_fb", 0))
+                weather      = safe_float(row.get("hr_weather_boost", 0))
+                odds_raw     = str(row.get("consensus_odds", "")).strip()
+                odds_val     = safe_float(odds_raw.replace("+", "")) if odds_raw not in ("", "nan") else 0.0
 
-                if hr_score < 10.0 or odds_val <= 0:
+                if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                matchup_score = platoon + pitch_mu
+                # Pool filter — three confirmed value zones:
+                # 10-11 at +301-499, 12+ at +301-499, 13+ at any up to +499
+                in_pool = (
+                    (hr_score >= 10.0 and hr_score < 12.0 and 301 <= odds_val <= 499) or
+                    (hr_score >= 12.0 and 301 <= odds_val <= 499) or
+                    (hr_score >= 13.0 and odds_val <= 499)
+                )
+                if not in_pool:
+                    continue
+
+                # Combined selector — weighted by parlay leg winner analysis
+                # Platoon: +1.131 gap (dominant), HR/FB: +1.522 gap
+                # Season barrel and weather barely separating — removed
+                # Momentum and barrel% 7d both negative — excluded
+                selector = (
+                    platoon +
+                    (hr_per_fb / 20)
+                )
 
                 parlay_candidates.append({
-                    "batter":     batter,
-                    "team":       team,
-                    "opp_pit":    opp_pit,
-                    "score":      hr_score,
-                    "platoon":    platoon,
-                    "pitch_mu":   pitch_mu,
-                    "matchup":    matchup_score,
-                    "odds":       odds_val,
+                    "batter":   batter,
+                    "team":     team,
+                    "opp_pit":  opp_pit,
+                    "score":    hr_score,
+                    "platoon":  platoon,
+                    "selector": selector,
+                    "odds":     odds_val,
                 })
             except Exception:
                 continue
 
-        # Rank by platoon score alone — data confirmed platoon separates
-        # winners (0.657) vs all candidates (0.569) better than combined matchup
-        parlay_candidates.sort(key=lambda x: -x["platoon"])
+        # Rank by combined selector score
+        parlay_candidates.sort(key=lambda x: -x["selector"])
 
         # Pick top 3, diversified by opposing pitcher (different games)
         selected   = []
@@ -534,7 +557,7 @@ def build_rows(
                     selected.append(c)
 
         if not selected:
-            rows.append((pad(["—", "No parlay candidates today (need score 10+ with odds)", ""]), "no_plays"))
+            rows.append((pad(["—", "No parlay candidates today — no qualifying picks in value zones", ""]), "no_plays"))
         else:
             for i, c in enumerate(selected):
                 odds_display = f"+{int(c['odds'])}"
@@ -544,7 +567,7 @@ def build_rows(
                     c["team"],
                     f"{c['score']:.1f}",
                     odds_display,
-                    f"{c['platoon']:.3f}",
+                    f"{c['selector']:.3f}",
                     "",
                     "",
                 ]), "data_parlay"))
