@@ -62,9 +62,8 @@ HIT_EVENTS = {"single", "double", "triple", "home_run"}
 
 MIN_BBE_PER_PITCH = 10
 
-# League average ISO allowed per pitch type — used for regression
 LEAGUE_AVG_PITCHER_ISO_ALLOWED = 0.150
-PITCHER_ISO_FULL_SAMPLE = 30  # BBE needed for full trust on pitcher side
+PITCHER_ISO_FULL_SAMPLE = 30
 
 
 def get_gspread_client() -> gspread.Client:
@@ -359,6 +358,14 @@ def infer_pitching_team(df: pd.DataFrame) -> pd.Series:
 
 
 def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
+    """
+    Filter to batted ball events for probable pitchers.
+
+    Fixed (session 14):
+    - Speed range widened from 50-120 to 40-125 to match Savant BBE counting
+    - Launch angle requirement removed — Savant counts BBEs without LA data
+    These match the fixes already applied to the batter-side filter_bbe() in main.py
+    """
     batted_ball_events = {
         "single", "double", "triple", "home_run",
         "field_out", "grounded_into_double_play", "double_play",
@@ -372,9 +379,7 @@ def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame
         df["pitcher"].isin(probable_ids) &
         df["events"].astype("string").str.lower().isin(batted_ball_events) &
         df["launch_speed"].notna() &
-        df["launch_speed"].between(50, 120) &
-        df["launch_angle"].notna() &
-        df["launch_angle"].between(-90, 90)
+        df["launch_speed"].between(40, 125)
     ].copy()
 
     dedupe_cols = [c for c in ["game_pk", "at_bat_number", "pitcher"] if c in bbe.columns]
@@ -385,21 +390,30 @@ def filter_bbe_allowed(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame
 
 
 def add_pitcher_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add barrel, hard hit, HR, fly ball flags.
+
+    Barrel formula fixed (session 13/14):
+    - Upper bound now uses 2.5x multiplier: min(30 + 2.5*(ev-98), 50)
+    - Matches Savant barrel definition and batter-side fix in main.py
+    """
     df = df.copy()
 
     def is_barrel(row):
         ev = row["launch_speed"]
-        la = row["launch_angle"]
-        if pd.isna(ev) or pd.isna(la) or ev < 98:
+        la = row.get("launch_angle", None)
+        if pd.isna(ev) or ev < 98:
+            return False
+        if la is None or pd.isna(la):
             return False
         min_la = max(26 - (ev - 98), 8)
-        max_la = min(30 + (ev - 98), 50)
+        max_la = min(30 + 2.5 * (ev - 98), 50)  # Fixed: was (ev - 98), now 2.5*(ev-98)
         return min_la <= la <= max_la
 
     df["is_barrel"]   = df.apply(is_barrel, axis=1)
     df["is_hard_hit"] = df["launch_speed"] >= 95
     df["is_hr"]       = df["events"].astype("string").str.lower().eq("home_run")
-    df["is_fly_ball"] = df["launch_angle"].between(20, 50, inclusive="both")
+    df["is_fly_ball"] = df["launch_angle"].between(20, 50, inclusive="both") if "launch_angle" in df.columns else False
 
     return df
 
@@ -693,7 +707,6 @@ def build_pitch_type_splits_pitcher(bbe: pd.DataFrame, probable_ids: Set[int]) -
             bbe_ct  = row["bbe_count"]
             raw_iso = row["pitcher_iso_allowed"]
 
-            # Regress ISO allowed toward league average based on BBE count
             weight     = min(bbe_ct / PITCHER_ISO_FULL_SAMPLE, 1.0)
             reg_iso    = round((raw_iso * weight) + (LEAGUE_AVG_PITCHER_ISO_ALLOWED * (1 - weight)), 3)
 
@@ -748,8 +761,6 @@ def build_season_stats_pitcher(bbe, full_df, probable_ids):
     season["hard_hit_pct_allowed"]      = (season["season_hard_hit_allowed"] / season["season_bbe_allowed"] * 100).round(2)
     season["avg_ev_allowed"]            = season["avg_ev_allowed"].round(2)
 
-    # BABIP allowed = (H - HR) / (BBE - HR)
-    # Measures how many balls in play become hits — high BABIP = more hits for batters
     bbe_hits = bbe.copy()
     bbe_hits["is_hit_calc"] = bbe_hits["events"].astype("string").str.lower().isin(HIT_EVENTS)
     hits_allowed    = bbe_hits.groupby("pitcher")["is_hit_calc"].sum().rename("season_hits_allowed")
