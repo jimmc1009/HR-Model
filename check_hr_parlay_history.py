@@ -81,17 +81,26 @@ def get_odds_zone(odds: float) -> str:
 
 
 def in_parlay_pool(score: float, odds: float) -> bool:
-    """Check if a player falls in one of the three confirmed value zones."""
+    """Check if a player falls in one of the confirmed value zones.
+    Zones based on HR_Analysis Score Tier × Odds Zone data:
+      13+   | ≤+499  — 30.6% at ≤+300, 25.8% at +301-499
+      12-13 | ≤+499  — 25.0% at ≤+300, 27.3% at +301-499
+      11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
+      10-11 | +301-499 — 26.9%
+    """
     if odds <= 0:
         return False
-    # 10-11 at +301-499
-    if 10.0 <= score < 12.0 and 301 <= odds <= 499:
-        return True
-    # 12+ at +301-499
-    if score >= 12.0 and 301 <= odds <= 499:
-        return True
     # 13+ at any odds up to +499
     if score >= 13.0 and odds <= 499:
+        return True
+    # 12-13 at any odds up to +499
+    if 12.0 <= score < 13.0 and odds <= 499:
+        return True
+    # 11-12 at short odds only — plus odds confirmed dead (5.1%)
+    if 11.0 <= score < 12.0 and odds <= 300:
+        return True
+    # 10-11 at +301-499 only
+    if 10.0 <= score < 11.0 and 301 <= odds <= 499:
         return True
     return False
 
