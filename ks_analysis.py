@@ -124,7 +124,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         else:
             resolved[col] = 0.0
 
-    # ── Score tiers ───────────────────────────────────────────────────────
+    # ── Score tiers — includes Under 0 for negative scores ────────────────
     score_tier_defs = [
         ("12+",    12,  999),
         ("10-12",  10,   12),
@@ -133,6 +133,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("4-6",     4,    6),
         ("2-4",     2,    4),
         ("Under 2", 0,    2),
+        ("Under 0", -999, 0),  # negative scores — weak pitchers/extreme underdogs
     ]
 
     score_tiers = []
@@ -153,7 +154,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
             "avg_proj": avg_proj,
         })
 
-    # ── Score tier × Line cross-tab ───────────────────────────────────────
+    # ── Score tier × Line cross-tab — includes Under 0 ───────────────────
     line_vals = [4.5, 5.5, 6.5, 7.5]
     with_line = resolved[resolved["k_line"] > 0].copy()
 
@@ -172,7 +173,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
             over_r  = round(over_h / n * 100, 1)
             under_r = round(under_h / n * 100, 1)
             score_x_line_rows.append({
-                "tier":       tier_label,  # repeated on every row
+                "tier":       tier_label,
                 "line":       f"O/U {line_val}",
                 "total":      n,
                 "over_hits":  over_h,
@@ -441,7 +442,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     total_cols = 8
     reqs       = []
 
-    # Base style — all cells
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": total_cols},
@@ -454,7 +454,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy,horizontalAlignment)",
     }})
 
-    # Label column (col 0) — left aligned
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
                   "startColumnIndex": 0, "endColumnIndex": 1},
@@ -521,9 +520,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
         }})
 
-    # Color over rate cells (col 4) and under rate cells (col 6)
     for row_idx, row in enumerate(all_values):
-        # Over rate — col index 3 (0-based)
         if len(row) >= 4 and str(row[3]).endswith("%"):
             try:
                 rate_val = float(str(row[3]).replace("%", ""))
@@ -549,7 +546,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             except Exception:
                 pass
 
-        # Under rate — col index 5 (0-based), only for rows that have it
         if len(row) >= 6 and str(row[5]).endswith("%"):
             try:
                 rate_val = float(str(row[5]).replace("%", ""))
@@ -575,7 +571,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             except Exception:
                 pass
 
-    # Feature signal column
     feature_start = section_starts.get("features", 0) + 2
     for i, r in enumerate(analysis["feature_separators"]):
         row_idx = feature_start + i
@@ -600,7 +595,6 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
         }})
 
-    # Alternating rows
     for row_idx, row in enumerate(all_values):
         if row_idx < 3:
             continue
