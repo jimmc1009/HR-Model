@@ -1537,6 +1537,35 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
         print(f"Formatting failed: {e}")
 
 
+def _get_top_pitch_iso_vs_hand(row) -> str:
+    """
+    Derives the pitcher's ISO allowed on their top pitch vs this batter's hand.
+    Used as a feature separator in HR_Analysis — not yet scored.
+    Looks up pitcher_iso_allowed_{TOP_PITCH}_vs_{HAND} from the combined row.
+    Falls back to overall pitch ISO if hand-specific column not present.
+    """
+    batter_hand = str(row.get("batter_hand", "")).strip().upper()
+    hand_label  = "LHH" if batter_hand == "L" else "RHH" if batter_hand == "R" else ""
+    top_pitch   = str(row.get("top_pitch_1", "")).strip().upper()
+
+    if not hand_label or not top_pitch:
+        return ""
+
+    # Try hand-specific first
+    hand_col = f"pitcher_iso_allowed_{top_pitch}_vs_{hand_label}"
+    val = row.get(hand_col)
+    if val is not None and str(val).strip() not in ("", "nan", "0.0", "0"):
+        return str(val)
+
+    # Fall back to overall
+    overall_col = f"pitcher_iso_allowed_{top_pitch}"
+    val = row.get(overall_col)
+    if val is not None and str(val).strip() not in ("", "nan", "0.0", "0"):
+        return str(val)
+
+    return ""
+
+
 def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) -> None:
     today_str = date.today().strftime("%Y-%m-%d")
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
@@ -1596,6 +1625,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "momentum_score":         str(row.get("momentum_score", "")),
             "momentum_desc":          str(row.get("momentum_desc", "")),
             "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
+            "top_pitch_iso_vs_hand":  str(_get_top_pitch_iso_vs_hand(row)),
             "hit_hr":                 "Pending",
         })
 
