@@ -204,6 +204,7 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
         ("4-6",     4,    6),
         ("2-4",     2,    4),
         ("Under 2", 0,    2),
+        ("Under 0", -999, 0),  # negative scores — extreme underdogs/weak pitchers
     ]
 
     line_vals = [4.5, 5.5, 6.5, 7.5, 8.5]
@@ -211,19 +212,19 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
     for tier_label, lo, hi in tier_defs:
         tier_sub = resolved[(resolved["ks_score"] >= lo) & (resolved["ks_score"] < hi)]
 
-        # Overall tier rates (no line filter)
-        if len(tier_sub) >= 5:
+        # Overall tier rates (no line filter) — min 15 picks
+        if len(tier_sub) >= 15:
             over_rate  = tier_sub["over_bool"].mean()
             under_rate = tier_sub["under_bool"].mean()
-            hit_rates[(tier_label, "any", "over")]  = over_rate
-            hit_rates[(tier_label, "any", "under")] = under_rate
+            hit_rates[(tier_label, "any", "over")]  = (over_rate, len(tier_sub))
+            hit_rates[(tier_label, "any", "under")] = (under_rate, len(tier_sub))
 
-        # Tier × line rates — min 8 picks for combo-specific hit rates
+        # Tier × line rates — min 15 picks for combo-specific hit rates
         for line_val in line_vals:
             sub = tier_sub[tier_sub["k_line"] == line_val]
-            if len(sub) >= 8:
-                hit_rates[(tier_label, line_val, "over")]  = sub["over_bool"].mean()
-                hit_rates[(tier_label, line_val, "under")] = sub["under_bool"].mean()
+            if len(sub) >= 15:
+                hit_rates[(tier_label, line_val, "over")]  = (sub["over_bool"].mean(), len(sub))
+                hit_rates[(tier_label, line_val, "under")] = (sub["under_bool"].mean(), len(sub))
 
     print(f"  KS hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks")
     return hit_rates
@@ -315,7 +316,8 @@ def get_score_tier(score: float) -> str:
     if score >= 6:    return "6-8"
     if score >= 4:    return "4-6"
     if score >= 2:    return "2-4"
-    return "Under 2"
+    if score >= 0:    return "Under 2"
+    return "Under 0"
 
 
 def calc_ks_value(
@@ -332,35 +334,47 @@ def calc_ks_value(
     Checks BOTH directions for every pick using actual combo-specific hit rates
     (tier × line), then surfaces whichever has genuine positive edge vs real odds.
     Never infers direction from score alone — the data decides.
-    Min hit rate thresholds: UNDER >= 63%, OVER >= 58% to qualify.
+
+    Qualification criteria (replaces hard hit rate floor):
+      - Minimum 15 picks in the combo for statistical reliability
+      - Minimum +5% edge vs breakeven to filter marginal plays
     """
     if line == 0:
         return "UNDER", 0.0, 0.0, False, "—"
 
     tier = get_score_tier(score)
 
+    MIN_PICKS    = 15
+    MIN_EDGE_PCT = 0.05  # 5% minimum edge
+
     best_direction = None
     best_edge      = -999
     best_hit_rate  = 0.0
     best_breakeven = 0.0
 
-    for direction, odds, min_hr in [("UNDER", under_odds, 0.63), ("OVER", over_odds, 0.58)]:
+    for direction, odds in [("UNDER", under_odds), ("OVER", over_odds)]:
         if odds == 0:
             continue
 
         # Prefer tier × line combo, fall back to tier only
-        hit_rate = hit_rates.get((tier, line, direction.lower()))
-        if hit_rate is None:
-            hit_rate = hit_rates.get((tier, "any", direction.lower()))
-        if hit_rate is None:
+        result = hit_rates.get((tier, line, direction.lower()))
+        if result is None:
+            result = hit_rates.get((tier, "any", direction.lower()))
+        if result is None:
             continue
 
-        # Require minimum hit rate to qualify — filters out noisy small-sample combos
-        if hit_rate < min_hr:
+        hit_rate, n_picks = result
+
+        # Require minimum sample size
+        if n_picks < MIN_PICKS:
             continue
 
         implied = american_to_implied(odds)
         edge    = hit_rate - implied
+
+        # Require minimum edge magnitude
+        if edge < MIN_EDGE_PCT:
+            continue
 
         if edge > best_edge:
             best_edge      = edge
