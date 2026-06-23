@@ -776,6 +776,17 @@ def prepare_combined(
         combined["total_penalty"]
     ).round(3)
 
+    # ── Deduplicate — keep highest score per player ───────────────────────
+    # Prevents duplicate rows when pitcher sheet has multiple entries per team
+    # (e.g. starter + reliever both listed for same opposing team)
+    before = len(combined)
+    combined = combined.sort_values("score", ascending=False)
+    combined = combined.drop_duplicates(subset=["player_name"], keep="first")
+    combined = combined.reset_index(drop=True)
+    dupes = before - len(combined)
+    if dupes > 0:
+        print(f"Deduplication: removed {dupes} duplicate player rows (kept highest score)")
+
     # ── BBE 7d score cap ───────────────────────────────────────────────────
     # Players with fewer than 5 batted ball events in the last 7 days have
     # missing/unreliable recent data. Without recent BBE confirmation, their
