@@ -442,12 +442,16 @@ def build_rows(
         #   11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
         #   10-11 | +301-499 — 26.9%
         def in_value_zone(score: float, odds: float) -> bool:
+            # 13+ | ≤+499
             if score >= 13.0:
                 return odds <= 499
+            # 12-13 | ≤+499
             if score >= 12.0:
                 return odds <= 499
+            # 11-12 | ≤+300 only — plus odds dead (5.1% at +301-499)
             if score >= 11.0:
                 return odds <= 300
+            # 10-11 | +301-499 only
             if score >= 10.0:
                 return 301 <= odds <= 499
             return False
@@ -520,9 +524,14 @@ def build_rows(
                 # Pool filter — three confirmed value zones:
                 # 10-11 at +301-499, 12+ at +301-499, 13+ at any up to +499
                 in_pool = (
-                    (hr_score >= 10.0 and hr_score < 12.0 and 301 <= odds_val <= 499) or
-                    (hr_score >= 12.0 and 301 <= odds_val <= 499) or
-                    (hr_score >= 13.0 and odds_val <= 499)
+                    # 13+ | ≤+499
+                    (hr_score >= 13.0 and odds_val <= 499) or
+                    # 12-13 | ≤+499
+                    (hr_score >= 12.0 and hr_score < 13.0 and odds_val <= 499) or
+                    # 11-12 | ≤+300 only
+                    (hr_score >= 11.0 and hr_score < 12.0 and odds_val <= 300) or
+                    # 10-11 | +301-499 only
+                    (hr_score >= 10.0 and hr_score < 11.0 and 301 <= odds_val <= 499)
                 )
                 if not in_pool:
                     continue
