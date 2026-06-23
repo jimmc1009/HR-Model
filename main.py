@@ -1170,6 +1170,23 @@ def main() -> None:
         print("Building handedness start rates...")
         start_rates = build_handedness_start_rates(raw_df)
         if not start_rates.empty:
+            # start_rates has one row per batter_id × batting_team.
+            # Traded players (e.g. NYY → CWS) get two rows.
+            # Prioritise the row matching their current team before merging.
+            current_teams = batter_df[["batter_id", "team"]].drop_duplicates()
+            start_rates = start_rates.merge(
+                current_teams, on="batter_id", how="left"
+            )
+            # Keep current-team row where it exists, otherwise keep any row
+            start_rates["is_current"] = (
+                start_rates["batting_team"] == start_rates["team"]
+            ).astype(int)
+            start_rates = (
+                start_rates
+                .sort_values(["batter_id", "is_current"], ascending=[True, False])
+                .drop_duplicates(subset=["batter_id"], keep="first")
+                .drop(columns=["is_current", "team"])
+            )
             batter_df = batter_df.merge(start_rates, on="batter_id", how="left")
             batter_df["lhp_start_rate"] = batter_df["lhp_start_rate"].fillna(0.5)
             batter_df["rhp_start_rate"] = batter_df["rhp_start_rate"].fillna(0.5)
