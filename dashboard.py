@@ -399,7 +399,7 @@ def build_rows(
     #       12-13 | +301-499 = 30.0%, 13+ | +301-499 = 29.2%
     #       12-13 | +500-699 = 25.0%
     # All above breakeven — no lower odds floor needed
-    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — Score 12+ | Up to +699"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — 13+/12-13 ≤+499 | 11-12 ≤+300 | 10-11 +301-499"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
@@ -436,16 +436,29 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter: score 12+ and odds up to +699
-        # No lower odds floor — data shows 12+ hits above breakeven even at ≤+300
+        # Filter — four confirmed value zones (data-driven):
+        #   13+   | ≤+499  — 30.6% at ≤+300, 25.8% at +301-499
+        #   12-13 | ≤+499  — 25.0% at ≤+300, 30.4% at +301-499
+        #   11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
+        #   10-11 | +301-499 — 26.9%
+        def in_value_zone(score: float, odds: float) -> bool:
+            if score >= 13.0:
+                return odds <= 499
+            if score >= 12.0:
+                return odds <= 499
+            if score >= 11.0:
+                return odds <= 300
+            if score >= 10.0:
+                return 301 <= odds <= 499
+            return False
+
         hr_value_plays = [
             p for p in hr_value_plays
-            if float(p["score"]) >= 12.0
-            and safe_float(p["odds"].replace("+", "")) <= 699
+            if in_value_zone(float(p["score"]), safe_float(p["odds"].replace("+", "")))
         ]
 
         if not hr_value_plays:
-            rows.append((pad(["—", "No value plays today — no qualifying picks (score 12+, up to +699)", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — no qualifying picks in value zones", ""]), "no_plays"))
         else:
             hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
             for i, play in enumerate(hr_value_plays):
@@ -454,6 +467,8 @@ def build_rows(
                     tier_tag = "🔥"
                 elif score_val >= 12:
                     tier_tag = "🟢"
+                elif score_val >= 11:
+                    tier_tag = "🟡"
                 else:
                     tier_tag = "⚪"
                 rows.append((pad([
@@ -465,7 +480,7 @@ def build_rows(
                     "",
                     "",
                     "",
-                ]), f"data_hr_{'strong' if score_val >= 13 else 'moderate'}"))
+                ]), f"data_hr_{'strong' if score_val >= 13 else 'moderate' if score_val >= 12 else 'light'}"))
 
     rows.append((E[:], "spacer"))
 
