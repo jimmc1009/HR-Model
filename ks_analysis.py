@@ -250,8 +250,10 @@ def build_analysis(df: pd.DataFrame) -> dict:
             })
 
     # ── Feature separators ────────────────────────────────────────────────
-    over_yes = resolved[resolved["over_bool"]]
-    over_no  = resolved[~resolved["over_bool"]]
+    over_yes  = resolved[resolved["over_bool"]]
+    over_no   = resolved[~resolved["over_bool"]]
+    under_yes = resolved[resolved["under_bool"]]
+    under_no  = resolved[~resolved["under_bool"]]
 
     feature_labels = {
         "bb_pct_season":    "BB%",
@@ -268,23 +270,35 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "opp_chase_rate":   "Opp Chase Rate%",
     }
 
-    feature_separators = []
+    feature_separators_over  = []
+    feature_separators_under = []
+
     for col, label in feature_labels.items():
         if col not in resolved.columns:
             continue
-        yes_avg  = round(over_yes[col].mean(), 3) if not over_yes.empty else 0.0
-        no_avg   = round(over_no[col].mean(), 3)  if not over_no.empty  else 0.0
-        diff     = round(yes_avg - no_avg, 3)
-        pct_diff = round((diff / no_avg * 100), 1) if no_avg != 0 else 0.0
-        feature_separators.append({
-            "label":    label,
-            "yes_avg":  yes_avg,
-            "no_avg":   no_avg,
-            "diff":     diff,
-            "pct_diff": pct_diff,
+
+        # Over separators
+        o_yes_avg = round(over_yes[col].mean(), 3) if not over_yes.empty else 0.0
+        o_no_avg  = round(over_no[col].mean(), 3)  if not over_no.empty  else 0.0
+        o_diff    = round(o_yes_avg - o_no_avg, 3)
+        o_pct     = round((o_diff / o_no_avg * 100), 1) if o_no_avg != 0 else 0.0
+        feature_separators_over.append({
+            "label": label, "yes_avg": o_yes_avg, "no_avg": o_no_avg,
+            "diff": o_diff, "pct_diff": o_pct,
         })
 
-    feature_separators.sort(key=lambda x: abs(x["pct_diff"]), reverse=True)
+        # Under separators
+        u_yes_avg = round(under_yes[col].mean(), 3) if not under_yes.empty else 0.0
+        u_no_avg  = round(under_no[col].mean(), 3)  if not under_no.empty  else 0.0
+        u_diff    = round(u_yes_avg - u_no_avg, 3)
+        u_pct     = round((u_diff / u_no_avg * 100), 1) if u_no_avg != 0 else 0.0
+        feature_separators_under.append({
+            "label": label, "yes_avg": u_yes_avg, "no_avg": u_no_avg,
+            "diff": u_diff, "pct_diff": u_pct,
+        })
+
+    feature_separators_over.sort(key=lambda x: abs(x["pct_diff"]), reverse=True)
+    feature_separators_under.sort(key=lambda x: abs(x["pct_diff"]), reverse=True)
 
     # ── Rolling trends ────────────────────────────────────────────────────
     max_date  = resolved["date_dt"].max()
@@ -314,7 +328,8 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "signal_rows":        signal_rows,
         "line_rows":          line_rows,
         "proj_rows":          proj_rows,
-        "feature_separators": feature_separators,
+        "feature_separators_over":  feature_separators_over,
+        "feature_separators_under": feature_separators_under,
         "roll_rows":          roll_rows,
     }
 
@@ -411,27 +426,38 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         lambda r: [r["label"], r["total"], r["over_hits"], f"{r['over_rate']}%", "", "", "", ""]
     )
 
-    # ── Feature Separators ────────────────────────────────────────────────
-    section_starts["features"] = len(all_values)
-    all_values.append(["🔬  FEATURE SEPARATORS — Over Hitters vs Non-Over Hitters", "", "", "", "", "", "", ""])
-    all_values.append(["Feature", "Over Hitters Avg", "Non-Over Avg", "Difference", "% Difference", "Signal", "", ""])
+    # ── Feature Separators — Under ────────────────────────────────────────
+    section_starts["features_under"] = len(all_values)
+    all_values.append(["🔬  FEATURE SEPARATORS — UNDER Hitters vs Non-Under Hitters", "", "", "", "", "", "", ""])
+    all_values.append(["Feature", "Under Hitters Avg", "Non-Under Avg", "Difference", "% Difference", "Signal", "", ""])
 
-    for r in analysis["feature_separators"]:
-        if r["pct_diff"] >= 15:
-            signal = "🔥 STRONG +"
-        elif r["pct_diff"] >= 8:
-            signal = "✅ Positive"
-        elif r["pct_diff"] <= -15:
-            signal = "🚨 STRONG —"
-        elif r["pct_diff"] <= -8:
-            signal = "⚠️ Negative"
-        else:
-            signal = "↔️ Neutral"
+    def signal_label(pct_diff):
+        if pct_diff >= 15:   return "🔥 STRONG +"
+        if pct_diff >= 8:    return "✅ Positive"
+        if pct_diff <= -15:  return "🚨 STRONG —"
+        if pct_diff <= -8:   return "⚠️ Negative"
+        return "↔️ Neutral"
+
+    for r in analysis["feature_separators_under"]:
         all_values.append([
             r["label"], r["yes_avg"], r["no_avg"],
             f"+{r['diff']}" if r["diff"] >= 0 else str(r["diff"]),
             f"+{r['pct_diff']}%" if r["pct_diff"] >= 0 else f"{r['pct_diff']}%",
-            signal, "", ""
+            signal_label(r["pct_diff"]), "", ""
+        ])
+    all_values.append([""] * 8)
+
+    # ── Feature Separators — Over ─────────────────────────────────────────
+    section_starts["features_over"] = len(all_values)
+    all_values.append(["🔬  FEATURE SEPARATORS — OVER Hitters vs Non-Over Hitters", "", "", "", "", "", "", ""])
+    all_values.append(["Feature", "Over Hitters Avg", "Non-Over Avg", "Difference", "% Difference", "Signal", "", ""])
+
+    for r in analysis["feature_separators_over"]:
+        all_values.append([
+            r["label"], r["yes_avg"], r["no_avg"],
+            f"+{r['diff']}" if r["diff"] >= 0 else str(r["diff"]),
+            f"+{r['pct_diff']}%" if r["pct_diff"] >= 0 else f"{r['pct_diff']}%",
+            signal_label(r["pct_diff"]), "", ""
         ])
     all_values.append([""] * 8)
 
@@ -492,7 +518,8 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "📏  BY LINE":              (COLOR_GOLD,   COLOR_GOLD_DIM),
         "🎯  PROJECTION ACCURACY":  (COLOR_BLUE,   COLOR_BLUE_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,  COLOR_GREEN_DIM),
-        "features":                  (COLOR_PURPLE, COLOR_PURPLE_DIM),
+        "features_under":            (COLOR_TEAL,   COLOR_TEAL_DIM),
+        "features_over":             (COLOR_PURPLE, COLOR_PURPLE_DIM),
     }
 
     for title, start_row in section_starts.items():
@@ -571,29 +598,30 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             except Exception:
                 pass
 
-    feature_start = section_starts.get("features", 0) + 2
-    for i, r in enumerate(analysis["feature_separators"]):
-        row_idx = feature_start + i
-        if r["pct_diff"] >= 15:
-            fg, bg = COLOR_GREEN, COLOR_GREEN_DIM
-        elif r["pct_diff"] >= 8:
-            fg, bg = COLOR_TEAL, COLOR_TEAL_DIM
-        elif r["pct_diff"] <= -15:
-            fg, bg = COLOR_RED, COLOR_RED_DIM
-        elif r["pct_diff"] <= -8:
-            fg, bg = COLOR_GOLD, COLOR_GOLD_DIM
-        else:
-            fg, bg = COLOR_GREY, COLOR_BG
-        reqs.append({"repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
-                      "startColumnIndex": 5, "endColumnIndex": 6},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": bg,
-                "textFormat": {"foregroundColor": fg, "bold": True},
-                "horizontalAlignment": "CENTER",
-            }},
-            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-        }})
+    for section_key, sep_key in [("features_under", "feature_separators_under"), ("features_over", "feature_separators_over")]:
+      feature_start = section_starts.get(section_key, 0) + 2
+      for i, r in enumerate(analysis[sep_key]):
+          row_idx = feature_start + i
+          if r["pct_diff"] >= 15:
+              fg, bg = COLOR_GREEN, COLOR_GREEN_DIM
+          elif r["pct_diff"] >= 8:
+              fg, bg = COLOR_TEAL, COLOR_TEAL_DIM
+          elif r["pct_diff"] <= -15:
+              fg, bg = COLOR_RED, COLOR_RED_DIM
+          elif r["pct_diff"] <= -8:
+              fg, bg = COLOR_GOLD, COLOR_GOLD_DIM
+          else:
+              fg, bg = COLOR_GREY, COLOR_BG
+          reqs.append({"repeatCell": {
+              "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                        "startColumnIndex": 5, "endColumnIndex": 6},
+              "cell": {"userEnteredFormat": {
+                  "backgroundColor": bg,
+                  "textFormat": {"foregroundColor": fg, "bold": True},
+                  "horizontalAlignment": "CENTER",
+              }},
+              "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+          }})
 
     for row_idx, row in enumerate(all_values):
         if row_idx < 3:
