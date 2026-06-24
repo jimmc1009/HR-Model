@@ -477,16 +477,20 @@ def calc_hrrbi_value(
     if odds == 0:
         return 0.0, "—", False, "No data"
 
+    # Validate American odds — must be +100 or better, or -100 or worse
+    # Values between -99 and 99 are malformed data
+    if abs(odds) < 100:
+        return 0.0, "—", False, "Invalid odds"
+
     tier      = get_hrrbi_score_tier(score)
     odds_zone = get_hrrbi_odds_zone(odds)
 
     MIN_PICKS    = 15
     MIN_EDGE_PCT = 0.05
 
-    # Prefer tier × odds zone, fall back to tier only
+    # Only use tier × odds zone combo — no fallback to tier-only
+    # Prevents showing plays based on inflated overall tier rates
     result = hit_rates.get((tier, odds_zone))
-    if result is None:
-        result = hit_rates.get((tier, "any"))
     if result is None:
         return 0.0, "—", False, "No data"
 
