@@ -342,6 +342,12 @@ def calc_ks_value(
     if line == 0:
         return "UNDER", 0.0, 0.0, False, "—"
 
+    # Validate American odds — must be +100 or better, or -100 or worse
+    if over_odds != 0 and abs(over_odds) < 100:
+        over_odds = 0
+    if under_odds != 0 and abs(under_odds) < 100:
+        under_odds = 0
+
     tier = get_score_tier(score)
 
     MIN_PICKS    = 15
