@@ -390,6 +390,125 @@ def calc_ks_value(
     return best_direction, round(best_hit_rate * 100, 1), best_breakeven, True, edge_str
 
 
+def build_hrrbi_hit_rates(hrrbi_all_scores: pd.DataFrame) -> dict:
+    """
+    Build hit rate lookup from HRRBI_All_Scores resolved data.
+    Returns dict keyed by (score_tier, odds_zone) -> (hit_rate, n_picks)
+    OVER only — no direction decision needed.
+    """
+    hit_rates = {}
+
+    if hrrbi_all_scores.empty:
+        return hit_rates
+
+    resolved = hrrbi_all_scores[
+        hrrbi_all_scores["over_hit"].astype(str).str.strip().isin(["Yes", "No"])
+    ].copy()
+
+    if resolved.empty:
+        return hit_rates
+
+    resolved["hrrbi_score"] = resolved["hrrbi_score"].apply(safe_float)
+    resolved["over_odds"]   = resolved["over_odds"].apply(safe_float)
+    resolved["over_bool"]   = resolved["over_hit"].astype(str).str.strip() == "Yes"
+
+    tier_defs = [
+        ("13-15",  13,  999),
+        ("11-13",  11,   13),
+        ("9-11",    9,   11),
+        ("7-9",     7,    9),
+        ("Under 7", -999,  7),
+    ]
+
+    odds_defs = [
+        ("minus_heavy",  -999, -156),  # -156 or worse
+        ("minus_mid",    -155, -131),  # -131 to -155
+        ("minus_light",  -130, -111),  # -111 to -130
+        ("minus_best",   -110,    0),  # -110 or better
+        ("plus_low",        1,  111),  # +100 to +110
+        ("plus_mid",      111,  121),  # +111 to +120
+        ("plus_high",     121,  999),  # +121+
+    ]
+
+    for tier_label, t_lo, t_hi in tier_defs:
+        tier_sub = resolved[(resolved["hrrbi_score"] >= t_lo) & (resolved["hrrbi_score"] < t_hi)]
+        if len(tier_sub) >= 15:
+            hit_rates[(tier_label, "any")] = (tier_sub["over_bool"].mean(), len(tier_sub))
+        for odds_label, o_lo, o_hi in odds_defs:
+            if o_lo < 0:
+                sub = tier_sub[(tier_sub["over_odds"] >= o_lo) & (tier_sub["over_odds"] < o_hi)]
+            else:
+                sub = tier_sub[(tier_sub["over_odds"] >= o_lo) & (tier_sub["over_odds"] < o_hi)]
+            if len(sub) >= 15:
+                hit_rates[(tier_label, odds_label)] = (sub["over_bool"].mean(), len(sub))
+
+    print(f"  HRRBI hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks")
+    return hit_rates
+
+
+def get_hrrbi_score_tier(score: float) -> str:
+    if score >= 13:  return "13-15"
+    if score >= 11:  return "11-13"
+    if score >= 9:   return "9-11"
+    if score >= 7:   return "7-9"
+    return "Under 7"
+
+
+def get_hrrbi_odds_zone(odds: float) -> str:
+    if odds <= -156:  return "minus_heavy"
+    if odds <= -131:  return "minus_mid"
+    if odds <= -111:  return "minus_light"
+    if odds < 0:      return "minus_best"
+    if odds <= 110:   return "plus_low"
+    if odds <= 120:   return "plus_mid"
+    return "plus_high"
+
+
+def calc_hrrbi_value(
+    score: float,
+    odds: float,
+    hit_rates: dict,
+) -> tuple:
+    """
+    Returns (hit_rate_pct, breakeven_american, has_value, edge_str)
+    OVER only — checks score tier × odds zone combo.
+    Requires 15+ picks and 5%+ edge.
+    """
+    if odds == 0:
+        return 0.0, "—", False, "No data"
+
+    # Validate American odds — must be +100 or better, or -100 or worse
+    # Values between -99 and 99 are malformed data
+    if abs(odds) < 100:
+        return 0.0, "—", False, "Invalid odds"
+
+    tier      = get_hrrbi_score_tier(score)
+    odds_zone = get_hrrbi_odds_zone(odds)
+
+    MIN_PICKS    = 15
+    MIN_EDGE_PCT = 0.05
+
+    # Only use tier × odds zone combo — no fallback to tier-only
+    # Prevents showing plays based on inflated overall tier rates
+    result = hit_rates.get((tier, odds_zone))
+    if result is None:
+        return 0.0, "—", False, "No data"
+
+    hit_rate, n_picks = result
+    if n_picks < MIN_PICKS:
+        return 0.0, "—", False, "Small sample"
+
+    implied  = american_to_implied(odds)
+    edge     = hit_rate - implied
+    if edge < MIN_EDGE_PCT:
+        return round(hit_rate * 100, 1), implied_to_american(hit_rate), False, f"{round(edge*100,1)}%"
+
+    edge_pct  = round(edge * 100, 1)
+    edge_str  = f"+{edge_pct}%"
+    breakeven = implied_to_american(hit_rate)
+    return round(hit_rate * 100, 1), breakeven, True, edge_str
+
+
 def build_rows(
     hr_df: pd.DataFrame,
     ks_df: pd.DataFrame,
@@ -398,6 +517,8 @@ def build_rows(
     ks_today: pd.DataFrame = None,
     hr_hit_rates: dict = None,
     hr_today: pd.DataFrame = None,
+    hrrbi_hit_rates: dict = None,
+    hrrbi_today: pd.DataFrame = None,
 ):
     N = 9  # expanded to 9 cols for KS value section
 
@@ -706,28 +827,65 @@ def build_rows(
 
     rows.append((E[:], "spacer"))
 
-    # ── H+R+RBI PLAYS ─────────────────────────────────────────────────────
-    rows.append((pad(["📊  H+R+RBI PLAYS"]), "section_header_hrrbi"))
-    rows.append((pad(["Rank", "Player", "Team", "Line", "Over Odds", "Signal", ""]), "col_header_hrrbi"))
+    # ── H+R+RBI VALUE PLAYS ───────────────────────────────────────────────
+    rows.append((pad(["📊  H+R+RBI VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_hrrbi"))
+    rows.append((pad(["Rank", "Player", "Team", "Score", "Line", "Odds", "Breakeven", "Edge", ""]), "col_header_hrrbi"))
 
-    if hrrbi_df.empty:
-        rows.append((pad(["—", "No plays today"]), "no_plays"))
+    hrrbi_source = hrrbi_today if (hrrbi_today is not None and not hrrbi_today.empty) else hrrbi_df
+    if hrrbi_source.empty or not hrrbi_hit_rates:
+        rows.append((pad(["—", "No value plays today"]), "no_plays"))
     else:
-        sig_col = next((c for c in ["Signal", "prop_signal", "signal"] if c in hrrbi_df.columns), None)
-        plays   = hrrbi_df[hrrbi_df[sig_col].apply(has_signal)].copy() if sig_col else pd.DataFrame()
+        hrrbi_value_plays = []
 
-        if plays.empty:
-            rows.append((pad(["—", "No plays today"]), "no_plays"))
+        for _, row in hrrbi_source.iterrows():
+            try:
+                player    = str(row.get("player_name", "")).strip()
+                if not player or player == "nan":
+                    continue
+                team      = str(row.get("team", "")).strip()
+                score     = safe_float(row.get("hrrbi_score", 0))
+                line      = safe_float(row.get("hrrbi_line", 0))
+                odds_raw  = str(row.get("over_odds", "")).strip()
+                odds_val  = safe_float(odds_raw.replace("+", "")) if odds_raw not in ("", "nan") else 0.0
+
+                if odds_val == 0 or score == 0 or line == 0:
+                    continue
+
+                hit_rate, breakeven, has_value, edge_str = calc_hrrbi_value(score, odds_val, hrrbi_hit_rates)
+
+                if not has_value:
+                    continue
+
+                odds_display = f"+{int(odds_val)}" if odds_val > 0 else str(int(odds_val))
+                hrrbi_value_plays.append({
+                    "player":    player,
+                    "team":      team,
+                    "score":     str(round(score, 1)),
+                    "line":      str(line),
+                    "odds":      odds_display,
+                    "breakeven": breakeven,
+                    "edge":      edge_str,
+                    "edge_num":  float(edge_str.replace("%", "").replace("+", "")),
+                })
+            except Exception:
+                continue
+
+        if not hrrbi_value_plays:
+            rows.append((pad(["—", "No value plays today — no edge found vs hit rates"]), "no_plays"))
         else:
-            for i in range(len(plays)):
-                row       = plays.iloc[i]
-                rank      = safe_val(row, "Rank", str(i + 1))
-                player    = safe_val(row, "Batter") or safe_val(row, "Player", "")
-                team      = safe_val(row, "Team")
-                line      = safe_val(row, "Line")
-                over_odds = safe_val(row, "Over Odds")
-                signal    = safe_val(row, sig_col)
-                rows.append((pad([rank, player, team, line, over_odds, signal, ""]), "data_hrrbi"))
+            hrrbi_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
+            for i, play in enumerate(hrrbi_value_plays):
+                rows.append((pad([
+                    str(i + 1),
+                    play["player"],
+                    play["team"],
+                    play["score"],
+                    play["line"],
+                    play["odds"],
+                    play["breakeven"],
+                    play["edge"],
+                    "",
+                ]), "data_hrrbi_value"))
 
     return rows
 
@@ -775,7 +933,7 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
         "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
     }})
 
-    data_row_count = {"hr": 0, "ks": 0, "ks_over": 0, "ks_under": 0, "hrrbi": 0}
+    data_row_count = {"hr": 0, "ks": 0, "ks_over": 0, "ks_under": 0, "hrrbi": 0, "hrrbi_value": 0}
 
     for row_idx, (row_data, row_type) in enumerate(rows):
         r = row_idx
@@ -845,6 +1003,9 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
             elif "ks" in row_type:
                 count = data_row_count.get("ks", 0)
                 data_row_count["ks"] = count + 1
+            elif "hrrbi_value" in row_type:
+                count = data_row_count.get("hrrbi_value", 0)
+                data_row_count["hrrbi_value"] = count + 1
             elif "hrrbi" in row_type:
                 count = data_row_count.get("hrrbi", 0)
                 data_row_count["hrrbi"] = count + 1
@@ -924,6 +1085,34 @@ def write_dashboard(gc: gspread.Client, sheet_id: str, rows) -> None:
                         "backgroundColor": COLOR_GREEN_DIM,
                         "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
                                        "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
+
+            elif row_type == "data_hrrbi_value":
+                # Edge col (7) — green
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 7, "endColumnIndex": 8},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": COLOR_GREEN_DIM,
+                        "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE",
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+                }})
+                # Breakeven col (6) — grey informational
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 6, "endColumnIndex": 7},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": COLOR_HEADER_BG,
+                        "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": False,
+                                       "fontFamily": "Roboto Mono", "fontSize": 11},
                         "horizontalAlignment": "CENTER",
                         "verticalAlignment": "MIDDLE",
                     }},
@@ -1116,13 +1305,19 @@ def main() -> None:
     hr_all_scores = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
     time.sleep(2)
 
+    print("Reading HRRBI_All_Scores for hit rate lookup...")
+    hrrbi_all_scores = read_sheet_raw(gc, sheet_id, "HRRBI_All_Scores")
+    time.sleep(2)
+
     print(f"HR picks: {len(hr_df)} rows")
     print(f"KS picks: {len(ks_df)} rows")
     print(f"HRRBI picks: {len(hrrbi_df)} rows")
     print(f"KS All Scores: {len(ks_all_scores)} rows")
+    print(f"HRRBI All Scores: {len(hrrbi_all_scores)} rows")
 
-    ks_hit_rates = build_ks_hit_rates(ks_all_scores)
-    hr_hit_rates = build_hr_hit_rates(hr_all_scores)
+    ks_hit_rates    = build_ks_hit_rates(ks_all_scores)
+    hr_hit_rates    = build_hr_hit_rates(hr_all_scores)
+    hrrbi_hit_rates = build_hrrbi_hit_rates(hrrbi_all_scores)
 
     from datetime import date as _date2
     _today_str = _date2.today().strftime("%Y-%m-%d")
@@ -1134,7 +1329,10 @@ def main() -> None:
     ks_today  = ks_all_scores[ks_all_scores["date"].astype(str).str.strip() == today_str].copy() if not ks_all_scores.empty else pd.DataFrame()
     print(f"KS today's scores for value finder: {len(ks_today)} pitchers")
 
-    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates, ks_today, hr_hit_rates, hr_today)
+    hrrbi_today = hrrbi_all_scores[hrrbi_all_scores["date"].astype(str).str.strip() == today_str].copy() if not hrrbi_all_scores.empty else pd.DataFrame()
+    print(f"HRRBI today's scores for value finder: {len(hrrbi_today)} players")
+
+    rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates, ks_today, hr_hit_rates, hr_today, hrrbi_hit_rates, hrrbi_today)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
     write_timestamp(gc, sheet_id)
