@@ -255,6 +255,39 @@ def build_analysis(df: pd.DataFrame) -> dict:
         rate = round(h / n * 100, 1)
         wind_rows.append({"label": bucket, "total": n, "hits": h, "rate": rate})
 
+    # ── Wind strength buckets ─────────────────────────────────────────────
+    # Buckets based on hr_weather_boost value which encodes both wind
+    # direction and strength. Positive = blowing out, negative = blowing in.
+    wind_strength_rows = []
+    if "hr_weather_boost" in scored.columns:
+        for label, lo, hi in [
+            ("Strong OUT (boost ≥ 2.0)",    2.0,  999),
+            ("Moderate OUT (1.0 to 2.0)",   1.0,  2.0),
+            ("Mild OUT (0.5 to 1.0)",       0.5,  1.0),
+            ("Neutral (-0.5 to 0.5)",      -0.5,  0.5),
+            ("Mild IN (-1.5 to -0.5)",     -1.5, -0.5),
+            ("Strong IN (boost ≤ -1.5)",   -999, -1.5),
+            ("Roof / Dome (boost = 0.0)",   0.0,  0.0),
+        ]:
+            if lo == 0.0 and hi == 0.0:
+                # Roof/dome — exactly zero boost
+                sub = scored[scored["hr_weather_boost"] == 0.0]
+                # Filter to only roof parks by checking wind_context
+                if "wind_context" in scored.columns:
+                    sub = sub[scored["wind_context"].str.contains("Roof|Dome|neutral", case=False, na=False)]
+            else:
+                sub = scored[(scored["hr_weather_boost"] >= lo) & (scored["hr_weather_boost"] < hi)]
+            if len(sub) < 5:
+                continue
+            n    = len(sub)
+            h    = int(sub["hit_bool"].sum())
+            rate = round(h / n * 100, 1)
+            avg_boost = round(sub["hr_weather_boost"].mean(), 2)
+            wind_strength_rows.append({
+                "label": label, "total": n, "hits": h,
+                "rate": rate, "avg_boost": avg_boost,
+            })
+
     # ── Rolling trends ────────────────────────────────────────────────────
     max_date  = scored["date_dt"].max()
     roll_rows = []
@@ -330,6 +363,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "odds_zones":         odds_zones,
         "feature_separators": feature_separators,
         "wind_rows":          wind_rows,
+        "wind_strength_rows": wind_strength_rows,
         "roll_rows":          roll_rows,
         "platoon_rows":       platoon_rows,
         "tier_odds_rows":     tier_odds_rows,
@@ -398,6 +432,15 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         analysis["wind_rows"],
         lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
     )
+
+    # ── Wind Strength Buckets ─────────────────────────────────────────────
+    if analysis.get("wind_strength_rows"):
+        add_section(
+            "💨  BY WIND STRENGTH (Boost Value)",
+            ["Wind Strength", "Total Players", "Hit HR", "Hit Rate %", "Avg Boost", "", "", ""],
+            analysis["wind_strength_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r["avg_boost"], "", "", ""]
+        )
 
     # ── Platoon Analysis ──────────────────────────────────────────────────
     add_section(
@@ -504,6 +547,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "🎯  BY SCORE TIER":        (COLOR_PURPLE,    COLOR_PURPLE_DIM),
         "💰  BY ODDS ZONE":         (COLOR_GOLD,      COLOR_GOLD_DIM),
         "🌬️  BY WIND CONDITION":    (COLOR_TEAL,      COLOR_TEAL_DIM),
+        "💨  BY WIND STRENGTH (Boost Value)": (COLOR_TEAL, COLOR_TEAL_DIM),
         "🔄  BY PLATOON MATCHUP":   (COLOR_BLUE,      COLOR_BLUE_DIM),
         "💰  SCORE TIER × ODDS ZONE": (COLOR_GOLD,      COLOR_GOLD_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,     COLOR_GREEN_DIM),
