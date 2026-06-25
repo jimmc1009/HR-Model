@@ -1637,6 +1637,10 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "momentum_desc":          str(row.get("momentum_desc", "")),
             "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
             "top_pitch_iso_vs_hand":  str(_get_top_pitch_iso_vs_hand(row)),
+            "pa":                     str(row.get("pa", "")),
+            "bbe_7d":                 str(row.get("bbe_7d", "")),
+            "bbe_5d":                 str(row.get("bbe_5d", "")),
+            "bbe_10d":                str(row.get("bbe_10d", "")),
             "hit_hr":                 "Pending",
         })
 
