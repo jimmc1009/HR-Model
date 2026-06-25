@@ -33,8 +33,8 @@ MIN_BBE_7D_PARTIAL = 5
 # ── Weights (based on feature separator analysis) ──────────────────────────
 PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
-MOMENTUM_WEIGHT      = 0.5   # reduced from 1.0 — momentum trending negative in analysis
-WEATHER_WEIGHT       = 1.0   # light weight — +10.5% Positive, 2 readings
+MOMENTUM_WEIGHT      = 0.0   # removed — negative separator in 5 of 6 tiers per diagnose_score
+WEATHER_WEIGHT       = 0.3   # reduced — inconsistent by tier per diagnose_score
 
 # ── Pick criteria ──────────────────────────────────────────────────────────
 MIN_SCORE_FLOOR  = 10.0
@@ -316,7 +316,7 @@ def score_pitcher_quality_penalty(
 
 
 # ── Platoon score — two-way ────────────────────────────────────────────────
-PLATOON_WEIGHT = 1.8  # raised from 1.6 — separator at +203.8% STRONG+
+PLATOON_WEIGHT = 1.2  # reduced from 1.8 — diagnose_score shows 1.8 breaks monotonicity at 10-11
 
 def compute_platoon_score(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
@@ -1637,6 +1637,10 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "momentum_desc":          str(row.get("momentum_desc", "")),
             "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
             "top_pitch_iso_vs_hand":  str(_get_top_pitch_iso_vs_hand(row)),
+            "pa":                     str(row.get("pa", "")),
+            "bbe_7d":                 str(row.get("bbe_7d", "")),
+            "bbe_5d":                 str(row.get("bbe_5d", "")),
+            "bbe_10d":                str(row.get("bbe_10d", "")),
             "hit_hr":                 "Pending",
         })
 
