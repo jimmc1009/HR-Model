@@ -540,7 +540,7 @@ def build_rows(
     #       12-13 | +301-499 = 30.0%, 13+ | +301-499 = 29.2%
     #       12-13 | +500-699 = 25.0%
     # All above breakeven — no lower odds floor needed
-    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — 13+/12-13 ≤+499 | 11-12 ≤+300 | 10-11 +301-499"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — 13+ ≤+300 | 10-11 +301-499"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
@@ -583,17 +583,12 @@ def build_rows(
         #   11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
         #   10-11 | +301-499 — 26.9%
         def in_value_zone(score: float, odds: float) -> bool:
-            # 13+ | ≤+499
+            # Only two confirmed profitable zones (data as of Jun 26):
+            # 13+ | ≤+300 — 28.6% on 42 picks (breakeven ~25%)
+            # 10-11 | +301-499 — 26.0% on 77 picks (breakeven ~25%)
             if score >= 13.0:
-                return odds <= 499
-            # 12-13 | ≤+499
-            if score >= 12.0:
-                return odds <= 499
-            # 11-12 | ≤+300 only — plus odds dead (5.1% at +301-499)
-            if score >= 11.0:
                 return odds <= 300
-            # 10-11 | +301-499 only
-            if score >= 10.0:
+            if score >= 10.0 and score < 11.0:
                 return 301 <= odds <= 499
             return False
 
