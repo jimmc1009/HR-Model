@@ -1,13 +1,14 @@
 """
 check_sunday_underdogs.py
-Pulls historical MLB moneylines for every Sunday in 2025 and 2026 seasons
-using The Odds API. Calculates P&L for betting every underdog (+100 or better).
-Also compares to non-Sunday days for context.
+Pulls historical MLB moneylines from The Odds API and game results from
+the MLB Stats API (free). Calculates P&L for betting every underdog
+(+100 or better) $1 flat on Sundays. Also compares to other days.
 """
 
 import os
 import time
 from datetime import date, timedelta
+from collections import defaultdict
 
 import requests
 
@@ -22,7 +23,6 @@ SEASONS = {
 
 
 def get_days_of_week(season_start, season_end, weekday):
-    """Return all dates matching weekday (0=Mon, 6=Sun) in the season."""
     days = []
     d = season_start
     while d <= season_end:
@@ -32,56 +32,49 @@ def get_days_of_week(season_start, season_end, weekday):
     return days
 
 
-def fetch_odds_and_results(game_date: date) -> list:
+def fetch_mlb_results(game_date: date) -> dict:
     """
-    Use the historical scores endpoint which includes completed results
-    and then fetch odds for the same snapshot.
-    Returns list of (underdog, odds, won) tuples.
+    Fetch game results from MLB Stats API.
+    Returns dict of {(away_team_abbr, home_team_abbr): winner_abbr}
+    and also {(away_name, home_name): winner_name}
     """
-    # Step 1: Get scores/results for this date
-    scores_url = (
-        f"{BASE_URL}/historical/sports/{SPORT}/scores"
-        f"?apiKey={ODDS_API_KEY}"
-        f"&date={game_date.strftime('%Y-%m-%d')}T23:59:00Z"
+    url = (
+        f"https://statsapi.mlb.com/api/v1/schedule"
+        f"?sportId=1&date={game_date.strftime('%Y-%m-%d')}"
+        f"&hydrate=linescore&gameType=R"
     )
     try:
-        resp = requests.get(scores_url, timeout=20)
-        if resp.status_code != 200:
-            return []
-        scores_data = resp.json().get("data", [])
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
     except Exception as e:
-        print(f"    Scores error {game_date}: {e}")
-        return []
+        print(f"    MLB API error {game_date}: {e}")
+        return {}
 
-    if not scores_data:
-        return []
-
-    # Build result lookup: game_id -> winner
     results = {}
-    for game in scores_data:
-        if not game.get("completed"):
-            continue
-        scores = game.get("scores") or []
-        if len(scores) < 2:
-            continue
-        try:
-            score_map = {s["name"]: int(s["score"]) for s in scores}
-            winner = max(score_map, key=score_map.get)
-            results[game["id"]] = {
-                "winner":    winner,
-                "home":      game.get("home_team"),
-                "away":      game.get("away_team"),
-                "home_score": score_map.get(game.get("home_team"), 0),
-                "away_score": score_map.get(game.get("away_team"), 0),
-            }
-        except Exception:
-            continue
+    for d in data.get("dates", []):
+        for game in d.get("games", []):
+            status = game.get("status", {}).get("abstractGameState", "")
+            if status != "Final":
+                continue
+            home = game.get("teams", {}).get("home", {})
+            away = game.get("teams", {}).get("away", {})
+            home_name  = home.get("team", {}).get("name", "")
+            away_name  = away.get("team", {}).get("name", "")
+            home_score = home.get("score", 0)
+            away_score = away.get("score", 0)
+            if home_score is None or away_score is None:
+                continue
+            winner = home_name if home_score > away_score else away_name
+            # Store by both team names for flexible matching
+            results[(away_name, home_name)] = winner
+            results[(home_name, away_name)] = winner
+    return results
 
-    if not results:
-        return []
 
-    # Step 2: Get odds snapshot for this date (noon ET = 16:00 UTC)
-    odds_url = (
+def fetch_odds(game_date: date) -> list:
+    """Fetch odds snapshot for a date. Returns list of game dicts."""
+    url = (
         f"{BASE_URL}/historical/sports/{SPORT}/odds"
         f"?apiKey={ODDS_API_KEY}"
         f"&regions=us"
@@ -90,60 +83,38 @@ def fetch_odds_and_results(game_date: date) -> list:
         f"&date={game_date.strftime('%Y-%m-%d')}T16:00:00Z"
     )
     try:
-        resp = requests.get(odds_url, timeout=20)
-        if resp.status_code != 200:
-            return []
-        odds_data = resp.json().get("data", [])
+        resp = requests.get(url, timeout=20)
+        if resp.status_code == 200:
+            return resp.json().get("data", [])
+        return []
     except Exception as e:
-        print(f"    Odds error {game_date}: {e}")
+        print(f"    Odds API error {game_date}: {e}")
         return []
 
-    bets = []
-    for game in odds_data:
-        game_id = game["id"]
-        if game_id not in results:
-            continue
 
-        result = results[game_id]
-        winner = result["winner"]
+def fuzzy_match_winner(away_team: str, home_team: str, results: dict) -> str | None:
+    """
+    Match Odds API team names to MLB Stats API team names.
+    MLB uses full names like 'New York Yankees', Odds API uses same format.
+    Try exact match first, then partial.
+    """
+    # Exact match
+    winner = results.get((away_team, home_team)) or results.get((home_team, away_team))
+    if winner:
+        return winner
 
-        # Get odds from DraftKings or first bookmaker
-        bookmakers = game.get("bookmakers", [])
-        if not bookmakers:
-            continue
-        bk = next((b for b in bookmakers if b["key"] == "draftkings"), bookmakers[0])
-        markets = bk.get("markets", [])
-        h2h = next((m for m in markets if m["key"] == "h2h"), None)
-        if not h2h:
-            continue
+    # Partial match — check if any result key contains both team city/name parts
+    for (t1, t2), w in results.items():
+        away_words = set(away_team.lower().split())
+        home_words = set(home_team.lower().split())
+        t1_words   = set(t1.lower().split())
+        t2_words   = set(t2.lower().split())
 
-        outcomes = h2h.get("outcomes", [])
-        if len(outcomes) < 2:
-            continue
+        if (away_words & t1_words and home_words & t2_words) or \
+           (away_words & t2_words and home_words & t1_words):
+            return w
 
-        team_odds = {o["name"]: o["price"] for o in outcomes}
-        teams = list(team_odds.keys())
-
-        # Identify underdog — higher odds value
-        if team_odds[teams[0]] >= team_odds[teams[1]]:
-            underdog, favorite = teams[0], teams[1]
-        else:
-            underdog, favorite = teams[1], teams[0]
-
-        ud_odds  = team_odds[underdog]
-        fav_odds = team_odds[favorite]
-        won      = (winner == underdog)
-
-        bets.append({
-            "date":     game_date,
-            "underdog": underdog,
-            "favorite": favorite,
-            "ud_odds":  ud_odds,
-            "fav_odds": fav_odds,
-            "won":      won,
-        })
-
-    return bets
+    return None
 
 
 def calc_pnl(odds, won, stake=1.0):
@@ -167,15 +138,74 @@ def print_analysis(bets, label):
     print(f"    Avg Odds: +{avg_odds}")
     print(f"    P&L ($1 flat): {'+'if pnl>=0 else ''}{pnl}")
     print(f"    ROI: {'+'if roi>=0 else ''}{roi}%")
-
-    # By season
     for season in [2025, 2026]:
         sub = [b for b in bets if b["season"] == season]
         if not sub: continue
-        sw   = sum(1 for b in sub if b["won"])
-        sp   = round(sum(b["pnl"] for b in sub), 2)
-        sr   = round(sp / len(sub) * 100, 1)
+        sw = sum(1 for b in sub if b["won"])
+        sp = round(sum(b["pnl"] for b in sub), 2)
+        sr = round(sp / len(sub) * 100, 1)
         print(f"    {season}: {sw}/{len(sub)} wins, P&L {'+'if sp>=0 else ''}{sp}, ROI {'+'if sr>=0 else ''}{sr}%")
+
+
+def process_day(game_date, season):
+    """Process one day — return list of bet dicts."""
+    results = fetch_mlb_results(game_date)
+    if not results:
+        return []
+
+    odds_games = fetch_odds(game_date)
+    if not odds_games:
+        return []
+
+    bets = []
+    for game in odds_games:
+        away = game.get("away_team", "")
+        home = game.get("home_team", "")
+
+        # Get DraftKings or first bookmaker odds
+        bookmakers = game.get("bookmakers", [])
+        if not bookmakers:
+            continue
+        bk  = next((b for b in bookmakers if b["key"] == "draftkings"), bookmakers[0])
+        h2h = next((m for m in bk.get("markets", []) if m["key"] == "h2h"), None)
+        if not h2h:
+            continue
+
+        outcomes = h2h.get("outcomes", [])
+        if len(outcomes) < 2:
+            continue
+
+        team_odds = {o["name"]: o["price"] for o in outcomes}
+        teams     = list(team_odds.keys())
+
+        # Identify underdog
+        if team_odds[teams[0]] >= team_odds[teams[1]]:
+            underdog, favorite = teams[0], teams[1]
+        else:
+            underdog, favorite = teams[1], teams[0]
+
+        ud_odds  = team_odds[underdog]
+        fav_odds = team_odds[favorite]
+
+        # Get result
+        winner = fuzzy_match_winner(away, home, results)
+        if not winner:
+            continue
+
+        won = (winner == underdog) or (underdog in winner) or (winner in underdog)
+
+        bets.append({
+            "date":     game_date,
+            "season":   season,
+            "underdog": underdog,
+            "favorite": favorite,
+            "ud_odds":  ud_odds,
+            "fav_odds": fav_odds,
+            "won":      won,
+            "pnl":      calc_pnl(ud_odds, won),
+        })
+
+    return bets
 
 
 def main():
@@ -185,40 +215,33 @@ def main():
 
     print("MLB Sunday Underdog Moneyline Analysis")
     print("="*60)
-    print("Using The Odds API historical endpoint")
+    print("Odds: The Odds API | Results: MLB Stats API")
     print("Betting every underdog (+100 or better) $1 flat\n")
 
-    sunday_bets     = []  # underdogs at +100 or better on Sundays
-    all_sunday_bets = []  # all underdogs on Sundays (any odds)
-    weekday_bets    = []  # underdogs at +100 or better on non-Sundays (sample)
+    sunday_bets  = []
+    weekday_bets = []
 
     for season, (season_start, season_end) in SEASONS.items():
-        sundays = get_days_of_week(season_start, season_end, 6)  # Sunday=6
-        print(f"{season}: {len(sundays)} Sundays to process")
+        sundays = get_days_of_week(season_start, season_end, 6)
+        print(f"{season}: {len(sundays)} Sundays")
 
         for game_date in sundays:
             print(f"  {game_date}...", end=" ", flush=True)
-            bets = fetch_odds_and_results(game_date)
+            bets = process_day(game_date, season)
             count = 0
             for b in bets:
-                b["season"] = season
-                b["pnl"]    = calc_pnl(b["ud_odds"], b["won"])
-                all_sunday_bets.append(b)
                 if b["ud_odds"] >= 100:
                     sunday_bets.append(b)
                     count += 1
-            print(f"{count} underdog bets")
+            print(f"{count} underdog bets ({len(bets)} total games matched)")
             time.sleep(0.3)
 
-        # Sample of non-Sunday days for comparison (every 14th day)
-        non_sundays = get_days_of_week(season_start, season_end, 1)  # Mondays
-        sample = non_sundays[::2]  # every other Monday
-        print(f"  Pulling {len(sample)} non-Sunday days for comparison...")
-        for game_date in sample:
-            bets = fetch_odds_and_results(game_date)
+        # Comparison: Tuesdays (sample)
+        tuesdays = get_days_of_week(season_start, season_end, 1)[::3]
+        print(f"  Comparison: {len(tuesdays)} Tuesday samples")
+        for game_date in tuesdays:
+            bets = process_day(game_date, season)
             for b in bets:
-                b["season"] = season
-                b["pnl"]    = calc_pnl(b["ud_odds"], b["won"])
                 if b["ud_odds"] >= 100:
                     weekday_bets.append(b)
             time.sleep(0.3)
@@ -229,10 +252,9 @@ def main():
     print("="*60)
 
     print_analysis(sunday_bets, "Sunday Underdogs (+100 or better)")
-    print_analysis(weekday_bets, "Monday sample — Underdogs (+100 or better)")
-    print_analysis(all_sunday_bets, "All Sunday underdogs (any odds)")
+    print_analysis(weekday_bets, "Tuesday sample — Underdogs (+100 or better)")
 
-    # Odds buckets for Sunday
+    # Odds buckets
     if sunday_bets:
         print("\n  Sunday Underdogs by Odds Range:")
         buckets = [
@@ -250,22 +272,21 @@ def main():
             roi  = round(pnl / len(sub) * 100, 1)
             print(f"    {label:<12}: {wins}/{len(sub)} wins, P&L {'+'if pnl>=0 else ''}{pnl}, ROI {'+'if roi>=0 else ''}{roi}%")
 
-    # Best and worst Sunday underdog teams
+    # Team breakdown
     if sunday_bets:
-        print("\n  Sunday Underdog Win Rate by Team (5+ bets):")
-        from collections import defaultdict
+        print("\n  Best Sunday Underdog Teams (5+ bets):")
         team_stats = defaultdict(list)
         for b in sunday_bets:
             team_stats[b["underdog"]].append(b)
-        team_results = []
-        for team, tbets in team_stats.items():
-            if len(tbets) < 5: continue
-            wins = sum(1 for b in tbets if b["won"])
-            pnl  = round(sum(b["pnl"] for b in tbets), 2)
-            team_results.append((team, wins, len(tbets), round(wins/len(tbets)*100,1), pnl))
-        team_results.sort(key=lambda x: x[3], reverse=True)
-        for team, wins, n, wr, pnl in team_results:
-            print(f"    {team:<25}: {wins}/{n} = {wr}%, P&L {'+'if pnl>=0 else ''}{pnl}")
+        team_results = [
+            (t, sum(1 for b in v if b["won"]), len(v),
+             round(sum(1 for b in v if b["won"])/len(v)*100,1),
+             round(sum(b["pnl"] for b in v),2))
+            for t, v in team_stats.items() if len(v) >= 5
+        ]
+        team_results.sort(key=lambda x: x[4], reverse=True)
+        for team, wins, n, wr, pnl in team_results[:15]:
+            print(f"    {team:<28}: {wins}/{n} = {wr}%, P&L {'+'if pnl>=0 else ''}{pnl}")
 
     print("\nDone.")
 
