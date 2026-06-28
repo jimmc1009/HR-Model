@@ -1320,13 +1320,13 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     try:
         ws = sh.worksheet("Scorecard")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Scorecard", rows=1000, cols=10)
+        ws = sh.add_worksheet(title="Scorecard", rows=1000, cols=11)
 
     ws_id = ws.id
 
     # Read existing data
     existing = with_retry(lambda: ws.get_all_values())
-    headers  = ["Date", "Model", "Player / Pitcher", "Team", "Score", "Direction / Line", "Suggested Odds", "Your Odds", "Result", "P&L"]
+    headers  = ["Date", "Model", "Player / Pitcher", "Team", "Score", "Direction / Line", "Suggested Odds", "Your Odds", "Stake", "Result", "P&L"]
 
     if not existing or existing[0] != headers:
         existing = [headers]
@@ -1356,7 +1356,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             score = str(row_data[3]).strip()
             odds  = str(row_data[4]).strip()
             if name and name != "—":
-                today_rows.append([today_str, "HR Single", name, team, score, "HR", odds, "", "", ""])
+                today_rows.append([today_str, "HR Single", name, team, score, "HR", odds, "", "", "", ""])
 
         # Parlay legs
         elif row_type == "data_parlay":
@@ -1365,7 +1365,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             score = str(row_data[3]).strip()
             odds  = str(row_data[4]).strip()
             if name and name != "—":
-                today_rows.append([today_str, "HR Parlay", name, team, score, "HR", odds, "", "", ""])
+                today_rows.append([today_str, "HR Parlay", name, team, score, "HR", odds, "", "", "", ""])
 
         # KS value plays
         elif row_type in ("data_ks_over", "data_ks_under"):
@@ -1375,7 +1375,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             direction = str(row_data[5]).strip()
             odds      = str(row_data[6]).strip()
             if pitcher and pitcher != "—":
-                today_rows.append([today_str, "KS", pitcher, team, score, direction, odds, "", "", ""])
+                today_rows.append([today_str, "KS", pitcher, team, score, direction, odds, "", "", "", ""])
 
         # HRRBI value plays
         elif row_type == "data_hrrbi_value":
@@ -1384,7 +1384,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             score  = str(row_data[3]).strip()
             odds   = str(row_data[5]).strip()
             if player and player != "—":
-                today_rows.append([today_str, "HRRBI", player, team, score, "OVER 1.5", odds, "", "", ""])
+                today_rows.append([today_str, "HRRBI", player, team, score, "OVER 1.5", odds, "", "", "", ""])
 
     if not today_rows:
         print("Scorecard: no plays to write today.")
@@ -1402,7 +1402,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     # Base style
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
-                  "startColumnIndex": 0, "endColumnIndex": 10},
+                  "startColumnIndex": 0, "endColumnIndex": 11},
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_BG,
             "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
@@ -1415,7 +1415,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     # Header row
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                  "startColumnIndex": 0, "endColumnIndex": 10},
+                  "startColumnIndex": 0, "endColumnIndex": 11},
         "cell": {"userEnteredFormat": {
             "backgroundColor": COLOR_HEADER_BG,
             "textFormat": {"foregroundColor": COLOR_GOLD, "bold": True,
@@ -1441,7 +1441,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
 
         reqs.append({"repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
-                      "startColumnIndex": 0, "endColumnIndex": 10},
+                      "startColumnIndex": 0, "endColumnIndex": 11},
             "cell": {"userEnteredFormat": {"backgroundColor": bg}},
             "fields": "userEnteredFormat(backgroundColor)",
         }})
@@ -1469,7 +1469,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
     }})
 
-    # Result col (8) — editable highlight
+    # Stake col (8) — editable highlight
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total_rows,
                   "startColumnIndex": 8, "endColumnIndex": 9},
@@ -1481,10 +1481,22 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
         "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
     }})
 
-    # P&L col (9) — formula col header note
+    # Result col (9) — editable highlight
     reqs.append({"repeatCell": {
         "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total_rows,
                   "startColumnIndex": 9, "endColumnIndex": 10},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": {"red": 0.10, "green": 0.10, "blue": 0.15},
+            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True},
+            "horizontalAlignment": "CENTER",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+    }})
+
+    # P&L col (10) — auto-calculated
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total_rows,
+                  "startColumnIndex": 10, "endColumnIndex": 11},
         "cell": {"userEnteredFormat": {
             "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True},
             "horizontalAlignment": "CENTER",
@@ -1493,7 +1505,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     }})
 
     # Column widths
-    col_widths = [90, 80, 180, 60, 70, 130, 100, 90, 80, 80]
+    col_widths = [90, 80, 180, 60, 70, 130, 100, 90, 70, 70, 80]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
