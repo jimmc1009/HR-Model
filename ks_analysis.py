@@ -158,6 +158,19 @@ def build_analysis(df: pd.DataFrame) -> dict:
     line_vals = [4.5, 5.5, 6.5, 7.5]
     with_line = resolved[resolved["k_line"] > 0].copy()
 
+    # Coerce odds columns
+    if "over_odds" in with_line.columns:
+        with_line["over_odds"]  = with_line["over_odds"].apply(safe_float)
+        with_line["under_odds"] = with_line["under_odds"].apply(safe_float)
+    else:
+        with_line["over_odds"]  = 0.0
+        with_line["under_odds"] = 0.0
+
+    def american_to_be(odds):
+        if odds == 0: return 50.0
+        if odds < 0:  return round(abs(odds) / (abs(odds) + 100) * 100, 1)
+        return round(100 / (odds + 100) * 100, 1)
+
     score_x_line_rows = []
     for tier_label, lo, hi in score_tier_defs:
         tier_sub = with_line[(with_line["ks_score"] >= lo) & (with_line["ks_score"] < hi)]
@@ -172,14 +185,31 @@ def build_analysis(df: pd.DataFrame) -> dict:
             under_h = int(sub["under_bool"].sum())
             over_r  = round(over_h / n * 100, 1)
             under_r = round(under_h / n * 100, 1)
+
+            # Avg odds and edge
+            avg_over_odds  = round(sub["over_odds"][sub["over_odds"] != 0].mean(), 0) if (sub["over_odds"] != 0).any() else 0
+            avg_under_odds = round(sub["under_odds"][sub["under_odds"] != 0].mean(), 0) if (sub["under_odds"] != 0).any() else 0
+            over_be  = american_to_be(avg_over_odds)
+            under_be = american_to_be(avg_under_odds)
+            over_edge  = round(over_r - over_be, 1)
+            under_edge = round(under_r - under_be, 1)
+
+            def fmt_odds(o):
+                if o == 0: return "—"
+                return f"+{int(o)}" if o >= 0 else str(int(o))
+
             score_x_line_rows.append({
-                "tier":       tier_label,
-                "line":       f"O/U {line_val}",
-                "total":      n,
-                "over_hits":  over_h,
-                "over_rate":  over_r,
-                "under_hits": under_h,
-                "under_rate": under_r,
+                "tier":        tier_label,
+                "line":        f"O/U {line_val}",
+                "total":       n,
+                "over_hits":   over_h,
+                "over_rate":   over_r,
+                "over_odds":   fmt_odds(avg_over_odds),
+                "over_edge":   f"+{over_edge}%" if over_edge >= 0 else f"{over_edge}%",
+                "under_hits":  under_h,
+                "under_rate":  under_r,
+                "under_odds":  fmt_odds(avg_under_odds),
+                "under_edge":  f"+{under_edge}%" if under_edge >= 0 else f"{under_edge}%",
             })
 
     # ── Odds zone analysis ───────────────────────────────────────────────
@@ -394,7 +424,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         ws = sh.worksheet("KS_Analysis")
         with_retry(lambda: ws.clear())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="KS_Analysis", rows=300, cols=8)
+        ws = sh.add_worksheet(title="KS_Analysis", rows=300, cols=11)
 
     ws_id = ws.id
     today = date.today().strftime("%B %d, %Y")
@@ -404,14 +434,13 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
 
     def add_section(title, headers, rows_data, key_fn=None):
         section_starts[title] = len(all_values)
-        all_values.append([title] + [""] * (len(headers) - 1))
-        all_values.append(headers)
+        n_cols = max(len(headers), total_cols)
+        all_values.append([title] + [""] * (n_cols - 1))
+        all_values.append(list(headers) + [""] * (n_cols - len(headers)))
         for r in rows_data:
-            if callable(key_fn):
-                all_values.append(key_fn(r))
-            else:
-                all_values.append(r)
-        all_values.append([""] * len(headers))
+            row = key_fn(r) if callable(key_fn) else list(r)
+            all_values.append(row + [""] * (n_cols - len(row)))
+        all_values.append([""] * n_cols)
 
     # ── Header ────────────────────────────────────────────────────────────
     all_values.append([
@@ -440,10 +469,13 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     # ── Score Tier × Line Cross-Tab ───────────────────────────────────────
     add_section(
         "📊  SCORE TIER × LINE",
-        ["Score Tier", "Line", "Total", "Over Hits", "Over Rate %", "Under Hits", "Under Rate %", ""],
+        ["Score Tier", "Line", "Total", "Over Hits", "Over %", "Avg Over Odds", "Over Edge", "Under Hits", "Under %", "Avg Under Odds", "Under Edge"],
         analysis["score_x_line"],
-        lambda r: [r["tier"], r["line"], r["total"], r["over_hits"], f"{r['over_rate']}%",
-                   r["under_hits"], f"{r['under_rate']}%", ""]
+        lambda r: [
+            r["tier"], r["line"], r["total"],
+            r["over_hits"], f"{r['over_rate']}%", r["over_odds"], r["over_edge"],
+            r["under_hits"], f"{r['under_rate']}%", r["under_odds"], r["under_edge"],
+        ]
     )
 
     # ── By Signal ─────────────────────────────────────────────────────────
@@ -534,7 +566,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
 
     # ── Formatting ────────────────────────────────────────────────────────
     total_rows = len(all_values)
-    total_cols = 8
+    total_cols = 11
     reqs       = []
 
     reqs.append({"repeatCell": {
@@ -708,7 +740,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                 "fields": "userEnteredFormat(backgroundColor)",
             }})
 
-    col_widths = [200, 100, 80, 110, 90, 110, 100, 80]
+    col_widths = [160, 80, 60, 70, 70, 90, 75, 70, 70, 90, 75]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
