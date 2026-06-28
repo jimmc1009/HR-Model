@@ -180,37 +180,75 @@ def build_analysis(df: pd.DataFrame) -> dict:
             sub = tier_sub[tier_sub["k_line"] == line_val]
             if sub.empty or len(sub) < 3:
                 continue
+
+            # Overall row
             n       = len(sub)
             over_h  = int(sub["over_bool"].sum())
             under_h = int(sub["under_bool"].sum())
             over_r  = round(over_h / n * 100, 1)
             under_r = round(under_h / n * 100, 1)
-
-            # Avg odds and edge
-            avg_over_odds  = round(sub["over_odds"][sub["over_odds"] != 0].mean(), 0) if (sub["over_odds"] != 0).any() else 0
-            avg_under_odds = round(sub["under_odds"][sub["under_odds"] != 0].mean(), 0) if (sub["under_odds"] != 0).any() else 0
-            over_be  = american_to_be(avg_over_odds)
-            under_be = american_to_be(avg_under_odds)
-            over_edge  = round(over_r - over_be, 1)
-            under_edge = round(under_r - under_be, 1)
-
-            def fmt_odds(o):
-                if o == 0: return "—"
-                return f"+{int(o)}" if o >= 0 else str(int(o))
-
             score_x_line_rows.append({
-                "tier":        tier_label,
-                "line":        f"O/U {line_val}",
-                "total":       n,
-                "over_hits":   over_h,
-                "over_rate":   over_r,
-                "over_odds":   fmt_odds(avg_over_odds),
-                "over_edge":   f"+{over_edge}%" if over_edge >= 0 else f"{over_edge}%",
-                "under_hits":  under_h,
-                "under_rate":  under_r,
-                "under_odds":  fmt_odds(avg_under_odds),
-                "under_edge":  f"+{under_edge}%" if under_edge >= 0 else f"{under_edge}%",
+                "tier":       tier_label,
+                "line":       f"O/U {line_val}",
+                "odds_split": "All",
+                "total":      n,
+                "over_hits":  over_h,
+                "over_rate":  over_r,
+                "under_hits": under_h,
+                "under_rate": under_r,
             })
+
+            # Split by over odds sign — minus vs plus
+            for odds_label, mask in [
+                ("Over: Minus odds", sub["over_odds"] < 0),
+                ("Over: Plus odds",  sub["over_odds"] > 0),
+            ]:
+                s = sub[mask]
+                if len(s) < 3:
+                    continue
+                sn = len(s)
+                oh = int(s["over_bool"].sum())
+                or_ = round(oh / sn * 100, 1)
+                avg_o = round(s["over_odds"].mean(), 0)
+                be  = american_to_be(avg_o)
+                edge = round(or_ - be, 1)
+                fmt_o = f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o))
+                score_x_line_rows.append({
+                    "tier":       "",
+                    "line":       f"  ↳ {odds_label}",
+                    "odds_split": fmt_o,
+                    "total":      sn,
+                    "over_hits":  oh,
+                    "over_rate":  or_,
+                    "under_hits": "",
+                    "under_rate": f"BE: {be}% | Edge: {'+' if edge>=0 else ''}{edge}%",
+                })
+
+            # Split by under odds sign — minus vs plus
+            for odds_label, mask in [
+                ("Under: Minus odds", sub["under_odds"] < 0),
+                ("Under: Plus odds",  sub["under_odds"] > 0),
+            ]:
+                s = sub[mask]
+                if len(s) < 3:
+                    continue
+                sn = len(s)
+                uh = int(s["under_bool"].sum())
+                ur_ = round(uh / sn * 100, 1)
+                avg_o = round(s["under_odds"].mean(), 0)
+                be  = american_to_be(avg_o)
+                edge = round(ur_ - be, 1)
+                fmt_o = f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o))
+                score_x_line_rows.append({
+                    "tier":       "",
+                    "line":       f"  ↳ {odds_label}",
+                    "odds_split": fmt_o,
+                    "total":      sn,
+                    "over_hits":  "",
+                    "over_rate":  "",
+                    "under_hits": uh,
+                    "under_rate": f"{ur_}% | BE: {be}% | Edge: {'+' if edge>=0 else ''}{edge}%",
+                })
 
     # ── Odds zone analysis ───────────────────────────────────────────────
     resolved["over_odds"]  = resolved["over_odds"].apply(safe_float) if "over_odds" in resolved.columns else 0.0
@@ -471,12 +509,18 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     # ── Score Tier × Line Cross-Tab ───────────────────────────────────────
     add_section(
         "📊  SCORE TIER × LINE",
-        ["Score Tier", "Line", "Total", "Over Hits", "Over %", "Avg Over Odds", "Over Edge", "Under Hits", "Under %", "Avg Under Odds", "Under Edge"],
+        ["Score Tier", "Line | Odds Split", "Avg Odds", "Total", "Over Hits", "Over %", "Under Hits", "Under % / Edge", "", "", ""],
         analysis["score_x_line"],
         lambda r: [
-            r["tier"], r["line"], r["total"],
-            r["over_hits"], f"{r['over_rate']}%", r["over_odds"], r["over_edge"],
-            r["under_hits"], f"{r['under_rate']}%", r["under_odds"], r["under_edge"],
+            r["tier"],
+            r["line"],
+            r.get("odds_split", ""),
+            r["total"],
+            r["over_hits"],
+            f"{r['over_rate']}%" if r["over_rate"] != "" else "",
+            r["under_hits"],
+            r["under_rate"] if r["under_rate"] != "" else "",
+            "", "", ""
         ]
     )
 
