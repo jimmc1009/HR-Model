@@ -57,38 +57,7 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python diagnose_score.py 2>&1 | tee diagnose_score_output.txt
-
-      - name: Upload diagnose_score output
-        uses: actions/upload-artifact@v4
-        with:
-          name: diagnose-score-output
-          path: diagnose_score_output.txt
-
-      - name: Run check_weekend_hr.py
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python check_weekend_hr.py
-
-      - name: Debug Odds API
-        env:
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python debug_odds_api.py
-
-      - name: Run check_sunday_underdogs.py
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python check_sunday_underdogs.py 2>&1 | tee sunday_underdogs_output.txt
-
-      - name: Upload sunday underdogs output
-        uses: actions/upload-artifact@v4
-        with:
-          name: sunday-underdogs-output
-          path: sunday_underdogs_output.txt
-
+        run: python diagnose_score.py
 
       # ── Dashboard ─────────────────────────────────────────────────────────
       - name: Run dashboard.py
