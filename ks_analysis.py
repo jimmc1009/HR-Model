@@ -158,6 +158,19 @@ def build_analysis(df: pd.DataFrame) -> dict:
     line_vals = [4.5, 5.5, 6.5, 7.5]
     with_line = resolved[resolved["k_line"] > 0].copy()
 
+    # Coerce odds columns
+    if "over_odds" in with_line.columns:
+        with_line["over_odds"]  = with_line["over_odds"].apply(safe_float)
+        with_line["under_odds"] = with_line["under_odds"].apply(safe_float)
+    else:
+        with_line["over_odds"]  = 0.0
+        with_line["under_odds"] = 0.0
+
+    def american_to_be(odds):
+        if odds == 0: return 50.0
+        if odds < 0:  return round(abs(odds) / (abs(odds) + 100) * 100, 1)
+        return round(100 / (odds + 100) * 100, 1)
+
     score_x_line_rows = []
     for tier_label, lo, hi in score_tier_defs:
         tier_sub = with_line[(with_line["ks_score"] >= lo) & (with_line["ks_score"] < hi)]
@@ -167,6 +180,8 @@ def build_analysis(df: pd.DataFrame) -> dict:
             sub = tier_sub[tier_sub["k_line"] == line_val]
             if sub.empty or len(sub) < 3:
                 continue
+
+            # Overall row
             n       = len(sub)
             over_h  = int(sub["over_bool"].sum())
             under_h = int(sub["under_bool"].sum())
@@ -175,11 +190,117 @@ def build_analysis(df: pd.DataFrame) -> dict:
             score_x_line_rows.append({
                 "tier":       tier_label,
                 "line":       f"O/U {line_val}",
+                "odds_split": "All",
                 "total":      n,
                 "over_hits":  over_h,
                 "over_rate":  over_r,
                 "under_hits": under_h,
                 "under_rate": under_r,
+            })
+
+            # Split by over odds sign — minus vs plus
+            for odds_label, mask in [
+                ("Over: Minus odds", sub["over_odds"] < 0),
+                ("Over: Plus odds",  sub["over_odds"] > 0),
+            ]:
+                s = sub[mask]
+                if len(s) < 3:
+                    continue
+                sn = len(s)
+                oh = int(s["over_bool"].sum())
+                or_ = round(oh / sn * 100, 1)
+                avg_o = round(s["over_odds"].mean(), 0)
+                be  = american_to_be(avg_o)
+                edge = round(or_ - be, 1)
+                fmt_o = f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o))
+                score_x_line_rows.append({
+                    "tier":       "",
+                    "line":       f"  ↳ {odds_label}",
+                    "odds_split": fmt_o,
+                    "total":      sn,
+                    "over_hits":  oh,
+                    "over_rate":  or_,
+                    "under_hits": "",
+                    "under_rate": f"BE: {be}% | Edge: {'+' if edge>=0 else ''}{edge}%",
+                })
+
+            # Split by under odds sign — minus vs plus
+            for odds_label, mask in [
+                ("Under: Minus odds", sub["under_odds"] < 0),
+                ("Under: Plus odds",  sub["under_odds"] > 0),
+            ]:
+                s = sub[mask]
+                if len(s) < 3:
+                    continue
+                sn = len(s)
+                uh = int(s["under_bool"].sum())
+                ur_ = round(uh / sn * 100, 1)
+                avg_o = round(s["under_odds"].mean(), 0)
+                be  = american_to_be(avg_o)
+                edge = round(ur_ - be, 1)
+                fmt_o = f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o))
+                score_x_line_rows.append({
+                    "tier":       "",
+                    "line":       f"  ↳ {odds_label}",
+                    "odds_split": fmt_o,
+                    "total":      sn,
+                    "over_hits":  "",
+                    "over_rate":  "",
+                    "under_hits": uh,
+                    "under_rate": f"{ur_}% | BE: {be}% | Edge: {'+' if edge>=0 else ''}{edge}%",
+                })
+
+    # ── Odds zone analysis ───────────────────────────────────────────────
+    resolved["over_odds"]  = resolved["over_odds"].apply(safe_float) if "over_odds" in resolved.columns else 0.0
+    resolved["under_odds"] = resolved["under_odds"].apply(safe_float) if "under_odds" in resolved.columns else 0.0
+
+    odds_zone_rows = []
+    for direction, odds_col, hit_col, label_prefix in [
+        ("UNDER", "under_odds", "under_bool", "UNDER"),
+        ("OVER",  "over_odds",  "over_bool",  "OVER"),
+    ]:
+        odds_buckets = [
+            (f"{label_prefix} — Minus money (any)",   -999, -100),
+            (f"{label_prefix} — -100 to -120",        -120, -100),
+            (f"{label_prefix} — -121 to -150",        -150, -121),
+            (f"{label_prefix} — -151 to -200",        -200, -151),
+            (f"{label_prefix} — -201 or worse",       -999, -201),
+            (f"{label_prefix} — Plus money (any)",     100,  999),
+            (f"{label_prefix} — +100 to +120",         100,  120),
+            (f"{label_prefix} — +121 to +150",         121,  150),
+            (f"{label_prefix} — +151 or better",       151,  999),
+        ]
+        for label, lo, hi in odds_buckets:
+            if lo < 0:
+                sub = resolved[
+                    (resolved[odds_col] >= lo) & (resolved[odds_col] <= hi) &
+                    (resolved[odds_col] < 0)
+                ]
+            else:
+                sub = resolved[
+                    (resolved[odds_col] >= lo) & (resolved[odds_col] <= hi) &
+                    (resolved[odds_col] > 0)
+                ]
+            if len(sub) < 5:
+                continue
+            n      = len(sub)
+            hits   = int(sub[hit_col].sum())
+            rate   = round(hits / n * 100, 1)
+            avg_o  = round(sub[odds_col].mean(), 0)
+            # Breakeven
+            if avg_o < 0:
+                be = round(abs(avg_o) / (abs(avg_o) + 100) * 100, 1)
+            else:
+                be = round(100 / (avg_o + 100) * 100, 1)
+            edge = round(rate - be, 1)
+            odds_zone_rows.append({
+                "label":   label,
+                "total":   n,
+                "hits":    hits,
+                "rate":    rate,
+                "avg_odds": int(avg_o),
+                "breakeven": be,
+                "edge":    edge,
             })
 
     # ── By signal ─────────────────────────────────────────────────────────
@@ -331,6 +452,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "feature_separators_over":  feature_separators_over,
         "feature_separators_under": feature_separators_under,
         "roll_rows":          roll_rows,
+        "odds_zone_rows":     odds_zone_rows,
     }
 
 
@@ -340,7 +462,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         ws = sh.worksheet("KS_Analysis")
         with_retry(lambda: ws.clear())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="KS_Analysis", rows=300, cols=8)
+        ws = sh.add_worksheet(title="KS_Analysis", rows=300, cols=11)
 
     ws_id = ws.id
     today = date.today().strftime("%B %d, %Y")
@@ -348,16 +470,17 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     all_values     = []
     section_starts = {}
 
+    N_COLS = 11  # max columns in sheet
+
     def add_section(title, headers, rows_data, key_fn=None):
         section_starts[title] = len(all_values)
-        all_values.append([title] + [""] * (len(headers) - 1))
-        all_values.append(headers)
+        n_cols = max(len(headers), N_COLS)
+        all_values.append([title] + [""] * (n_cols - 1))
+        all_values.append(list(headers) + [""] * (n_cols - len(headers)))
         for r in rows_data:
-            if callable(key_fn):
-                all_values.append(key_fn(r))
-            else:
-                all_values.append(r)
-        all_values.append([""] * len(headers))
+            row = key_fn(r) if callable(key_fn) else list(r)
+            all_values.append(row + [""] * (n_cols - len(row)))
+        all_values.append([""] * n_cols)
 
     # ── Header ────────────────────────────────────────────────────────────
     all_values.append([
@@ -386,10 +509,19 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     # ── Score Tier × Line Cross-Tab ───────────────────────────────────────
     add_section(
         "📊  SCORE TIER × LINE",
-        ["Score Tier", "Line", "Total", "Over Hits", "Over Rate %", "Under Hits", "Under Rate %", ""],
+        ["Score Tier", "Line | Odds Split", "Avg Odds", "Total", "Over Hits", "Over %", "Under Hits", "Under % / Edge", "", "", ""],
         analysis["score_x_line"],
-        lambda r: [r["tier"], r["line"], r["total"], r["over_hits"], f"{r['over_rate']}%",
-                   r["under_hits"], f"{r['under_rate']}%", ""]
+        lambda r: [
+            r["tier"],
+            r["line"],
+            r.get("odds_split", ""),
+            r["total"],
+            r["over_hits"],
+            f"{r['over_rate']}%" if r["over_rate"] != "" else "",
+            r["under_hits"],
+            r["under_rate"] if r["under_rate"] != "" else "",
+            "", "", ""
+        ]
     )
 
     # ── By Signal ─────────────────────────────────────────────────────────
@@ -425,6 +557,21 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         analysis["roll_rows"],
         lambda r: [r["label"], r["total"], r["over_hits"], f"{r['over_rate']}%", "", "", "", ""]
     )
+
+    # ── Odds Zone Analysis ───────────────────────────────────────────────
+    if analysis.get("odds_zone_rows"):
+        add_section(
+            "💰  BY ODDS ZONE — Hit Rate vs Breakeven",
+            ["Direction | Odds", "Total", "Hits", "Hit Rate %", "Avg Odds", "Breakeven %", "Edge vs BE", ""],
+            analysis["odds_zone_rows"],
+            lambda r: [
+                r["label"], r["total"], r["hits"], f"{r['rate']}%",
+                f"+{r['avg_odds']}" if r["avg_odds"] >= 0 else str(r["avg_odds"]),
+                f"{r['breakeven']}%",
+                f"+{r['edge']}%" if r["edge"] >= 0 else f"{r['edge']}%",
+                ""
+            ]
+        )
 
     # ── Feature Separators — Under ────────────────────────────────────────
     section_starts["features_under"] = len(all_values)
@@ -465,7 +612,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
 
     # ── Formatting ────────────────────────────────────────────────────────
     total_rows = len(all_values)
-    total_cols = 8
+    total_cols = 11
     reqs       = []
 
     reqs.append({"repeatCell": {
@@ -518,6 +665,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "📏  BY LINE":              (COLOR_GOLD,   COLOR_GOLD_DIM),
         "🎯  PROJECTION ACCURACY":  (COLOR_BLUE,   COLOR_BLUE_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,  COLOR_GREEN_DIM),
+        "💰  BY ODDS ZONE — Hit Rate vs Breakeven": (COLOR_GOLD, COLOR_GOLD_DIM),
         "features_under":            (COLOR_TEAL,   COLOR_TEAL_DIM),
         "features_over":             (COLOR_PURPLE, COLOR_PURPLE_DIM),
     }
@@ -638,7 +786,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                 "fields": "userEnteredFormat(backgroundColor)",
             }})
 
-    col_widths = [200, 100, 80, 110, 90, 110, 100, 80]
+    col_widths = [160, 80, 60, 70, 70, 90, 75, 70, 70, 90, 75]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",

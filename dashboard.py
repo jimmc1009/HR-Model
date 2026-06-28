@@ -191,10 +191,12 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
     if resolved.empty:
         return hit_rates
 
-    resolved["ks_score"] = resolved["ks_score"].apply(safe_float)
-    resolved["k_line"]   = resolved["k_line"].apply(safe_float)
+    resolved["ks_score"]   = resolved["ks_score"].apply(safe_float)
+    resolved["k_line"]     = resolved["k_line"].apply(safe_float)
     resolved["over_bool"]  = resolved["over_hit"].astype(str).str.strip() == "Yes"
     resolved["under_bool"] = resolved["under_hit"].astype(str).str.strip() == "Yes"
+    resolved["over_odds"]  = resolved["over_odds"].apply(safe_float) if "over_odds" in resolved.columns else 0.0
+    resolved["under_odds"] = resolved["under_odds"].apply(safe_float) if "under_odds" in resolved.columns else 0.0
 
     tier_defs = [
         ("12+",    12,  999),
@@ -204,27 +206,45 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
         ("4-6",     4,    6),
         ("2-4",     2,    4),
         ("Under 2", 0,    2),
-        ("Under 0", -999, 0),  # negative scores — extreme underdogs/weak pitchers
+        ("Under 0", -999, 0),
     ]
 
     line_vals = [4.5, 5.5, 6.5, 7.5, 8.5]
+    MIN_PICKS = 15
 
     for tier_label, lo, hi in tier_defs:
         tier_sub = resolved[(resolved["ks_score"] >= lo) & (resolved["ks_score"] < hi)]
 
-        # Overall tier rates (no line filter) — min 15 picks
-        if len(tier_sub) >= 15:
-            over_rate  = tier_sub["over_bool"].mean()
-            under_rate = tier_sub["under_bool"].mean()
-            hit_rates[(tier_label, "any", "over")]  = (over_rate, len(tier_sub))
-            hit_rates[(tier_label, "any", "under")] = (under_rate, len(tier_sub))
+        # Overall tier rates — no line filter
+        if len(tier_sub) >= MIN_PICKS:
+            hit_rates[(tier_label, "any", "over")]  = (tier_sub["over_bool"].mean(), len(tier_sub))
+            hit_rates[(tier_label, "any", "under")] = (tier_sub["under_bool"].mean(), len(tier_sub))
 
-        # Tier × line rates — min 15 picks for combo-specific hit rates
         for line_val in line_vals:
             sub = tier_sub[tier_sub["k_line"] == line_val]
-            if len(sub) >= 15:
-                hit_rates[(tier_label, line_val, "over")]  = (sub["over_bool"].mean(), len(sub))
-                hit_rates[(tier_label, line_val, "under")] = (sub["under_bool"].mean(), len(sub))
+            if len(sub) < MIN_PICKS:
+                continue
+
+            # Overall tier × line
+            hit_rates[(tier_label, line_val, "over")]  = (sub["over_bool"].mean(), len(sub))
+            hit_rates[(tier_label, line_val, "under")] = (sub["under_bool"].mean(), len(sub))
+
+            # Split by odds sign — minus money vs plus money
+            # OVER side
+            over_minus = sub[sub["over_odds"] < 0]
+            over_plus  = sub[sub["over_odds"] > 0]
+            if len(over_minus) >= MIN_PICKS:
+                hit_rates[(tier_label, line_val, "over", "minus")] = (over_minus["over_bool"].mean(), len(over_minus))
+            if len(over_plus) >= MIN_PICKS:
+                hit_rates[(tier_label, line_val, "over", "plus")]  = (over_plus["over_bool"].mean(), len(over_plus))
+
+            # UNDER side
+            under_minus = sub[sub["under_odds"] < 0]
+            under_plus  = sub[sub["under_odds"] > 0]
+            if len(under_minus) >= MIN_PICKS:
+                hit_rates[(tier_label, line_val, "under", "minus")] = (under_minus["under_bool"].mean(), len(under_minus))
+            if len(under_plus) >= MIN_PICKS:
+                hit_rates[(tier_label, line_val, "under", "plus")]  = (under_plus["under_bool"].mean(), len(under_plus))
 
     print(f"  KS hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks")
     return hit_rates
@@ -362,8 +382,13 @@ def calc_ks_value(
         if odds == 0:
             continue
 
-        # Prefer tier × line combo, fall back to tier only
-        result = hit_rates.get((tier, line, direction.lower()))
+        # Determine odds sign for this direction
+        odds_sign = "minus" if odds < 0 else "plus"
+
+        # Prefer tier × line × odds sign, then tier × line, then tier only
+        result = hit_rates.get((tier, line, direction.lower(), odds_sign))
+        if result is None:
+            result = hit_rates.get((tier, line, direction.lower()))
         if result is None:
             result = hit_rates.get((tier, "any", direction.lower()))
         if result is None:
