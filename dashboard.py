@@ -1310,6 +1310,221 @@ def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     print(f"Dashboard timestamp written: {now_et}")
 
 
+def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_str: str) -> None:
+    """
+    Writes today's dashboard plays to a Scorecard sheet for manual result tracking.
+    Columns: Date | Model | Player/Pitcher | Team | Score | Direction/Line | Suggested Odds | Your Odds | Result | P&L
+    Preserves previous days' rows — only replaces today's entries.
+    """
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("Scorecard")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Scorecard", rows=1000, cols=10)
+
+    ws_id = ws.id
+
+    # Read existing data
+    existing = with_retry(lambda: ws.get_all_values())
+    headers  = ["Date", "Model", "Player / Pitcher", "Team", "Score", "Direction / Line", "Suggested Odds", "Your Odds", "Result", "P&L"]
+
+    if not existing or existing[0] != headers:
+        existing = [headers]
+
+    # Remove today's rows — will be replaced
+    kept = [r for r in existing[1:] if r and str(r[0]).strip() != today_str]
+
+    # Build today's rows from dashboard data
+    today_rows = []
+    current_model = ""
+
+    for row_data, row_type in rows_data:
+        # Track current model section
+        if row_type == "section_header_hr":
+            current_model = "HR Single"
+        elif row_type == "section_header_parlay":
+            current_model = "HR Parlay"
+        elif row_type == "section_header_ks":
+            current_model = "KS"
+        elif row_type == "section_header_hrrbi":
+            current_model = "HRRBI"
+
+        # HR singles
+        if row_type in ("data_hr_strong", "data_hr_moderate", "data_hr_light"):
+            name  = str(row_data[1]).strip()
+            team  = str(row_data[2]).strip()
+            score = str(row_data[3]).strip()
+            odds  = str(row_data[4]).strip()
+            if name and name != "—":
+                today_rows.append([today_str, "HR Single", name, team, score, "HR", odds, "", "", ""])
+
+        # Parlay legs
+        elif row_type == "data_parlay":
+            name  = str(row_data[1]).strip()
+            team  = str(row_data[2]).strip()
+            score = str(row_data[3]).strip()
+            odds  = str(row_data[4]).strip()
+            if name and name != "—":
+                today_rows.append([today_str, "HR Parlay", name, team, score, "HR", odds, "", "", ""])
+
+        # KS value plays
+        elif row_type in ("data_ks_over", "data_ks_under"):
+            pitcher   = str(row_data[1]).strip()
+            team      = str(row_data[2]).strip()
+            score     = str(row_data[3]).strip()
+            direction = str(row_data[5]).strip()
+            odds      = str(row_data[6]).strip()
+            if pitcher and pitcher != "—":
+                today_rows.append([today_str, "KS", pitcher, team, score, direction, odds, "", "", ""])
+
+        # HRRBI value plays
+        elif row_type == "data_hrrbi_value":
+            player = str(row_data[1]).strip()
+            team   = str(row_data[2]).strip()
+            score  = str(row_data[3]).strip()
+            odds   = str(row_data[5]).strip()
+            if player and player != "—":
+                today_rows.append([today_str, "HRRBI", player, team, score, "OVER 1.5", odds, "", "", ""])
+
+    if not today_rows:
+        print("Scorecard: no plays to write today.")
+        return
+
+    # Combine kept + today's rows
+    all_rows  = [headers] + kept + today_rows
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update(all_rows, value_input_option="USER_ENTERED"))
+
+    # ── Formatting ────────────────────────────────────────────────────────
+    total_rows = len(all_rows)
+    reqs       = []
+
+    # Base style
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total_rows,
+                  "startColumnIndex": 0, "endColumnIndex": 10},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_BG,
+            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
+            "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
+            "horizontalAlignment": "LEFT",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy,horizontalAlignment)",
+    }})
+
+    # Header row
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                  "startColumnIndex": 0, "endColumnIndex": 10},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_HEADER_BG,
+            "textFormat": {"foregroundColor": COLOR_GOLD, "bold": True,
+                           "fontFamily": "Roboto", "fontSize": 10},
+            "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)",
+    }})
+
+    # Model color coding
+    model_colors = {
+        "HR Single": COLOR_GOLD,
+        "HR Parlay": {"red": 0.541, "green": 0.165, "blue": 0.557},
+        "KS":        COLOR_TEAL,
+        "HRRBI":     COLOR_BLUE,
+    }
+
+    for row_idx, row in enumerate(all_rows[1:], start=1):
+        if len(row) < 2: continue
+        model = str(row[1]).strip()
+        color = model_colors.get(model)
+        bg    = COLOR_BG if row_idx % 2 == 0 else COLOR_BG_ALT
+
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 10},
+            "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+            "fields": "userEnteredFormat(backgroundColor)",
+        }})
+
+        if color:
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                          "startColumnIndex": 1, "endColumnIndex": 2},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": color, "bold": True},
+                    "horizontalAlignment": "CENTER",
+                }},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }})
+
+    # Your Odds col (7) — editable highlight
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total_rows,
+                  "startColumnIndex": 7, "endColumnIndex": 8},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": {"red": 0.10, "green": 0.10, "blue": 0.15},
+            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True},
+            "horizontalAlignment": "CENTER",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+    }})
+
+    # Result col (8) — editable highlight
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total_rows,
+                  "startColumnIndex": 8, "endColumnIndex": 9},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": {"red": 0.10, "green": 0.10, "blue": 0.15},
+            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True},
+            "horizontalAlignment": "CENTER",
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+    }})
+
+    # P&L col (9) — formula col header note
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total_rows,
+                  "startColumnIndex": 9, "endColumnIndex": 10},
+        "cell": {"userEnteredFormat": {
+            "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True},
+            "horizontalAlignment": "CENTER",
+        }},
+        "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+    }})
+
+    # Column widths
+    col_widths = [90, 80, 180, 60, 70, 130, 100, 90, 80, 80]
+    for i, w in enumerate(col_widths):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS",
+                      "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
+        }})
+
+    # Row heights
+    reqs.append({"updateDimensionProperties": {
+        "range": {"sheetId": ws_id, "dimension": "ROWS",
+                  "startIndex": 0, "endIndex": total_rows},
+        "properties": {"pixelSize": 30}, "fields": "pixelSize",
+    }})
+
+    # Freeze header
+    reqs.append({"updateSheetProperties": {
+        "properties": {
+            "sheetId": ws_id,
+            "gridProperties": {"frozenRowCount": 1},
+            "tabColorStyle": {"rgbColor": COLOR_GREEN},
+        },
+        "fields": "gridProperties.frozenRowCount,tabColorStyle",
+    }})
+
+    try:
+        with_retry(lambda: sh.batch_update({"requests": reqs}))
+        print(f"Scorecard written: {len(today_rows)} plays for {today_str}")
+    except APIError as e:
+        print(f"Scorecard formatting failed: {e}")
+
+
 def main() -> None:
     time.sleep(5)
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
@@ -1361,6 +1576,8 @@ def main() -> None:
     rows = build_rows(hr_df, ks_df, hrrbi_df, ks_hit_rates, ks_today, hr_hit_rates, hr_today, hrrbi_hit_rates, hrrbi_today)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
+    write_scorecard(gc, sheet_id, rows, today_str)
+    time.sleep(2)
     write_timestamp(gc, sheet_id)
     print("Dashboard written to 'Today's Top Picks'")
 
