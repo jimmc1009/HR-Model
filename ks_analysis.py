@@ -432,9 +432,11 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     all_values     = []
     section_starts = {}
 
+    N_COLS = 11  # max columns in sheet
+
     def add_section(title, headers, rows_data, key_fn=None):
         section_starts[title] = len(all_values)
-        n_cols = max(len(headers), total_cols)
+        n_cols = max(len(headers), N_COLS)
         all_values.append([title] + [""] * (n_cols - 1))
         all_values.append(list(headers) + [""] * (n_cols - len(headers)))
         for r in rows_data:
