@@ -685,13 +685,11 @@ def build_rows(
                 # Pool filter — three confirmed value zones:
                 # 10-11 at +301-499, 12+ at +301-499, 13+ at any up to +499
                 in_pool = (
-                    # 13+ | ≤+499
-                    (hr_score >= 13.0 and odds_val <= 499) or
-                    # 12-13 | ≤+499
-                    (hr_score >= 12.0 and hr_score < 13.0 and odds_val <= 499) or
-                    # 11-12 | ≤+300 only
+                    # 13+ | ≤+300 — 29.8% on 47 picks
+                    (hr_score >= 13.0 and odds_val <= 300) or
+                    # 11-12 | ≤+300 — 28.0% on 25 picks
                     (hr_score >= 11.0 and hr_score < 12.0 and odds_val <= 300) or
-                    # 10-11 | +301-499 only
+                    # 10-11 | +301-499 — 28.0% on 93 picks
                     (hr_score >= 10.0 and hr_score < 11.0 and 301 <= odds_val <= 499)
                 )
                 if not in_pool:
