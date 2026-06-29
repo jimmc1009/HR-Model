@@ -638,19 +638,25 @@ def build_rows(
                 else:
                     tier_tag = "⚪"
                 # Get contact quality for manual override visibility
-                barrel_7d     = safe_float(row.get("barrel_pct_7d", 0))
-                barrel_season = safe_float(row.get("season_barrel_pct", 0))
-                ev_7d         = safe_float(row.get("avg_ev_7d", 0))
-                ev_30d        = safe_float(row.get("avg_ev_30d", 0))
-                hh_7d         = safe_float(row.get("hard_hit_pct_7d", 0))
-                hh_season     = safe_float(row.get("hard_hit_pct_season", 0))
-                momentum      = safe_float(row.get("momentum_score", 0))
+                barrel_7d     = safe_float(row.get("barrel_pct_7d", ""))
+                barrel_season = safe_float(row.get("season_barrel_pct", ""))
+                ev_7d         = safe_float(row.get("avg_ev_7d", ""))
+                ev_30d        = safe_float(row.get("avg_ev_30d", ""))
+                hh_7d         = safe_float(row.get("hard_hit_pct_7d", ""))
+                hh_season     = safe_float(row.get("hard_hit_pct_season", ""))
 
-                # Contact quality summary string
-                barrel_delta = round(barrel_7d - barrel_season, 1)
-                ev_delta     = round(ev_7d - ev_30d, 1)
-                hh_delta     = round(hh_7d - hh_season, 1)
-                contact_str  = f"Brl:{barrel_delta:+.1f} EV:{ev_delta:+.1f} HH:{hh_delta:+.1f}"
+                # Only show delta if both sides have real values
+                def delta_str(recent, baseline, label):
+                    if recent == 0 or baseline == 0:
+                        return f"{label}:—"
+                    d = round(recent - baseline, 1)
+                    return f"{label}:{d:+.1f}"
+
+                contact_str = " ".join([
+                    delta_str(barrel_7d, barrel_season, "Brl"),
+                    delta_str(ev_7d, ev_30d, "EV"),
+                    delta_str(hh_7d, hh_season, "HH"),
+                ])
 
                 rows.append((pad([
                     str(i + 1),
@@ -761,10 +767,18 @@ def build_rows(
             for i, c in enumerate(selected):
                 odds_display = f"+{int(c['odds'])}"
                 # Contact quality for parlay legs
-                p_barrel_delta = round(safe_float(row.get("barrel_pct_7d", 0)) - safe_float(row.get("season_barrel_pct", 0)), 1)
-                p_ev_delta     = round(safe_float(row.get("avg_ev_7d", 0)) - safe_float(row.get("avg_ev_30d", 0)), 1)
-                p_hh_delta     = round(safe_float(row.get("hard_hit_pct_7d", 0)) - safe_float(row.get("hard_hit_pct_season", 0)), 1)
-                p_contact      = f"Brl:{p_barrel_delta:+.1f} EV:{p_ev_delta:+.1f} HH:{p_hh_delta:+.1f}"
+                def _delta(recent, baseline, label):
+                    r = safe_float(recent, "")
+                    b = safe_float(baseline, "")
+                    if r == 0 or b == 0:
+                        return f"{label}:—"
+                    return f"{label}:{round(r-b,1):+.1f}"
+
+                p_contact = " ".join([
+                    _delta(row.get("barrel_pct_7d",""), row.get("season_barrel_pct",""), "Brl"),
+                    _delta(row.get("avg_ev_7d",""), row.get("avg_ev_30d",""), "EV"),
+                    _delta(row.get("hard_hit_pct_7d",""), row.get("hard_hit_pct_season",""), "HH"),
+                ])
 
                 rows.append((pad([
                     str(i + 1),
