@@ -43,7 +43,7 @@ MIN_BBE_7D_FULL          = 20
 MIN_BBE_7D_PARTIAL       = 5
 
 PITCH_MATCHUP_WEIGHT = 1.9
-MOMENTUM_WEIGHT      = 0.5
+MOMENTUM_WEIGHT      = 1.2
 WEATHER_WEIGHT       = 1.0
 PLATOON_WEIGHT       = 1.8
 
@@ -246,7 +246,7 @@ def main():
     def compute_context(r):
         pm  = min(r["pitch_matchup_score"], 1.0) * PITCH_MATCHUP_WEIGHT
         pl  = max(-2.0, min(2.0, r["platoon_score"]))
-        mo  = max(-0.5, min(1.5, r["momentum_score"])) * MOMENTUM_WEIGHT
+        mo  = max(-1.5, min(1.5, r["momentum_score"])) * MOMENTUM_WEIGHT
         wx  = score_weather(r["hr_weather_boost"]) * WEATHER_WEIGHT
         return round(pm + pl + mo + wx, 3)
 
