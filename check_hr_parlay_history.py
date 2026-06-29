@@ -209,8 +209,9 @@ def main():
     print("POOL STATS — Value Zone Hit Rates")
     print("=" * 60)
     for label, mask in [
-        ("10-11 | +301-499", (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 12) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
-        ("12+   | +301-499", (resolved["hr_score"] >= 12) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
+        ("10-11 | +301-499", (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 11) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
+        ("11-12 | ≤+300",    (resolved["hr_score"] >= 11) & (resolved["hr_score"] < 12) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
+        ("12-13 | ≤+499",    (resolved["hr_score"] >= 12) & (resolved["hr_score"] < 13) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 499)),
         ("13+   | ≤+300",    (resolved["hr_score"] >= 13) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
         ("13+   | +301-499", (resolved["hr_score"] >= 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
     ]:
