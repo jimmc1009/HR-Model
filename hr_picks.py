@@ -204,70 +204,101 @@ def score_momentum_delta(
     barrel_5d: float, bbe_5d: float,
     season_barrel: float, pa: float,
     barrel_10d: float = 0.0, bbe_10d: float = 0.0,
+    hard_hit_7d: float = 0.0, hard_hit_season: float = 0.0,
+    ev_7d: float = 0.0, ev_30d: float = 0.0,
 ) -> tuple:
     """
-    Momentum delta — measures how a player's recent barrel% compares to
-    their own season baseline (not league average). Captures both surges
-    and cold streaks.
+    Three-metric convergence momentum signal.
+    Measures how a player's recent contact quality compares to their own
+    season baseline across barrel%, hard hit%, and exit velocity.
 
-    Blended signal: 5d (30%) + 7d (40%) + 10d (30%)
-    — smooths out single-day noise while catching sustained trends
-    — if a window lacks enough BBE, it is excluded from the blend
-    — requires minimum 5 BBE per window to use it
+    Signal only fires when multiple metrics agree on direction:
+    - All 3 agree cold → strong penalty
+    - All 3 agree hot  → strong boost
+    - 2 of 3 agree     → moderate signal
+    - Split or neutral → 0
 
-    Returns (score, description) where score is capped at ±1.5.
+    Each metric is normalized to a -1 to +1 range before combining.
+    Final score capped at ±1.5, weight applied externally.
     """
     MIN_BBE = 5
+    MIN_PA  = 50
 
-    if pa < 50 or season_barrel <= 0:
+    if pa < MIN_PA:
         return 0.0, ""
 
-    # Regress season barrel toward league avg for fair comparison
-    season_reg = regress(season_barrel, LEAGUE_AVG_SEASON_BARREL, pa, MIN_PA_FULL)
-    if season_reg <= 0:
+    signals = []
+    details = []
+
+    # ── Barrel% delta (blended 5d/7d/10d vs season) ───────────────────
+    if season_barrel > 0:
+        season_reg  = regress(season_barrel, LEAGUE_AVG_SEASON_BARREL, pa, MIN_PA_FULL)
+        barrel_deltas = []
+        for b, bbe, w in [(barrel_5d, bbe_5d, 0.30), (barrel_7d, bbe_7d, 0.40), (barrel_10d, bbe_10d, 0.30)]:
+            if bbe >= MIN_BBE:
+                barrel_deltas.append((b - season_reg) * w)
+        if barrel_deltas:
+            blended = sum(barrel_deltas) / sum(
+                w for _, bbe, w in [(barrel_5d, bbe_5d, 0.30), (barrel_7d, bbe_7d, 0.40), (barrel_10d, bbe_10d, 0.30)]
+                if bbe >= MIN_BBE
+            )
+            # Normalize: ±10 barrel points = ±1.0 signal
+            sig = max(-1.0, min(1.0, blended / 10.0))
+            signals.append(sig)
+            if abs(blended) >= 3:
+                details.append(f"Barrel% {blended:+.1f}% vs season")
+
+    # ── Hard hit% delta (7d vs season) ────────────────────────────────
+    if hard_hit_season > 0 and bbe_7d >= MIN_BBE:
+        hh_delta = hard_hit_7d - hard_hit_season
+        # Normalize: ±15 pp = ±1.0 signal
+        sig = max(-1.0, min(1.0, hh_delta / 15.0))
+        signals.append(sig)
+        if abs(hh_delta) >= 5:
+            details.append(f"HH% {hh_delta:+.1f}% vs season")
+
+    # ── EV delta (7d vs 30d as season proxy) ──────────────────────────
+    if ev_30d > 0 and bbe_7d >= MIN_BBE:
+        ev_delta = ev_7d - ev_30d
+        # Normalize: ±3 mph = ±1.0 signal
+        sig = max(-1.0, min(1.0, ev_delta / 3.0))
+        signals.append(sig)
+        if abs(ev_delta) >= 1.0:
+            details.append(f"EV {ev_delta:+.1f} mph vs 30d")
+
+    if not signals:
         return 0.0, ""
 
-    # Build blended delta across available windows
-    weighted_delta = 0.0
-    total_weight   = 0.0
-    window_deltas  = {}
+    # ── Convergence logic ─────────────────────────────────────────────
+    n          = len(signals)
+    avg_signal = sum(signals) / n
+    positives  = sum(1 for s in signals if s > 0.1)
+    negatives  = sum(1 for s in signals if s < -0.1)
 
-    for barrel, bbe, label, weight in [
-        (barrel_5d,  bbe_5d,  "5d",  0.30),
-        (barrel_7d,  bbe_7d,  "7d",  0.40),
-        (barrel_10d, bbe_10d, "10d", 0.30),
-    ]:
-        if bbe >= MIN_BBE:
-            # Raw delta vs player's own season baseline (no regression on recent)
-            delta = barrel - season_reg
-            weighted_delta += delta * weight
-            total_weight   += weight
-            window_deltas[label] = (barrel, delta)
+    # Require at least 2 of available metrics to agree
+    if n >= 2:
+        if positives < 2 and negatives < 2:
+            return 0.0, ""  # split signal — ignore
+    else:
+        # Only 1 metric available — require stronger signal
+        if abs(avg_signal) < 0.5:
+            return 0.0, ""
 
-    if total_weight == 0:
+    # Scale by agreement strength — full agreement amplifies signal
+    agreement_multiplier = positives / n if avg_signal > 0 else negatives / n
+    final_score = avg_signal * agreement_multiplier
+
+    # Cap at ±1.5
+    final_score = max(-1.5, min(1.5, final_score))
+
+    if abs(final_score) < 0.1:
         return 0.0, ""
 
-    # Normalize blend in case some windows were excluded
-    blended_delta = weighted_delta / total_weight
+    direction = "surging 🔥" if final_score >= 0.5 else                 "trending up 📈" if final_score > 0 else                 "cold ❄️" if final_score <= -0.5 else "cooling 📉"
 
-    # Cap at ±1.5 before applying weight
-    score = max(-1.5, min(1.5, blended_delta / 10.0))
+    desc = f"Contact quality {direction} ({', '.join(details)})" if details else ""
 
-    # Build description
-    direction = "surging" if blended_delta >= 5 else "trending up" if blended_delta >= 2 else                 "cold" if blended_delta <= -5 else "cooling" if blended_delta <= -2 else "neutral"
-
-    if abs(blended_delta) < 2:
-        return round(score, 3), ""
-
-    # Show which windows contributed
-    window_str = " | ".join(
-        f"{lbl}: {v[0]:.1f}%" for lbl, v in sorted(window_deltas.items())
-    )
-    emoji = "🔥" if blended_delta >= 8 else "📈" if blended_delta >= 2 else             "❄️" if blended_delta <= -8 else "📉" if blended_delta <= -2 else ""
-
-    desc = f"{emoji} Barrel% {direction} vs {season_barrel:.1f}% season ({window_str})"
-
-    return round(score, 3), desc
+    return round(final_score, 3), desc
 
 
 # ── Pitcher scoring ────────────────────────────────────────────────────────
@@ -719,7 +750,8 @@ def prepare_combined(
         "top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct",
         "bvp_pa", "bvp_hr", "bvp_iso", "bvp_barrel_pct", "bvp_hr_rate",
         "batting_avg", "park_hr_factor",
-        "avg_ev_7d", "avg_ev_5d", "avg_ev_10d",
+        "avg_ev_7d", "avg_ev_5d", "avg_ev_10d", "avg_ev_30d",
+        "hard_hit_pct_7d", "hard_hit_pct_5d", "hard_hit_pct_10d", "hard_hit_pct_season",
         "avg_la_7d", "avg_la_season", "pull_rate",
         "hr_weather_boost", "temp_f",
     ]
@@ -756,6 +788,8 @@ def prepare_combined(
             r["barrel_pct_5d"], r["bbe_5d"],
             r["season_barrel_pct"], r["pa"],
             r.get("barrel_pct_10d", 0.0), r.get("bbe_10d", 0.0),
+            r.get("hard_hit_pct_7d", 0.0), r.get("hard_hit_pct_season", 0.0),
+            r.get("avg_ev_7d", 0.0), r.get("avg_ev_30d", 0.0),
         ), axis=1
     )
     combined["momentum_score"] = momentum_results.apply(lambda x: x[0])
