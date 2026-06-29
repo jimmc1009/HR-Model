@@ -567,7 +567,7 @@ def build_rows(
     #       12-13 | +500-699 = 25.0%
     # All above breakeven — no lower odds floor needed
     rows.append((pad(["🏠  HOME RUN VALUE PLAYS — 13+ ≤+300 | 10-11 +301-499"]), "section_header_hr"))
-    rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "", "", ""]), "col_header_hr"))
+    rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Contact Quality", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
     if hr_source.empty or not hr_hit_rates:
@@ -637,13 +637,28 @@ def build_rows(
                     tier_tag = "🟡"
                 else:
                     tier_tag = "⚪"
+                # Get contact quality for manual override visibility
+                barrel_7d     = safe_float(row.get("barrel_pct_7d", 0))
+                barrel_season = safe_float(row.get("season_barrel_pct", 0))
+                ev_7d         = safe_float(row.get("avg_ev_7d", 0))
+                ev_30d        = safe_float(row.get("avg_ev_30d", 0))
+                hh_7d         = safe_float(row.get("hard_hit_pct_7d", 0))
+                hh_season     = safe_float(row.get("hard_hit_pct_season", 0))
+                momentum      = safe_float(row.get("momentum_score", 0))
+
+                # Contact quality summary string
+                barrel_delta = round(barrel_7d - barrel_season, 1)
+                ev_delta     = round(ev_7d - ev_30d, 1)
+                hh_delta     = round(hh_7d - hh_season, 1)
+                contact_str  = f"Brl:{barrel_delta:+.1f} EV:{ev_delta:+.1f} HH:{hh_delta:+.1f}"
+
                 rows.append((pad([
                     str(i + 1),
                     play["batter"],
                     play["team"],
                     f"{tier_tag} {play['score']}",
                     play["odds"],
-                    "",
+                    contact_str,
                     "",
                     "",
                 ]), f"data_hr_{'strong' if score_val >= 13 else 'moderate' if score_val >= 12 else 'light'}"))
@@ -658,7 +673,7 @@ def build_rows(
     # Leg selector: combined score of platoon + season barrel + HR/FB + weather
     # All confirmed positive separators from feature analysis
     rows.append((pad(["🎰  3-LEG HR PARLAY — Best Legs by Combined Selector"]), "section_header_parlay"))
-    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Selector", "", ""]), "col_header_parlay"))
+    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Selector", "Contact Quality", ""]), "col_header_parlay"))
 
     if hr_source.empty:
         rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
@@ -745,6 +760,12 @@ def build_rows(
         else:
             for i, c in enumerate(selected):
                 odds_display = f"+{int(c['odds'])}"
+                # Contact quality for parlay legs
+                p_barrel_delta = round(safe_float(row.get("barrel_pct_7d", 0)) - safe_float(row.get("season_barrel_pct", 0)), 1)
+                p_ev_delta     = round(safe_float(row.get("avg_ev_7d", 0)) - safe_float(row.get("avg_ev_30d", 0)), 1)
+                p_hh_delta     = round(safe_float(row.get("hard_hit_pct_7d", 0)) - safe_float(row.get("hard_hit_pct_season", 0)), 1)
+                p_contact      = f"Brl:{p_barrel_delta:+.1f} EV:{p_ev_delta:+.1f} HH:{p_hh_delta:+.1f}"
+
                 rows.append((pad([
                     str(i + 1),
                     c["batter"],
@@ -752,7 +773,7 @@ def build_rows(
                     f"{c['score']:.1f}",
                     odds_display,
                     f"{c['selector']:.3f}",
-                    "",
+                    p_contact,
                     "",
                 ]), "data_parlay"))
 
