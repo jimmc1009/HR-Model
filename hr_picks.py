@@ -33,7 +33,7 @@ MIN_BBE_7D_PARTIAL = 5
 # ── Weights (based on feature separator analysis) ──────────────────────────
 PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
-MOMENTUM_WEIGHT      = 0.0   # removed — negative separator in 5 of 6 tiers per diagnose_score
+MOMENTUM_WEIGHT      = 1.2   # rebuilt — blended barrel% delta vs personal baseline
 WEATHER_WEIGHT       = 0.3   # reduced — inconsistent by tier per diagnose_score
 
 # ── Pick criteria ──────────────────────────────────────────────────────────
@@ -203,51 +203,71 @@ def score_momentum_delta(
     barrel_7d: float, bbe_7d: float,
     barrel_5d: float, bbe_5d: float,
     season_barrel: float, pa: float,
+    barrel_10d: float = 0.0, bbe_10d: float = 0.0,
 ) -> tuple:
     """
-    Momentum delta — rewards batters whose recent barrel% significantly
-    exceeds their season average. Surfaces hot hitters not yet in top 15.
+    Momentum delta — measures how a player's recent barrel% compares to
+    their own season baseline (not league average). Captures both surges
+    and cold streaks.
 
-    Uses the best recent window (5d or 7d) vs season average.
-    Requires minimum sample on both sides to avoid noise.
-    Returns (score, description).
+    Blended signal: 5d (30%) + 7d (40%) + 10d (30%)
+    — smooths out single-day noise while catching sustained trends
+    — if a window lacks enough BBE, it is excluded from the blend
+    — requires minimum 5 BBE per window to use it
+
+    Returns (score, description) where score is capped at ±1.5.
     """
+    MIN_BBE = 5
+
     if pa < 50 or season_barrel <= 0:
         return 0.0, ""
 
     # Regress season barrel toward league avg for fair comparison
     season_reg = regress(season_barrel, LEAGUE_AVG_SEASON_BARREL, pa, MIN_PA_FULL)
-
-    # Pick best recent window with enough BBE
-    recent_barrel = None
-    recent_label  = ""
-    if bbe_7d >= MIN_BBE_7D_PARTIAL:
-        b7 = regress(barrel_7d, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
-        recent_barrel = b7
-        recent_label  = "7d"
-    if bbe_5d >= MIN_BBE_7D_PARTIAL:
-        b5 = regress(barrel_5d, LEAGUE_AVG_BARREL_7D, bbe_5d, MIN_BBE_7D_FULL)
-        if recent_barrel is None or b5 > recent_barrel:
-            recent_barrel = b5
-            recent_label  = "5d"
-
-    if recent_barrel is None:
+    if season_reg <= 0:
         return 0.0, ""
 
-    delta = recent_barrel - season_reg
+    # Build blended delta across available windows
+    weighted_delta = 0.0
+    total_weight   = 0.0
+    window_deltas  = {}
 
-    # Only reward meaningful surges, not noise
-    if delta >= 12:
-        return 1.5, f"🔥 Barrel% surging ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
-    if delta >= 8:
-        return 1.0, f"📈 Barrel% trending up ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
-    if delta >= 5:
-        return 0.5, f"↗️ Barrel% above average ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
-    # Penalize cold streaks slightly
-    if delta <= -8:
-        return -0.5, f"❄️ Barrel% cold ({recent_label}: {barrel_7d if recent_label == '7d' else barrel_5d:.1f}% vs {season_barrel:.1f}% season)"
+    for barrel, bbe, label, weight in [
+        (barrel_5d,  bbe_5d,  "5d",  0.30),
+        (barrel_7d,  bbe_7d,  "7d",  0.40),
+        (barrel_10d, bbe_10d, "10d", 0.30),
+    ]:
+        if bbe >= MIN_BBE:
+            # Raw delta vs player's own season baseline (no regression on recent)
+            delta = barrel - season_reg
+            weighted_delta += delta * weight
+            total_weight   += weight
+            window_deltas[label] = (barrel, delta)
 
-    return 0.0, ""
+    if total_weight == 0:
+        return 0.0, ""
+
+    # Normalize blend in case some windows were excluded
+    blended_delta = weighted_delta / total_weight
+
+    # Cap at ±1.5 before applying weight
+    score = max(-1.5, min(1.5, blended_delta / 10.0))
+
+    # Build description
+    direction = "surging" if blended_delta >= 5 else "trending up" if blended_delta >= 2 else                 "cold" if blended_delta <= -5 else "cooling" if blended_delta <= -2 else "neutral"
+
+    if abs(blended_delta) < 2:
+        return round(score, 3), ""
+
+    # Show which windows contributed
+    window_str = " | ".join(
+        f"{lbl}: {v[0]:.1f}%" for lbl, v in sorted(window_deltas.items())
+    )
+    emoji = "🔥" if blended_delta >= 8 else "📈" if blended_delta >= 2 else             "❄️" if blended_delta <= -8 else "📉" if blended_delta <= -2 else ""
+
+    desc = f"{emoji} Barrel% {direction} vs {season_barrel:.1f}% season ({window_str})"
+
+    return round(score, 3), desc
 
 
 # ── Pitcher scoring ────────────────────────────────────────────────────────
@@ -735,6 +755,7 @@ def prepare_combined(
             r["barrel_pct_7d"], r["bbe_7d"],
             r["barrel_pct_5d"], r["bbe_5d"],
             r["season_barrel_pct"], r["pa"],
+            r.get("barrel_pct_10d", 0.0), r.get("bbe_10d", 0.0),
         ), axis=1
     )
     combined["momentum_score"] = momentum_results.apply(lambda x: x[0])
@@ -745,7 +766,7 @@ def prepare_combined(
     # ── Cap context scores ─────────────────────────────────────────────────
     combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.0)
     combined["bvp_capped"]           = combined["bvp_score"].clip(-0.5, 1.0)
-    combined["momentum_capped"]      = combined["momentum_score"].clip(-0.5, 1.5)
+    combined["momentum_capped"]      = combined["momentum_score"].clip(-1.5, 1.5)
     combined["platoon_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
     combined["total_penalty"]        = combined["pitch_penalty"].clip(0, 2.0)
 
