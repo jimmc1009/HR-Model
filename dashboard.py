@@ -230,20 +230,23 @@ def build_ks_hit_rates(ks_all_scores: pd.DataFrame) -> dict:
             hit_rates[(tier_label, line_val, "under")] = (sub["under_bool"].mean(), len(sub))
 
             # Split by odds sign — minus money vs plus money
+            # Lower minimum to 10 for odds-split buckets since we never fall back
+            MIN_ODDS_PICKS = 10
+
             # OVER side
             over_minus = sub[sub["over_odds"] < 0]
             over_plus  = sub[sub["over_odds"] > 0]
-            if len(over_minus) >= MIN_PICKS:
+            if len(over_minus) >= MIN_ODDS_PICKS:
                 hit_rates[(tier_label, line_val, "over", "minus")] = (over_minus["over_bool"].mean(), len(over_minus))
-            if len(over_plus) >= MIN_PICKS:
+            if len(over_plus) >= MIN_ODDS_PICKS:
                 hit_rates[(tier_label, line_val, "over", "plus")]  = (over_plus["over_bool"].mean(), len(over_plus))
 
             # UNDER side
             under_minus = sub[sub["under_odds"] < 0]
             under_plus  = sub[sub["under_odds"] > 0]
-            if len(under_minus) >= MIN_PICKS:
+            if len(under_minus) >= MIN_ODDS_PICKS:
                 hit_rates[(tier_label, line_val, "under", "minus")] = (under_minus["under_bool"].mean(), len(under_minus))
-            if len(under_plus) >= MIN_PICKS:
+            if len(under_plus) >= MIN_ODDS_PICKS:
                 hit_rates[(tier_label, line_val, "under", "plus")]  = (under_plus["under_bool"].mean(), len(under_plus))
 
     print(f"  KS hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks")
@@ -385,12 +388,10 @@ def calc_ks_value(
         # Determine odds sign for this direction
         odds_sign = "minus" if odds < 0 else "plus"
 
-        # Prefer tier × line × odds sign, then tier × line, then tier only
+        # Only use odds-specific hit rate — no fallback
+        # If the specific combo (tier × line × odds sign) doesn't have
+        # enough picks, skip this play entirely
         result = hit_rates.get((tier, line, direction.lower(), odds_sign))
-        if result is None:
-            result = hit_rates.get((tier, line, direction.lower()))
-        if result is None:
-            result = hit_rates.get((tier, "any", direction.lower()))
         if result is None:
             continue
 
