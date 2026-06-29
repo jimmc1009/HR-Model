@@ -202,7 +202,8 @@ def main():
         "pitcher_barrel_pct", "pitcher_hr_per_fb",
         "platoon_score", "pitch_matchup_score", "momentum_score",
         "park_hr_factor", "hr_weather_boost",
-        "avg_ev_7d", "avg_la_7d",
+        "avg_ev_7d", "avg_ev_30d", "avg_la_7d",
+        "hard_hit_pct_7d", "hard_hit_pct_season",
     ]
     for col in num_cols:
         if col in resolved.columns:
