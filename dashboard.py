@@ -591,6 +591,8 @@ def build_rows(
                 hit_rate, breakeven, has_value, edge_str = calc_hr_value(hr_score, odds_val, hr_hit_rates)
 
                 odds_display = f"+{int(odds_val)}" if odds_val > 0 else str(int(odds_val))
+
+                # Capture contact quality HERE, per-row, while `row` is correct
                 hr_value_plays.append({
                     "batter":    batter,
                     "team":      team,
@@ -599,6 +601,12 @@ def build_rows(
                     "breakeven": breakeven,
                     "edge":      edge_str,
                     "edge_num":  float(edge_str.replace("%", "").replace("+", "")),
+                    "barrel_7d":     row.get("barrel_pct_7d", ""),
+                    "barrel_season": row.get("season_barrel_pct", ""),
+                    "ev_7d":         row.get("avg_ev_7d", ""),
+                    "ev_30d":        row.get("avg_ev_30d", ""),
+                    "hh_7d":         row.get("hard_hit_pct_7d", ""),
+                    "hh_season":     row.get("hard_hit_pct_season", ""),
                 })
             except Exception:
                 continue
@@ -638,19 +646,26 @@ def build_rows(
                 else:
                     tier_tag = "⚪"
                 # Get contact quality for manual override visibility
-                barrel_7d     = safe_float(row.get("barrel_pct_7d", ""))
-                barrel_season = safe_float(row.get("season_barrel_pct", ""))
-                ev_7d         = safe_float(row.get("avg_ev_7d", ""))
-                ev_30d        = safe_float(row.get("avg_ev_30d", ""))
-                hh_7d         = safe_float(row.get("hard_hit_pct_7d", ""))
-                hh_season     = safe_float(row.get("hard_hit_pct_season", ""))
+                # Pulled from `play` dict (captured per-row in the first loop)
+                # NOT from `row` which is stale/leftover from hr_source.iterrows()
+                barrel_7d     = safe_float(play.get("barrel_7d", ""))
+                barrel_season = safe_float(play.get("barrel_season", ""))
+                ev_7d         = safe_float(play.get("ev_7d", ""))
+                ev_30d        = safe_float(play.get("ev_30d", ""))
+                hh_7d         = safe_float(play.get("hh_7d", ""))
+                hh_season     = safe_float(play.get("hh_season", ""))
 
                 # Only show delta if both sides have real values
                 def delta_str(recent, baseline, label):
-                    if recent == 0 or baseline == 0:
+                    r = str(recent).strip()
+                    b = str(baseline).strip()
+                    if not r or not b or r in ("0", "0.0", "") or b in ("0", "0.0", ""):
                         return f"{label}:—"
-                    d = round(recent - baseline, 1)
-                    return f"{label}:{d:+.1f}"
+                    try:
+                        d = round(float(r) - float(b), 1)
+                        return f"{label}:{d:+.1f}"
+                    except Exception:
+                        return f"{label}:—"
 
                 contact_str = " ".join([
                     delta_str(barrel_7d, barrel_season, "Brl"),
@@ -734,6 +749,12 @@ def build_rows(
                     "platoon":  platoon,
                     "selector": selector,
                     "odds":     odds_val,
+                    "barrel_7d":     row.get("barrel_pct_7d", ""),
+                    "barrel_season": row.get("season_barrel_pct", ""),
+                    "ev_7d":         row.get("avg_ev_7d", ""),
+                    "ev_30d":        row.get("avg_ev_30d", ""),
+                    "hh_7d":         row.get("hard_hit_pct_7d", ""),
+                    "hh_season":     row.get("hard_hit_pct_season", ""),
                 })
             except Exception:
                 continue
@@ -768,16 +789,19 @@ def build_rows(
                 odds_display = f"+{int(c['odds'])}"
                 # Contact quality for parlay legs
                 def _delta(recent, baseline, label):
-                    r = safe_float(recent, "")
-                    b = safe_float(baseline, "")
-                    if r == 0 or b == 0:
+                    r = str(recent).strip()
+                    b = str(baseline).strip()
+                    if not r or not b or r in ("0", "0.0", "") or b in ("0", "0.0", ""):
                         return f"{label}:—"
-                    return f"{label}:{round(r-b,1):+.1f}"
+                    try:
+                        return f"{label}:{round(float(r)-float(b),1):+.1f}"
+                    except Exception:
+                        return f"{label}:—"
 
                 p_contact = " ".join([
-                    _delta(row.get("barrel_pct_7d",""), row.get("season_barrel_pct",""), "Brl"),
-                    _delta(row.get("avg_ev_7d",""), row.get("avg_ev_30d",""), "EV"),
-                    _delta(row.get("hard_hit_pct_7d",""), row.get("hard_hit_pct_season",""), "HH"),
+                    _delta(c.get("barrel_7d",""), c.get("barrel_season",""), "Brl"),
+                    _delta(c.get("ev_7d",""), c.get("ev_30d",""), "EV"),
+                    _delta(c.get("hh_7d",""), c.get("hh_season",""), "HH"),
                 ])
 
                 rows.append((pad([
