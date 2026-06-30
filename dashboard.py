@@ -422,11 +422,25 @@ def calc_ks_value(
     return best_direction, round(best_hit_rate * 100, 1), best_breakeven, True, edge_str
 
 
+def get_hrrbi_line_bucket(line: float) -> str:
+    """
+    H+R+RBI lines are fundamentally different bets — 1.5 only needs one
+    contributing event, 2.5 needs two. Never blend these in hit rate lookups.
+    """
+    if line <= 0:    return "unknown"
+    if line <= 1.5:  return "1.5"
+    if line <= 2.5:  return "2.5"
+    return "3.5+"
+
+
 def build_hrrbi_hit_rates(hrrbi_all_scores: pd.DataFrame) -> dict:
     """
     Build hit rate lookup from HRRBI_All_Scores resolved data.
-    Returns dict keyed by (score_tier, odds_zone) -> (hit_rate, n_picks)
+    Returns dict keyed by (score_tier, odds_zone, line_bucket) -> (hit_rate, n_picks)
     OVER only — no direction decision needed.
+
+    Line bucket is REQUIRED — 1.5 and 2.5 lines are different bets with
+    different hit rates and are never blended together.
     """
     hit_rates = {}
 
@@ -443,6 +457,12 @@ def build_hrrbi_hit_rates(hrrbi_all_scores: pd.DataFrame) -> dict:
     resolved["hrrbi_score"] = resolved["hrrbi_score"].apply(safe_float)
     resolved["over_odds"]   = resolved["over_odds"].apply(safe_float)
     resolved["over_bool"]   = resolved["over_hit"].astype(str).str.strip() == "Yes"
+
+    if "hrrbi_line" in resolved.columns:
+        resolved["hrrbi_line"] = resolved["hrrbi_line"].apply(safe_float)
+    else:
+        resolved["hrrbi_line"] = 0.0
+    resolved["line_bucket"] = resolved["hrrbi_line"].apply(get_hrrbi_line_bucket)
 
     tier_defs = [
         ("13-15",  13,  999),
@@ -462,19 +482,22 @@ def build_hrrbi_hit_rates(hrrbi_all_scores: pd.DataFrame) -> dict:
         ("plus_high",     121,  999),  # +121+
     ]
 
-    for tier_label, t_lo, t_hi in tier_defs:
-        tier_sub = resolved[(resolved["hrrbi_score"] >= t_lo) & (resolved["hrrbi_score"] < t_hi)]
-        if len(tier_sub) >= 15:
-            hit_rates[(tier_label, "any")] = (tier_sub["over_bool"].mean(), len(tier_sub))
-        for odds_label, o_lo, o_hi in odds_defs:
-            if o_lo < 0:
-                sub = tier_sub[(tier_sub["over_odds"] >= o_lo) & (tier_sub["over_odds"] < o_hi)]
-            else:
-                sub = tier_sub[(tier_sub["over_odds"] >= o_lo) & (tier_sub["over_odds"] < o_hi)]
-            if len(sub) >= 15:
-                hit_rates[(tier_label, odds_label)] = (sub["over_bool"].mean(), len(sub))
+    line_buckets = ["1.5", "2.5", "3.5+"]
 
-    print(f"  HRRBI hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks")
+    for line_bucket in line_buckets:
+        line_sub = resolved[resolved["line_bucket"] == line_bucket]
+        if line_sub.empty:
+            continue
+        for tier_label, t_lo, t_hi in tier_defs:
+            tier_sub = line_sub[(line_sub["hrrbi_score"] >= t_lo) & (line_sub["hrrbi_score"] < t_hi)]
+            if len(tier_sub) >= 15:
+                hit_rates[(tier_label, "any", line_bucket)] = (tier_sub["over_bool"].mean(), len(tier_sub))
+            for odds_label, o_lo, o_hi in odds_defs:
+                sub = tier_sub[(tier_sub["over_odds"] >= o_lo) & (tier_sub["over_odds"] < o_hi)]
+                if len(sub) >= 15:
+                    hit_rates[(tier_label, odds_label, line_bucket)] = (sub["over_bool"].mean(), len(sub))
+
+    print(f"  HRRBI hit rate lookup built: {len(hit_rates)} entries from {len(resolved)} resolved picks (line-aware)")
     return hit_rates
 
 
@@ -500,11 +523,15 @@ def calc_hrrbi_value(
     score: float,
     odds: float,
     hit_rates: dict,
+    line: float = 0.0,
 ) -> tuple:
     """
     Returns (hit_rate_pct, breakeven_american, has_value, edge_str)
-    OVER only — checks score tier × odds zone combo.
+    OVER only — checks score tier × odds zone × line bucket combo.
     Requires 15+ picks and 5%+ edge.
+
+    Line is REQUIRED context — 1.5 and 2.5 lines are different bets and
+    are never blended. No fallback across line buckets.
     """
     if odds == 0:
         return 0.0, "—", False, "No data"
@@ -514,15 +541,19 @@ def calc_hrrbi_value(
     if abs(odds) < 100:
         return 0.0, "—", False, "Invalid odds"
 
-    tier      = get_hrrbi_score_tier(score)
-    odds_zone = get_hrrbi_odds_zone(odds)
+    tier        = get_hrrbi_score_tier(score)
+    odds_zone   = get_hrrbi_odds_zone(odds)
+    line_bucket = get_hrrbi_line_bucket(line)
+
+    if line_bucket == "unknown":
+        return 0.0, "—", False, "No line data"
 
     MIN_PICKS    = 15
     MIN_EDGE_PCT = 0.05
 
-    # Only use tier × odds zone combo — no fallback to tier-only
-    # Prevents showing plays based on inflated overall tier rates
-    result = hit_rates.get((tier, odds_zone))
+    # Only use tier × odds zone × line bucket combo — no fallback
+    # Prevents blending 1.5 and 2.5 line hit rates together
+    result = hit_rates.get((tier, odds_zone, line_bucket))
     if result is None:
         return 0.0, "—", False, "No data"
 
@@ -935,7 +966,7 @@ def build_rows(
                 if odds_val == 0 or score == 0 or line == 0:
                     continue
 
-                hit_rate, breakeven, has_value, edge_str = calc_hrrbi_value(score, odds_val, hrrbi_hit_rates)
+                hit_rate, breakeven, has_value, edge_str = calc_hrrbi_value(score, odds_val, hrrbi_hit_rates, line)
 
                 if not has_value:
                     continue
