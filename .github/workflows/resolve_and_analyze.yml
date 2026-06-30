@@ -72,6 +72,12 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python diagnose_ks_score.py
 
+      - name: Run diagnose_ks_buckets.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python diagnose_ks_buckets.py
+
       # ── Temporary: monitoring new momentum signal rollout ──────────────────
       - name: Run debug_momentum_blanks.py
         env:
