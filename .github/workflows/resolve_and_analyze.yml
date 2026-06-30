@@ -20,6 +20,12 @@ jobs:
         run: |
           pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
 
+      - name: Run debug_contact_columns.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python debug_contact_columns.py
+
       # ── Resolve picks ─────────────────────────────────────────────────────
       - name: Run resolve_picks.py
         env:
