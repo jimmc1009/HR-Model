@@ -20,25 +20,19 @@ jobs:
         run: |
           pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
 
-      - name: Run debug_contact_columns.py
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python debug_contact_columns.py
-
-      - name: Run debug_momentum_blanks.py
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python debug_momentum_blanks.py
-
-
       # ── Resolve picks ─────────────────────────────────────────────────────
       - name: Run resolve_picks.py
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python resolve_picks.py
+
+      # ── Scorecard P&L ────────────────────────────────────────────────────
+      - name: Run resolve_scorecard.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python resolve_scorecard.py
 
       # ── Analysis ──────────────────────────────────────────────────────────
       - name: Run hr_analysis.py
@@ -59,13 +53,6 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python hrrbi_analysis.py
 
-      # ── Scorecard P&L ────────────────────────────────────────────────────
-      - name: Run resolve_scorecard.py
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python resolve_scorecard.py
-
       # ── Diagnostics ───────────────────────────────────────────────────────
       - name: Run diagnose_1112.py
         env:
@@ -79,12 +66,12 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python diagnose_score.py
 
-      - name: Run debug_top_tier.py
+      # ── Temporary: monitoring new momentum signal rollout ──────────────────
+      - name: Run debug_momentum_blanks.py
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python debug_top_tier.py
-
+        run: python debug_momentum_blanks.py
 
       # ── Dashboard ─────────────────────────────────────────────────────────
       - name: Run dashboard.py
