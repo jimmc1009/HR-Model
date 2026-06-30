@@ -85,7 +85,26 @@ def main():
             print(f"  {col}: COLUMN NOT FOUND IN HR_All_Scores HEADER")
 
     print(f"\n  Total columns in HR_All_Scores header: {len(headers2)}")
-    print(f"  Last 10 headers: {headers2[-10:]}")
+    print(f"  Full headers: {headers2}")
+
+    # Check for duplicate column names — this would corrupt DataFrame alignment
+    dupes = [h for h in set(headers2) if headers2.count(h) > 1]
+    if dupes:
+        print(f"\n  ⚠️⚠️⚠️ DUPLICATE COLUMN NAMES FOUND: {dupes}")
+        for d in dupes:
+            idxs = [i for i, h in enumerate(headers2) if h == d]
+            print(f"    '{d}' appears at indices: {idxs}")
+    else:
+        print(f"\n  No duplicate column names found.")
+
+    # Simulate dashboard's pandas read exactly
+    import pandas as pd
+    df_test = pd.DataFrame(today_rows[:10], columns=headers2)
+    print(f"\n  Pandas DataFrame read test (row 0):")
+    for col in ["avg_ev_30d", "hard_hit_pct_7d", "hard_hit_pct_season", "avg_ev_7d"]:
+        if col in df_test.columns:
+            vals = df_test[col].tolist()
+            print(f"    {col}: {vals}")
 
 if __name__ == "__main__":
     main()
