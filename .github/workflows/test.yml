@@ -31,6 +31,7 @@ on:
           - ks_analysis
           - hrrbi_analysis
           - hrrbi_picks_main
+          - hr_cards
 
 jobs:
   test:
@@ -223,6 +224,24 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python dashboard.py
+
+      - name: Run hr_cards.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'hr_cards'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hr_cards.py
+
+      - name: Upload HR cards
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'hr_cards'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hr-cards
+          path: hr_cards.html
 
       - name: Run hr_odds_backtest.py
         if: inputs.script == 'hr_odds_backtest'
