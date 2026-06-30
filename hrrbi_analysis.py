@@ -123,6 +123,20 @@ def build_analysis(df: pd.DataFrame) -> dict:
     resolved["date_dt"]      = pd.to_datetime(resolved["date"], errors="coerce")
     resolved["hrrbi_score"]  = resolved["hrrbi_score"].apply(safe_float)
 
+    # Line bucket — 1.5 and 2.5 are fundamentally different bets, never blend
+    if "hrrbi_line" in resolved.columns:
+        resolved["hrrbi_line_num"] = resolved["hrrbi_line"].apply(safe_float)
+    else:
+        resolved["hrrbi_line_num"] = 0.0
+
+    def line_bucket(v):
+        if v <= 0:   return "unknown"
+        if v <= 1.5: return "1.5"
+        if v <= 2.5: return "2.5"
+        return "3.5+"
+
+    resolved["line_bucket"] = resolved["hrrbi_line_num"].apply(line_bucket)
+
     total_resolved = len(resolved)
     total_over     = int(resolved["over_bool"].sum())
     total_under    = total_resolved - total_over
@@ -163,6 +177,21 @@ def build_analysis(df: pd.DataFrame) -> dict:
             "Over Rate %": f"{rate}%",
             "Avg Score":  avg_score,
         })
+        # Line-specific breakdown within tier
+        for lb in ["1.5", "2.5"]:
+            lsub = sub[sub["line_bucket"] == lb]
+            if len(lsub) < 5:
+                continue
+            ltotal = len(lsub)
+            lhits  = int(lsub["over_bool"].sum())
+            lrate  = round(lhits / ltotal * 100, 1)
+            score_tiers.append({
+                "Score Tier": f"  ↳ Line {lb}",
+                "Total":      ltotal,
+                "Over Hits":  lhits,
+                "Over Rate %": f"{lrate}%",
+                "Avg Score":  avg_score,
+            })
 
     # ── By Signal ──────────────────────────────────────────────────────────
     signals = []
@@ -307,46 +336,50 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("+121+ (BE: <45%)",             121,  999),
     ]
 
-    for tier_label, t_lo, t_hi in hrrbi_tier_defs:
-        tier_sub = resolved[(resolved["hrrbi_score"] >= t_lo) & (resolved["hrrbi_score"] < t_hi)]
-        if tier_sub.empty:
+    # Line is now part of the key — 1.5 and 2.5 are different bets and
+    # are NEVER blended together. This matches dashboard.py's calc_hrrbi_value.
+    line_buckets_to_show = ["1.5", "2.5"]
+
+    for line_lb in line_buckets_to_show:
+        line_sub_all = resolved[resolved["line_bucket"] == line_lb]
+        if line_sub_all.empty:
             continue
-        for odds_label, o_lo, o_hi in odds_defs:
-            # Minus odds buckets (negative numbers, lower = worse)
-            if o_hi <= 0:
-                sub = tier_sub[
-                    (tier_sub["odds_num"] >= o_lo) &
-                    (tier_sub["odds_num"] < o_hi)
-                ]
-            # Plus odds buckets
-            else:
-                sub = tier_sub[
-                    (tier_sub["odds_num"] >= o_lo) &
-                    (tier_sub["odds_num"] < o_hi)
-                ]
-
-            if len(sub) < 3:
+        for tier_label, t_lo, t_hi in hrrbi_tier_defs:
+            tier_sub = line_sub_all[(line_sub_all["hrrbi_score"] >= t_lo) & (line_sub_all["hrrbi_score"] < t_hi)]
+            if tier_sub.empty:
                 continue
+            for odds_label, o_lo, o_hi in odds_defs:
+                if o_hi <= 0:
+                    sub = tier_sub[
+                        (tier_sub["odds_num"] >= o_lo) &
+                        (tier_sub["odds_num"] < o_hi)
+                    ]
+                else:
+                    sub = tier_sub[
+                        (tier_sub["odds_num"] >= o_lo) &
+                        (tier_sub["odds_num"] < o_hi)
+                    ]
 
-            total    = len(sub)
-            hits     = int(sub["over_bool"].sum())
-            rate     = round(hits / total * 100, 1)
+                if len(sub) < 3:
+                    continue
 
-            # Calculate actual edge vs midpoint of odds bucket for context
-            # Use actual odds mean for edge calc
-            avg_odds = sub["odds_num"].mean()
-            breakeven = round(american_to_implied(avg_odds) * 100, 1)
-            edge      = round(rate - breakeven, 1)
-            edge_str  = f"+{edge}%" if edge >= 0 else f"{edge}%"
+                total    = len(sub)
+                hits     = int(sub["over_bool"].sum())
+                rate     = round(hits / total * 100, 1)
 
-            tier_odds_rows.append({
-                "Score Tier | Odds": f"{tier_label} | {odds_label}",
-                "Total":     total,
-                "Over Hits": hits,
-                "Over Rate %": f"{rate}%",
-                "Breakeven": f"{breakeven}%",
-                "Edge":      edge_str,
-            })
+                avg_odds = sub["odds_num"].mean()
+                breakeven = round(american_to_implied(avg_odds) * 100, 1)
+                edge      = round(rate - breakeven, 1)
+                edge_str  = f"+{edge}%" if edge >= 0 else f"{edge}%"
+
+                tier_odds_rows.append({
+                    "Score Tier | Odds": f"Line {line_lb} | {tier_label} | {odds_label}",
+                    "Total":     total,
+                    "Over Hits": hits,
+                    "Over Rate %": f"{rate}%",
+                    "Breakeven": f"{breakeven}%",
+                    "Edge":      edge_str,
+                })
 
     return {
         "summary":        summary,
@@ -636,7 +669,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             }})
 
     # Column widths — expanded for longer odds labels
-    col_widths = [260, 90, 90, 100, 110, 110, 80, 80]
+    col_widths = [320, 90, 90, 100, 110, 110, 80, 80]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS",
