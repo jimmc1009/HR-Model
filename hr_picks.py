@@ -1662,6 +1662,7 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "team":                   str(row.get("batter_team", "")),
             "pitcher_name":           str(row.get("opp_pitcher_name", "")),
             "pitcher_hand":           str(row.get("pitcher_hand", "")),
+            "batter_hand":            str(row.get("batter_hand", "")),
             "hr_score":               str(row.get("score", "")),
             "consensus_odds":         str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
             "barrel_pct_7d":          str(row.get("barrel_pct_7d", "")),
