@@ -117,3 +117,16 @@ jobs:
          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python dashboard.py
+
+     # ── HR Cards (styled visual view of HR Value Plays) ────────────────────
+     - name: Run hr_cards.py
+       env:
+         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+       run: python hr_cards.py
+
+     - name: Upload HR cards
+       uses: actions/upload-artifact@v4
+       with:
+         name: hr-cards
+         path: hr_cards.html
