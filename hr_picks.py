@@ -595,12 +595,34 @@ def compute_pitch_matchup_score(row: pd.Series) -> tuple:
     descriptions  = []
     pitch_penalty = 0.0
 
+    # Batter handedness determines which usage split to read. Switch hitters
+    # bat opposite the pitcher's hand, so resolve to the side they'll hit from.
+    bh = str(row.get("batter_hand", "")).strip().upper()
+    ph = str(row.get("pitcher_hand", "")).strip().upper()
+    if bh == "S":
+        bat_side = "L" if ph == "R" else "R" if ph == "L" else ""
+    elif bh in ("L", "R"):
+        bat_side = bh
+    else:
+        bat_side = ""
+
     for rank in range(1, 4):
         pitch_type = str(row.get(f"top_pitch_{rank}", "")).strip().upper()
-        pitch_pct  = safe_float(row.get(f"top_pitch_{rank}_pct", 0))
+        overall_pct = safe_float(row.get(f"top_pitch_{rank}_pct", 0))
 
         if not pitch_type or pitch_type in ("", "NAN", "NONE"):
             continue
+
+        # Prefer handedness-matched usage: how often the pitcher throws THIS
+        # pitch to batters of THIS hand. Falls back to overall usage if the
+        # split column isn't present. This fixes the case where a pitcher
+        # throws e.g. sweepers almost exclusively to same-handed batters —
+        # an opposite-handed hitter shouldn't be scored on a pitch he won't see.
+        pitch_pct = overall_pct
+        if bat_side in ("L", "R"):
+            matched = row.get(f"pitch_pct_{pitch_type}_vs_{bat_side}", None)
+            if matched is not None and str(matched).strip() not in ("", "nan", "None"):
+                pitch_pct = safe_float(matched, overall_pct)
 
         raw_batter_iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
         batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
@@ -809,6 +831,7 @@ def prepare_combined(
         if c.startswith("pitcher_iso_allowed_")
         or c.startswith("pitcher_hr_rate_allowed_")
         or c.startswith("pitcher_barrel_pct_allowed_")
+        or (c.startswith("pitch_pct_") and (c.endswith("_vs_L") or c.endswith("_vs_R")))
     ]
 
     pitcher_join_cols = [c for c in [
