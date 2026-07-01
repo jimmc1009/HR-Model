@@ -220,6 +220,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "avg_ev_10d":             "Avg EV (10d)",
         "pitch_matchup_score":    "Pitch Matchup Score",
         "platoon_score":          "Platoon Score",
+        "momentum_score":         "Momentum Score",
         "top_pitch_iso_vs_hand":  "Top Pitch ISO vs Hand",
     }
 
