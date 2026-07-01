@@ -1,4 +1,4 @@
-name: MLB Model — Test Runner
+mname: MLB Model — Test Runner
 
 on:
   workflow_dispatch:
@@ -34,6 +34,7 @@ on:
           - hrrbi_picks_main
           - hr_cards
           - extract_feature_bounds
+          - test_hand_split
 
 jobs:
   test:
@@ -150,6 +151,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python extract_feature_bounds.py
+
+      - name: Run test_hand_split.py
+        if: inputs.script == 'test_hand_split'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python test_hand_split.py
 
       - name: Run hrrbi_statcast.py
         if: >
