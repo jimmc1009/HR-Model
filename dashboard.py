@@ -597,7 +597,7 @@ def build_rows(
     #       12-13 | +301-499 = 30.0%, 13+ | +301-499 = 29.2%
     #       12-13 | +500-699 = 25.0%
     # All above breakeven — no lower odds floor needed
-    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — 13+ ≤+300 | 10-11 +301-499"]), "section_header_hr"))
+    rows.append((pad(["🏠  TOP 10 HR PICKS — v2 model (value zones TBD)"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Contact Quality", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
@@ -647,25 +647,15 @@ def build_rows(
         #   12-13 | ≤+499  — 25.0% at ≤+300, 30.4% at +301-499
         #   11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
         #   10-11 | +301-499 — 26.9%
-        def in_value_zone(score: float, odds: float) -> bool:
-            # Only two confirmed profitable zones (data as of Jun 26):
-            # 13+ | ≤+300 — 28.6% on 42 picks (breakeven ~25%)
-            # 10-11 | +301-499 — 26.0% on 77 picks (breakeven ~25%)
-            if score >= 13.0:
-                return odds <= 300
-            if score >= 10.0 and score < 11.0:
-                return 301 <= odds <= 499
-            return False
-
-        hr_value_plays = [
-            p for p in hr_value_plays
-            if in_value_zone(float(p["score"]), safe_float(p["odds"].replace("+", "")))
-        ]
+        # INTERIM (v2 model): value zones not yet established for the new
+        # scoring engine. Show the top 10 by score straight until enough
+        # resolved v2 data reveals real value zones.
+        hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
+        hr_value_plays = hr_value_plays[:10]
 
         if not hr_value_plays:
-            rows.append((pad(["—", "No value plays today — no qualifying picks in value zones", ""]), "no_plays"))
+            rows.append((pad(["—", "No HR picks today", ""]), "no_plays"))
         else:
-            hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
             for i, play in enumerate(hr_value_plays):
                 score_val = float(play["score"])
                 if score_val >= 13:
@@ -724,7 +714,7 @@ def build_rows(
     #   13+   | up to +499 — 27.6% at ≤+300, 26.9% at +301-499
     # Leg selector: combined score of platoon + season barrel + HR/FB + weather
     # All confirmed positive separators from feature analysis
-    rows.append((pad(["🎰  3-LEG HR PARLAY — Best Legs by Combined Selector"]), "section_header_parlay"))
+    rows.append((pad(["🎰  3-LEG HR PARLAY — v2 model (platoon + power selector)"]), "section_header_parlay"))
     rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Selector", "Contact Quality", ""]), "col_header_parlay"))
 
     if hr_source.empty:
@@ -750,27 +740,21 @@ def build_rows(
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                # Pool filter — three confirmed value zones:
-                # 10-11 at +301-499, 12+ at +301-499, 13+ at any up to +499
-                in_pool = (
-                    # 13+ | ≤+300 — 29.8% on 47 picks
-                    (hr_score >= 13.0 and odds_val <= 300) or
-                    # 11-12 | ≤+300 — 28.0% on 25 picks
-                    (hr_score >= 11.0 and hr_score < 12.0 and odds_val <= 300) or
-                    # 10-11 | +301-499 — 28.0% on 93 picks
-                    (hr_score >= 10.0 and hr_score < 11.0 and 301 <= odds_val <= 499)
-                )
-                if not in_pool:
-                    continue
+                # INTERIM (v2 model): value zones not yet established. Pool =
+                # the qualified top of the board at plus odds (parlay legs need
+                # plus-money payout to be worth stacking). Take a generous cut
+                # of the top scorers, then the selector ranks within it.
+                if odds_val < 100:
+                    continue  # plus odds only for parlay payout
+                if hr_score < 8.0:
+                    continue  # keep to the meaningful top of the v2 board
 
-                # Combined selector — weighted by parlay leg winner analysis
-                # Platoon: +1.131 gap (dominant), HR/FB: +1.522 gap
-                # Season barrel and weather barely separating — removed
-                # Momentum and barrel% 7d both negative — excluded
-                selector = (
-                    platoon +
-                    (hr_per_fb / 20)
-                )
+                power_norm = safe_float(row.get("power_norm", 0))
+
+                # v2 selector — platoon remains the dominant leg-winner
+                # separator; blend with power_norm (the collapsed power signal)
+                # instead of raw HR/FB so it tracks the new engine.
+                selector = platoon + (power_norm * 2.0)
 
                 parlay_candidates.append({
                     "batter":   batter,
@@ -814,7 +798,7 @@ def build_rows(
                     selected.append(c)
 
         if not selected:
-            rows.append((pad(["—", "No parlay candidates today — no qualifying picks in value zones", ""]), "no_plays"))
+            rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
         else:
             for i, c in enumerate(selected):
                 odds_display = f"+{int(c['odds'])}"
