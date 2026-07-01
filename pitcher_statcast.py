@@ -644,9 +644,35 @@ def build_pitch_mix(df: pd.DataFrame, probable_ids: Set[int]) -> pd.DataFrame:
         f"pitch_pct_{c}" if c != "pitcher" else c for c in individual_pivot.columns
     ]
 
+    # ── Handedness-split usage (pitch_pct_<TYPE>_vs_L / _vs_R) ────────────
+    # Sweepers and other pitches are often thrown far more to same-handed
+    # batters. Overall usage misleads the pitch matchup calc for opposite-
+    # handed hitters (e.g. a RHP who throws sweepers almost exclusively to
+    # RHH — a LHH essentially never sees it). Split usage by batter stand so
+    # the matchup can weight only pitches the batter will actually face.
+    hand_pivot = pd.DataFrame({"pitcher": []})
+    if "stand" in pitch_df.columns:
+        hp = pitch_df.copy()
+        hp["stand"] = hp["stand"].astype("string").str.upper().str.strip()
+        hp = hp[hp["stand"].isin(["L", "R"])]
+        if not hp.empty:
+            # total pitches per (pitcher, stand)
+            hand_total = hp.groupby(["pitcher", "stand"]).size().reset_index(name="hand_total")
+            hand_counts = hp.groupby(["pitcher", "stand", "pitch_type"]).size().reset_index(name="count")
+            hand_counts = hand_counts.merge(hand_total, on=["pitcher", "stand"], how="left")
+            hand_counts["pct"] = (hand_counts["count"] / hand_counts["hand_total"] * 100).round(2)
+            # build column key like pitch_pct_ST_vs_L
+            hand_counts["colkey"] = "pitch_pct_" + hand_counts["pitch_type"].astype(str) + "_vs_" + hand_counts["stand"].astype(str)
+            hand_pivot = hand_counts.pivot_table(
+                index="pitcher", columns="colkey", values="pct", fill_value=0,
+            ).reset_index()
+            hand_pivot.columns.name = None
+
     result = group_pivot.merge(total, on="pitcher", how="left")
     result = result.merge(top3_df, on="pitcher", how="left")
     result = result.merge(individual_pivot, on="pitcher", how="left")
+    if not hand_pivot.empty and len(hand_pivot.columns) > 1:
+        result = result.merge(hand_pivot, on="pitcher", how="left")
 
     for col in ["top_pitch_1_pct", "top_pitch_2_pct", "top_pitch_3_pct"]:
         if col in result.columns:
