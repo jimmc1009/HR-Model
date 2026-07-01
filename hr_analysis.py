@@ -138,7 +138,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "pitcher_barrel_pct", "pitcher_hr_per_fb",
         "pitcher_barrel_vs_lhh", "pitcher_barrel_vs_rhh",
         "park_hr_factor", "hr_weather_boost", "temp_f", "pitch_matchup_score",
-        "platoon_score", "top_pitch_iso_vs_hand",
+        "platoon_score", "momentum_score", "top_pitch_iso_vs_hand",
     ]
     for col in numeric_features:
         if col in scored.columns:
