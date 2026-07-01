@@ -234,7 +234,25 @@ def build_analysis(df: pd.DataFrame) -> dict:
         yes_avg  = round(yes_vals.mean(), 3)
         no_avg   = round(no_vals.mean(), 3)
         diff     = round(yes_avg - no_avg, 3)
-        pct_diff = round((diff / no_avg * 100), 1) if no_avg != 0 else 0.0
+
+        # Percentage difference is meaningless when the base is near zero
+        # (e.g. momentum_score centers on 0, so diff/base explodes into
+        # phantom hundreds-of-percent readings). When the denominator is
+        # too small to give a stable percentage, fall back to scaling the
+        # raw difference by the feature's own spread (std) so signed,
+        # zero-centered features report honestly instead of exploding.
+        MIN_DENOM = 0.5
+        if abs(no_avg) >= MIN_DENOM:
+            pct_diff = round((diff / no_avg * 100), 1)
+        else:
+            combined_std = pd.concat([yes_vals, no_vals]).std()
+            if combined_std and combined_std > 0:
+                # Express difference as % of one standard deviation, capped
+                pct_diff = round((diff / combined_std * 100), 1)
+                pct_diff = max(-99.9, min(99.9, pct_diff))
+            else:
+                pct_diff = 0.0
+
         feature_separators.append({
             "label":    label,
             "yes_avg":  yes_avg,
