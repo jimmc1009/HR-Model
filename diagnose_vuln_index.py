@@ -189,17 +189,31 @@ def main():
     scored = pool[pool["vuln_index"].notna()].copy()
     n_scored = len(scored)
 
-    # ── Honest confidence flag ──────────────────────────────────────────
+    # How many of the scored rows actually have the NEW pitcher vulnerability
+    # data (not just the old fallback columns)? The confidence flag should be
+    # based on real new-data rows, otherwise it overstates how proven this is.
+    def has_new_data(row):
+        for c in ["pitcher_hr9", "pitcher_fb_rate_allowed", "pitcher_barrel_7d"]:
+            v = str(row.get(c, "")).strip()
+            if v not in ("", "nan", "None"):
+                return True
+        return False
+
+    n_realdata = int(scored.apply(has_new_data, axis=1).sum()) if n_scored > 0 else 0
+
+    # ── Honest confidence flag — based on REAL new-column data ───────────
     print("\n" + "="*64)
-    if n_scored < 60:
-        conf = f"⏳ TOO EARLY (n={n_scored}) — need ~150+ for any real read"
-    elif n_scored < 150:
-        conf = f"🌱 PRELIMINARY (n={n_scored}) — directional only, don't trust yet"
-    elif n_scored < 250:
-        conf = f"📊 DEVELOPING (n={n_scored}) — starting to be meaningful"
+    if n_realdata < 60:
+        conf = (f"⏳ TOO EARLY — only {n_realdata} rows have real vulnerability data "
+                f"(index is running mostly on old fallback columns; wait for new data)")
+    elif n_realdata < 150:
+        conf = f"🌱 PRELIMINARY (real n={n_realdata}) — directional only, don't trust yet"
+    elif n_realdata < 250:
+        conf = f"📊 DEVELOPING (real n={n_realdata}) — starting to be meaningful"
     else:
-        conf = f"✅ TESTABLE (n={n_scored}) — holdout split is meaningful"
+        conf = f"✅ TESTABLE (real n={n_realdata}) — holdout split is meaningful"
     print(f"  CONFIDENCE: {conf}")
+    print(f"  ({n_scored} total scored rows, {n_realdata} with real new-column data)")
     print("="*64)
 
     if n_scored < 20:
