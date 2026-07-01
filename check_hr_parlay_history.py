@@ -90,16 +90,13 @@ def in_parlay_pool(score: float, odds: float) -> bool:
     """
     if odds <= 0:
         return False
-    # 13+ at any odds up to +499
-    if score >= 13.0 and odds <= 499:
+    # 13+ | ≤+300 — 29.8% on 47 picks
+    if score >= 13.0 and odds <= 300:
         return True
-    # 12-13 at any odds up to +499
-    if 12.0 <= score < 13.0 and odds <= 499:
-        return True
-    # 11-12 at short odds only — plus odds confirmed dead (5.1%)
+    # 11-12 | ≤+300 — 28.0% on 25 picks
     if 11.0 <= score < 12.0 and odds <= 300:
         return True
-    # 10-11 at +301-499 only
+    # 10-11 | +301-499 — 28.0% on 93 picks
     if 10.0 <= score < 11.0 and 301 <= odds <= 499:
         return True
     return False
@@ -209,10 +206,9 @@ def main():
     print("POOL STATS — Value Zone Hit Rates")
     print("=" * 60)
     for label, mask in [
-        ("10-11 | +301-499", (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 12) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
-        ("12+   | +301-499", (resolved["hr_score"] >= 12) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
+        ("10-11 | +301-499", (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 11) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
+        ("11-12 | ≤+300",    (resolved["hr_score"] >= 11) & (resolved["hr_score"] < 12) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
         ("13+   | ≤+300",    (resolved["hr_score"] >= 13) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
-        ("13+   | +301-499", (resolved["hr_score"] >= 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
     ]:
         sub = resolved[mask]
         if sub.empty:

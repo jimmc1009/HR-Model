@@ -19,6 +19,7 @@ on:
           - weather
           - odds
           - hr_picks
+          - hr_picks_v1
           - hrrbi_statcast
           - hrrbi_picks
           - ks_statcast
@@ -31,17 +32,22 @@ on:
           - ks_analysis
           - hrrbi_analysis
           - hrrbi_picks_main
+          - hr_cards
+          - extract_feature_bounds
 
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repo (dev branch)
         uses: actions/checkout@v3
         with:
           ref: dev
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -60,6 +66,7 @@ jobs:
           inputs.script == 'full_ks' ||
           inputs.script == 'main' ||
           inputs.script == 'hr_picks' ||
+          inputs.script == 'hr_picks_v1' ||
           inputs.script == 'hrrbi_picks' ||
           inputs.script == 'ks_picks'
         env:
@@ -72,7 +79,8 @@ jobs:
           inputs.script == 'full' ||
           inputs.script == 'full_hr' ||
           inputs.script == 'pitcher_statcast' ||
-          inputs.script == 'hr_picks'
+          inputs.script == 'hr_picks' ||
+          inputs.script == 'hr_picks_v1'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
@@ -86,6 +94,7 @@ jobs:
           inputs.script == 'full_ks' ||
           inputs.script == 'park_factors' ||
           inputs.script == 'hr_picks' ||
+          inputs.script == 'hr_picks_v1' ||
           inputs.script == 'hrrbi_picks' ||
           inputs.script == 'ks_picks'
         env:
@@ -98,7 +107,8 @@ jobs:
           inputs.script == 'full' ||
           inputs.script == 'full_hr' ||
           inputs.script == 'weather' ||
-          inputs.script == 'hr_picks'
+          inputs.script == 'hr_picks' ||
+          inputs.script == 'hr_picks_v1'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
@@ -109,7 +119,8 @@ jobs:
           inputs.script == 'full' ||
           inputs.script == 'full_hr' ||
           inputs.script == 'odds' ||
-          inputs.script == 'hr_picks'
+          inputs.script == 'hr_picks' ||
+          inputs.script == 'hr_picks_v1'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
@@ -125,6 +136,20 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks.py
+
+      - name: Run hr_picks_v1.py (frozen old model -> HR_All_Scores_v1)
+        if: inputs.script == 'hr_picks_v1'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hr_picks_v1.py
+
+      - name: Run extract_feature_bounds.py
+        if: inputs.script == 'extract_feature_bounds'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python extract_feature_bounds.py
 
       - name: Run hrrbi_statcast.py
         if: >
@@ -223,6 +248,35 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python dashboard.py
+
+      - name: Run hr_cards.py
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'hr_cards'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hr_cards.py
+
+      - name: Upload HR cards (artifact backup)
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'hr_cards'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hr-cards
+          path: hr_cards.html
+
+      - name: Commit HR cards to repo
+        if: >
+          inputs.script == 'full' ||
+          inputs.script == 'hr_cards'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hr_cards.html
+          git diff --staged --quiet || git commit -m "Update hr_cards.html [auto]"
+          git push origin dev
 
       - name: Run hr_odds_backtest.py
         if: inputs.script == 'hr_odds_backtest'
