@@ -597,7 +597,7 @@ def build_rows(
     #       12-13 | +301-499 = 30.0%, 13+ | +301-499 = 29.2%
     #       12-13 | +500-699 = 25.0%
     # All above breakeven — no lower odds floor needed
-    rows.append((pad(["🏠  TOP 10 HR PICKS — v2 model (value zones TBD)"]), "section_header_hr"))
+    rows.append((pad(["🏠  HOME RUN VALUE PLAYS — 13+ ≤+499 | 10-11 +301-499"]), "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Contact Quality", "", ""]), "col_header_hr"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
@@ -642,20 +642,29 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter — four confirmed value zones (data-driven):
-        #   13+   | ≤+499  — 30.6% at ≤+300, 25.8% at +301-499
-        #   12-13 | ≤+499  — 25.0% at ≤+300, 30.4% at +301-499
-        #   11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
-        #   10-11 | +301-499 — 26.9%
-        # INTERIM (v2 model): value zones not yet established for the new
-        # scoring engine. Show the top 10 by score straight until enough
-        # resolved v2 data reveals real value zones.
-        hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
-        hr_value_plays = hr_value_plays[:10]
+        # Filter — three confirmed value zones that clear TRUE breakeven
+        # (breakeven ~28-30% at ≤+300, ~19-20% at +301-499):
+        #   13+   | ≤+300      — 28.6% (marginal but positive)
+        #   13+   | +301-499   — 25.9% (strong; breakeven ~19%)
+        #   10-11 | +301-499   — 26.2% (strongest sample, 103 picks)
+        def in_value_zone(score: float, odds: float) -> bool:
+            if score >= 13.0 and odds <= 300:
+                return True
+            if score >= 13.0 and 301 <= odds <= 499:
+                return True
+            if 10.0 <= score < 11.0 and 301 <= odds <= 499:
+                return True
+            return False
+
+        hr_value_plays = [
+            p for p in hr_value_plays
+            if in_value_zone(float(p["score"]), safe_float(p["odds"].replace("+", "")))
+        ]
 
         if not hr_value_plays:
-            rows.append((pad(["—", "No HR picks today", ""]), "no_plays"))
+            rows.append((pad(["—", "No value plays today — no qualifying picks in value zones", ""]), "no_plays"))
         else:
+            hr_value_plays.sort(key=lambda x: float(x["score"]), reverse=True)
             for i, play in enumerate(hr_value_plays):
                 score_val = float(play["score"])
                 if score_val >= 13:
@@ -714,7 +723,7 @@ def build_rows(
     #   13+   | up to +499 — 27.6% at ≤+300, 26.9% at +301-499
     # Leg selector: combined score of platoon + season barrel + HR/FB + weather
     # All confirmed positive separators from feature analysis
-    rows.append((pad(["🎰  3-LEG HR PARLAY — v2 model (platoon + power selector)"]), "section_header_parlay"))
+    rows.append((pad(["🎰  3-LEG HR PARLAY — Best Legs by Combined Selector"]), "section_header_parlay"))
     rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Selector", "Contact Quality", ""]), "col_header_parlay"))
 
     if hr_source.empty:

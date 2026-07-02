@@ -363,13 +363,10 @@ def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
         actual_total = hrrbi_results.get((row_date, player_norm))
 
         if actual_total is None:
-            # Check if player appeared in any boxscore that day
             if (row_date, player_norm) in hrrbi_appeared:
-                # Player was in roster but didn't bat — DNP/scratch
                 log.at[idx, "win"] = "Void"
                 voided += 1
             else:
-                # Not found at all — could be name mismatch, resolve as No
                 log.at[idx, "win"] = "No"
         else:
             log.at[idx, "win"] = "Yes" if actual_total > line else "No"
@@ -390,16 +387,16 @@ def resolve_hrrbi_log(gc: gspread.Client, sheet_id: str) -> pd.DataFrame:
     return log
 
 
-def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
+def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str, tab_name: str = "HR_All_Scores") -> None:
     today_str = date.today().strftime("%Y-%m-%d")
-    log       = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
+    log       = read_sheet_raw(gc, sheet_id, tab_name)
 
     if log.empty:
-        print("HR_All_Scores is empty.")
+        print(f"{tab_name} is empty.")
         return
 
     if "hit_hr" not in log.columns:
-        print("HR_All_Scores missing hit_hr column.")
+        print(f"{tab_name} missing hit_hr column.")
         return
 
     pending = log[
@@ -409,11 +406,11 @@ def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
     ].copy()
 
     if pending.empty:
-        print("No pending HR_All_Scores to resolve.")
+        print(f"No pending {tab_name} to resolve.")
         return
 
     pending_dates = sorted(pending["date"].astype(str).str.strip().unique().tolist())
-    print(f"Resolving {len(pending)} pending HR_All_Scores across {len(pending_dates)} dates...")
+    print(f"Resolving {len(pending)} pending {tab_name} across {len(pending_dates)} dates...")
 
     hr_lookup      = set()
     appeared_lookup = set()
@@ -440,10 +437,8 @@ def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
         if (row_date, player_norm) in hr_lookup:
             log.at[idx, "hit_hr"] = "Yes"
         elif (row_date, player_norm) in appeared_lookup:
-            # Player was in roster but didn't hit HR — No
             log.at[idx, "hit_hr"] = "No"
         else:
-            # Not in any boxscore roster — DNP/scratch, void
             log.at[idx, "hit_hr"] = "Void"
             voided += 1
         resolved += 1
@@ -451,18 +446,18 @@ def resolve_hr_all_scores(gc: gspread.Client, sheet_id: str) -> None:
     yes_count  = (log["hit_hr"] == "Yes").sum()
     no_count   = (log["hit_hr"] == "No").sum()
     void_count = (log["hit_hr"] == "Void").sum()
-    print(f"Resolved {resolved} HR_All_Scores. Yes: {yes_count} | No: {no_count} | Void: {void_count}")
+    print(f"Resolved {resolved} {tab_name}. Yes: {yes_count} | No: {no_count} | Void: {void_count}")
 
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
-        ws = sh.worksheet("HR_All_Scores")
+        ws = sh.worksheet(tab_name)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="HR_All_Scores", rows=10000, cols=40)
+        ws = sh.add_worksheet(title=tab_name, rows=10000, cols=40)
 
     log = log.fillna("").replace([np.inf, -np.inf], "")
     with_retry(lambda: ws.clear())
     with_retry(lambda: ws.update([log.columns.tolist()] + log.astype(str).values.tolist()))
-    print("HR_All_Scores updated.")
+    print(f"{tab_name} updated.")
 
 
 def resolve_ks_all_scores(gc: gspread.Client, sheet_id: str) -> None:
@@ -583,7 +578,6 @@ def resolve_hrrbi_all_scores(gc: gspread.Client, sheet_id: str) -> None:
             log.at[idx, "over_hit"]     = "Yes" if actual_total > line else "No"
             log.at[idx, "under_hit"]    = "Yes" if actual_total < line else "No"
         elif (row_date, player_norm) in hrrbi_appeared:
-            # Player was in roster but didn't bat — DNP/scratch, void it
             log.at[idx, "actual_hrrbi"] = "Void"
             log.at[idx, "over_hit"]     = "Void"
             log.at[idx, "under_hit"]    = "Void"
@@ -882,9 +876,15 @@ def main() -> None:
     gc       = get_gspread_client()
 
     print("=" * 50)
-    print("Resolving HR All Scores...")
+    print("Resolving HR All Scores (v1 live)...")
     print("=" * 50)
-    resolve_hr_all_scores(gc, sheet_id)
+    resolve_hr_all_scores(gc, sheet_id, "HR_All_Scores")
+    time.sleep(5)
+
+    print("=" * 50)
+    print("Resolving HR All Scores (v2 shadow)...")
+    print("=" * 50)
+    resolve_hr_all_scores(gc, sheet_id, "HR_All_Scores_v2")
     time.sleep(5)
 
     print("=" * 50)

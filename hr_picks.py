@@ -36,142 +36,6 @@ BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.2   # rebuilt — blended barrel% delta vs personal baseline
 WEATHER_WEIGHT       = 0.3   # reduced — inconsistent by tier per diagnose_score
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# NEW SCORING ENGINE (v2) — percentile-normalized power stack + progressive
-# context weighting. Designed to (a) de-correlate the redundant power features
-# so the same slugger archetype stops dominating, and (b) let differentiators
-# (platoon, matchup, park, weather) actually move the score, scaled by context.
-#
-# Bounds below are p5 (floor) / p95 (ceiling) from extract_feature_bounds.py
-# run on real HR_All_Scores data (6042 rows from 2026-06-09).
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Percentile bounds: (floor_p5, ceiling_p95)
-V2_BOUNDS = {
-    "season_barrel_pct": (0.9, 15.75),
-    "barrel_pct_7d":     (0.0, 25.0),
-    "barrel_pct_5d":     (0.0, 27.0),
-    "barrel_pct_10d":    (0.0, 22.0),
-    "iso":               (0.07, 0.27),
-    "hr_per_fb":         (0.0, 28.0),
-    "hr_per_pa":         (0.0, 6.0),
-    "avg_la_7d":         (-2.44, 29.67),
-    "pitcher_barrel_pct":(3.77, 11.96),
-    "pitcher_hr_per_fb": (5.97, 22.67),
-}
-
-# Power blend weights — season anchors (clean distribution); recent windows
-# down-weighted because they're extremely noisy (p25=0 for all recent barrel).
-V2_POWER_BLEND = {
-    "season_barrel_pct": 0.30,
-    "hr_per_fb":         0.20,
-    "hr_per_pa":         0.15,
-    "iso":               0.15,
-    "barrel_pct_7d":     0.08,
-    "barrel_pct_10d":    0.07,
-    "barrel_pct_5d":     0.05,
-}
-
-# Scaling: normalized power (0-1) -> points. Keeps power meaningful but as ONE
-# component instead of six, so it can't six-count the same slugger.
-V2_POWER_SCALE = 8.0
-
-# Progressive context weights by power tier. Data-driven from this session:
-#  - platoon strong at 9-11 (+59.5%), negative at 13+ (-34.8%) -> decay upward
-#  - pitch matchup + weather are the ONLY separators still positive in the
-#    restricted >=10 pool -> hold/raise them at the top
-# Tiers keyed by normalized power (0-1).
-def v2_context_weights(power_norm: float) -> dict:
-    """Return context feature weights that scale with power tier."""
-    if power_norm >= 0.80:        # elite power — power dominates, matchup/weather still matter
-        return {"platoon": 0.6, "pitch_matchup": 2.2, "weather": 0.8, "park": 0.6, "la": 0.3, "vuln": 1.0}
-    elif power_norm >= 0.55:      # strong power — balanced
-        return {"platoon": 1.2, "pitch_matchup": 1.9, "weather": 0.5, "park": 0.5, "la": 0.4, "vuln": 0.7}
-    else:                         # mid/lower — platoon & matchup do the separating
-        return {"platoon": 1.8, "pitch_matchup": 1.7, "weather": 0.3, "park": 0.4, "la": 0.5, "vuln": 0.5}
-
-
-def v2_norm(val, col) -> float:
-    """Normalize a value to 0-1 using p5/p95 bounds. NaN-safe -> 0."""
-    v = safe_float(val, np.nan)
-    if pd.isna(v) or col not in V2_BOUNDS:
-        return 0.0
-    lo, hi = V2_BOUNDS[col]
-    if hi <= lo:
-        return 0.0
-    return max(0.0, min(1.0, (v - lo) / (hi - lo)))
-
-
-def v2_power_score(row) -> tuple:
-    """Blended, percentile-normalized power (0-1) and scaled points."""
-    pa = safe_float(row.get("pa", 0))
-    # Light regression toward 0 for tiny samples handled by bounds already;
-    # just blend normalized components.
-    blend = 0.0
-    for col, w in V2_POWER_BLEND.items():
-        blend += v2_norm(row.get(col), col) * w
-    # blend is 0-1 (weights sum to 1.0)
-    power_norm = round(blend, 4)
-    power_pts  = round(power_norm * V2_POWER_SCALE, 3)
-    return power_norm, power_pts
-
-
-def v2_pitcher_vuln(row) -> float:
-    """Handedness-aware pitcher vulnerability, normalized 0-1.
-    Higher = more homer-prone pitcher = good for the batter."""
-    bh = str(row.get("batter_hand", "")).strip().upper()
-    # handedness-matched barrel if available
-    if bh == "L":
-        matched = safe_float(row.get("pitcher_vs_lhh_barrel_pct"), np.nan)
-    elif bh == "R":
-        matched = safe_float(row.get("pitcher_vs_rhh_barrel_pct"), np.nan)
-    else:
-        matched = np.nan
-    if pd.isna(matched):
-        matched = safe_float(row.get("pitcher_barrel_pct"), np.nan)
-    barrel_norm = v2_norm(matched, "pitcher_barrel_pct")
-    hrfb_norm   = v2_norm(row.get("pitcher_hr_per_fb"), "pitcher_hr_per_fb")
-    return round((barrel_norm * 0.6 + hrfb_norm * 0.4), 4)
-
-
-def v2_park_signal(row) -> float:
-    """Park HR factor centered: >100 helps, <100 hurts. Range roughly -1..+1."""
-    pf = safe_float(row.get("park_hr_factor", 100), 100)
-    return max(-1.0, min(1.0, (pf - 100.0) / 25.0))
-
-
-def v2_la_signal(row) -> float:
-    """Launch angle 7d normalized 0-1 (showed +10.6% separator)."""
-    return v2_norm(row.get("avg_la_7d"), "avg_la_7d")
-
-
-def compute_score_v2(row) -> tuple:
-    """
-    New progressive score. Returns (score, power_norm, breakdown_dict).
-    Power is ONE normalized component; context weights scale with power tier.
-    """
-    power_norm, power_pts = v2_power_score(row)
-    w = v2_context_weights(power_norm)
-
-    platoon = max(-2.0, min(2.0, safe_float(row.get("platoon_score", 0)))) * w["platoon"]
-    pm      = max(0.0, min(3.32, safe_float(row.get("pitch_matchup_score", 0)))) * w["pitch_matchup"]
-    weather = score_weather_boost(safe_float(row.get("hr_weather_boost", 0))) * w["weather"]
-    park    = v2_park_signal(row) * w["park"]
-    la      = v2_la_signal(row) * w["la"]
-    vuln    = v2_pitcher_vuln(row) * w["vuln"]
-    wind    = score_wind_context(row.get("wind_context", ""))
-
-    score = round(power_pts + platoon + pm + weather + park + la + vuln + wind, 3)
-
-    breakdown = {
-        "power_norm": power_norm, "power_pts": power_pts,
-        "platoon": round(platoon, 2), "pitch_matchup": round(pm, 2),
-        "weather": round(weather, 2), "park": round(park, 2),
-        "la": round(la, 2), "vuln": round(vuln, 2), "wind": round(wind, 2),
-    }
-    return score, power_norm, breakdown
-
 # ── Pick criteria ──────────────────────────────────────────────────────────
 MIN_SCORE_FLOOR  = 10.0
 MIN_ODDS         = 301       # no chalk — ≤+300 hits only 9% (below baseline)
@@ -951,11 +815,32 @@ def prepare_combined(
     combined["platoon_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
     combined["total_penalty"]        = combined["pitch_penalty"].clip(0, 2.0)
 
-    # ── Final score (v2 — percentile-normalized power + progressive context) ─
-    v2_results = combined.apply(compute_score_v2, axis=1)
-    combined["score"]        = v2_results.apply(lambda x: x[0])
-    combined["power_norm"]   = v2_results.apply(lambda x: x[1])
-    combined["v2_breakdown"] = v2_results.apply(lambda x: json.dumps(x[2]))
+    # ── Final score ────────────────────────────────────────────────────────
+    combined["score"] = (
+        # Barrel% windows — strongest predictors
+        combined.apply(lambda r: score_barrel_pct_7d(r["barrel_pct_7d"], r["bbe_7d"]), axis=1) +
+        combined.apply(lambda r: score_barrel_pct_5d(r["barrel_pct_5d"], r["bbe_5d"]), axis=1) +
+        combined.apply(lambda r: score_barrel_pct_10d(r["barrel_pct_10d"], r["bbe_10d"]), axis=1) +
+        combined.apply(lambda r: score_season_barrel_pct(r["season_barrel_pct"], r["pa"]), axis=1) +
+        # Power metrics
+        combined.apply(lambda r: score_hr_per_fb(r["hr_per_fb"], r["pa"]), axis=1) +
+        combined.apply(lambda r: score_hr_per_pa(r["hr_per_pa"], r["pa"]), axis=1) +
+        combined.apply(lambda r: score_iso(r["iso"], r["pa"]), axis=1) +
+        # Pitcher side — light weight
+        combined["pitcher_barrel_pct"].apply(score_pitcher_barrel_pct) +
+        combined["pitcher_hr_per_fb"].apply(score_pitcher_hr_per_fb) -
+        combined.apply(lambda r: score_pitcher_quality_penalty(
+            r["pitcher_barrel_pct"], r["pitcher_hr_per_fb"], r["pitcher_bbe_allowed"]
+        ), axis=1) +
+        # Context — capped
+        combined["pitch_matchup_capped"] * PITCH_MATCHUP_WEIGHT +
+        combined["bvp_capped"]           * BVP_WEIGHT +
+        combined["momentum_capped"]      * MOMENTUM_WEIGHT +
+        combined["platoon_capped"] +
+        combined["hr_weather_boost"].apply(score_weather_boost) * WEATHER_WEIGHT +
+        combined["wind_context"].apply(score_wind_context) -
+        combined["total_penalty"]
+    ).round(3)
 
     # ── Deduplicate — keep highest score per player ───────────────────────
     # Prevents duplicate rows when pitcher sheet has multiple entries per team
@@ -1801,8 +1686,6 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "avg_ev_30d":             str(row.get("avg_ev_30d", "")),
             "hard_hit_pct_7d":        str(row.get("hard_hit_pct_7d", "")),
             "hard_hit_pct_season":    str(row.get("hard_hit_pct_season", "")),
-            "power_norm":             str(row.get("power_norm", "")),
-            "v2_breakdown":           str(row.get("v2_breakdown", "")),
             "avg_la_7d":              str(row.get("avg_la_7d", "")),
             "avg_la_season":          str(row.get("avg_la_season", "")),
             "iso":                    str(row.get("iso", "")),
