@@ -749,20 +749,21 @@ def build_rows(
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                # INTERIM (v2 model): value zones not yet established, and the
-                # v2 score scale isn't calibrated yet. Rather than a hardcoded
-                # score cutoff, take all plus-odds candidates here, then keep
-                # only the top 20 by score below (relative, self-adjusting to
-                # wherever v2 scores land each day).
-                if odds_val < 100:
-                    continue  # plus odds only for parlay payout
+                # Pool filter — confirmed value zones (same as singles logic,
+                # plus 12-13 +301-499 which backtests strong for parlay legs):
+                in_pool = (
+                    (hr_score >= 13.0 and odds_val <= 300) or
+                    (hr_score >= 13.0 and 301 <= odds_val <= 499) or
+                    (12.0 <= hr_score < 13.0 and 301 <= odds_val <= 499) or
+                    (10.0 <= hr_score < 11.0 and 301 <= odds_val <= 499)
+                )
+                if not in_pool:
+                    continue
 
-                power_norm = safe_float(row.get("power_norm", 0))
-
-                # v2 selector — platoon remains the dominant leg-winner
-                # separator; blend with power_norm (the collapsed power signal)
-                # instead of raw HR/FB so it tracks the new engine.
-                selector = platoon + (power_norm * 2.0)
+                # Combined selector — platoon (dominant leg-winner separator)
+                # + HR/FB%. Both confirmed positive on winning legs; this
+                # backtested clearly better than the power_norm blend.
+                selector = platoon + (hr_per_fb / 20)
 
                 parlay_candidates.append({
                     "batter":   batter,
@@ -781,11 +782,6 @@ def build_rows(
                 })
             except Exception:
                 continue
-
-        # Relative pool: keep only the top 20 scorers at plus odds, then let
-        # the selector rank within that. Self-adjusts to the v2 score scale.
-        parlay_candidates.sort(key=lambda x: -x["score"])
-        parlay_candidates = parlay_candidates[:20]
 
         # Rank by combined selector score
         parlay_candidates.sort(key=lambda x: -x["selector"])
