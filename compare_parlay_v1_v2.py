@@ -122,13 +122,15 @@ def selector_v2(row):
     return safe_float(row.get("platoon_score", 0)) + compute_power_norm(row) * 2.0
 
 
-def build_parlay_v2(day_df, floor=0.0):
-    """v2 parlay: plus-odds pool, score>=floor, keep top 20 by score, selector ranks."""
+def build_parlay_v2(day_df, floor=0.0, use_old_selector=False):
+    """v2 parlay: plus-odds pool, score>=floor, keep top 20 by score, selector ranks.
+    use_old_selector=True swaps in v1's platoon + hr_per_fb/20 leg picker."""
     pool = day_df[(day_df["odds_num"] >= 100) & (day_df["hr_score"] >= floor)].copy()
     if pool.empty:
         return []
     pool = pool.sort_values("hr_score", ascending=False).head(20)
-    pool["sel"] = pool.apply(selector_v2, axis=1)
+    sel_fn = selector_v1 if use_old_selector else selector_v2
+    pool["sel"] = pool.apply(sel_fn, axis=1)
     pool = pool.sort_values("sel", ascending=False).reset_index(drop=True)
 
     selected, used = [], set()
@@ -255,27 +257,38 @@ def main():
     r1 = evaluate(df, build_parlay_v1, "v1 — OLD zones + old selector")
 
     floors = [8.0, 10.0, 11.0, 12.0, 13.0, 14.0]
-    v2_results = {}
+    v2_pn = {}   # power_norm selector
+    v2_hf = {}   # old hr_per_fb selector on v2-style pool
     for fl in floors:
-        v2_results[fl] = evaluate(
+        v2_pn[fl] = evaluate(
             df, lambda d, _fl=fl: build_parlay_v2(d, floor=_fl),
-            f"v2 — score>={_fl_label(fl)} pool + power_norm selector"
+            f"v2 pool>={_fl_label(fl)} + power_norm selector"
+        )
+    for fl in floors:
+        v2_hf[fl] = evaluate(
+            df, lambda d, _fl=fl: build_parlay_v2(d, floor=_fl, use_old_selector=True),
+            f"v2 pool>={_fl_label(fl)} + OLD hr_per_fb selector"
         )
 
     print("\n" + "="*64)
-    print("VERDICT — v1 baseline vs v2 at each floor")
+    print("VERDICT — v1 baseline vs v2 pools, both selectors")
     print("="*64)
-    print(f"\n  {'Strategy':<22} {'Parlays':>8} {'Leg%':>8} {'All3%':>8} {'ROI%':>10}")
-    print(f"  {'-'*58}")
-    print(f"  {'v1 (old)':<22} {r1['parlays']:>8} {r1['leg_rate']:>7.1f}% {r1['win_rate']:>7.1f}% {r1['roi']:>+9.1f}%")
+    print(f"\n  {'Strategy':<34} {'Parlays':>7} {'Leg%':>7} {'All3%':>7}")
+    print(f"  {'-'*57}")
+    print(f"  {'v1 (old zones + old selector)':<34} {r1['parlays']:>7} {r1['leg_rate']:>6.1f}% {r1['win_rate']:>6.1f}%")
+    print(f"  {'--- v2 pool + power_norm selector ---':<34}")
     for fl in floors:
-        r = v2_results[fl]
-        print(f"  {'v2 floor '+_fl_label(fl):<22} {r['parlays']:>8} {r['leg_rate']:>7.1f}% {r['win_rate']:>7.1f}% {r['roi']:>+9.1f}%")
+        r = v2_pn[fl]
+        print(f"  {'  floor '+_fl_label(fl):<34} {r['parlays']:>7} {r['leg_rate']:>6.1f}% {r['win_rate']:>6.1f}%")
+    print(f"  {'--- v2 pool + OLD hr_per_fb selector ---':<34}")
+    for fl in floors:
+        r = v2_hf[fl]
+        print(f"  {'  floor '+_fl_label(fl):<34} {r['parlays']:>7} {r['leg_rate']:>6.1f}% {r['win_rate']:>6.1f}%")
 
     print("\n  Per-leg hit rate is the trustworthy metric at this sample.")
-    print("  ROI/All3 are noisy with ~22 parlays — don't over-read them.")
-    print("  NOTE: most history is old-model scores; floors filter on the")
-    print("  old scale for old rows. Directional until v2 data dominates.")
+    print("  If the OLD-selector rows beat the power_norm rows, the selector")
+    print("  (not the pool) is what hurt v2 — revert just the parlay selector.")
+    print("  NOTE: most history is old-model scores. Directional.")
     print("\nDone.")
 
 
