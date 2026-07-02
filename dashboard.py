@@ -740,14 +740,13 @@ def build_rows(
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                # INTERIM (v2 model): value zones not yet established. Pool =
-                # the qualified top of the board at plus odds (parlay legs need
-                # plus-money payout to be worth stacking). Take a generous cut
-                # of the top scorers, then the selector ranks within it.
+                # INTERIM (v2 model): value zones not yet established, and the
+                # v2 score scale isn't calibrated yet. Rather than a hardcoded
+                # score cutoff, take all plus-odds candidates here, then keep
+                # only the top 20 by score below (relative, self-adjusting to
+                # wherever v2 scores land each day).
                 if odds_val < 100:
                     continue  # plus odds only for parlay payout
-                if hr_score < 8.0:
-                    continue  # keep to the meaningful top of the v2 board
 
                 power_norm = safe_float(row.get("power_norm", 0))
 
@@ -773,6 +772,11 @@ def build_rows(
                 })
             except Exception:
                 continue
+
+        # Relative pool: keep only the top 20 scorers at plus odds, then let
+        # the selector rank within that. Self-adjusts to the v2 score scale.
+        parlay_candidates.sort(key=lambda x: -x["score"])
+        parlay_candidates = parlay_candidates[:20]
 
         # Rank by combined selector score
         parlay_candidates.sort(key=lambda x: -x["selector"])
