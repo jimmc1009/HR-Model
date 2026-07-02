@@ -92,7 +92,20 @@ def get_hr_score_tier(score):
     return "8.5-9"
 
 
+def _odds_zone_key(odds):
+    if odds <= 300:
+        return "le300"
+    if 301 <= odds <= 499:
+        return "301-499"
+    if 500 <= odds <= 699:
+        return "500-699"
+    return "700plus"
+
+
 def build_hr_hit_rates(hr_all_scores):
+    """Hit-rate lookup keyed by (tier, odds_zone) so card rates match the
+    HR Analysis cross-tab (e.g. 13+ ≤+300 = 28.6% / 56, not the odds-blind
+    whole-tier rate). Also stores tier-only rates as a fallback."""
     hit_rates = {}
     if hr_all_scores.empty:
         return hit_rates
@@ -109,15 +122,24 @@ def build_hr_hit_rates(hr_all_scores):
 
     resolved["hr_score"] = resolved["hr_score"].apply(safe_float)
     resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
+    resolved["odds_num"] = resolved["consensus_odds"].apply(safe_float)
 
     tier_defs = [
         ("13+", 13, 999), ("12-13", 12, 13), ("11-12", 11, 12),
         ("10-11", 10, 11), ("9-10", 9, 10), ("8.5-9", 8.5, 9),
     ]
+    zone_keys = ["le300", "301-499", "500-699", "700plus"]
+
     for label, lo, hi in tier_defs:
-        sub = resolved[(resolved["hr_score"] >= lo) & (resolved["hr_score"] < hi)]
-        if len(sub) >= 5:
-            hit_rates[label] = (sub["hit_bool"].mean(), len(sub))
+        tier_sub = resolved[(resolved["hr_score"] >= lo) & (resolved["hr_score"] < hi)]
+        # tier-only fallback
+        if len(tier_sub) >= 5:
+            hit_rates[label] = (tier_sub["hit_bool"].mean(), len(tier_sub))
+        # tier × odds zone (the accurate, analysis-matching rate)
+        for zk in zone_keys:
+            zsub = tier_sub[tier_sub["odds_num"].apply(_odds_zone_key) == zk]
+            if len(zsub) >= 5:
+                hit_rates[(label, zk)] = (zsub["hit_bool"].mean(), len(zsub))
     return hit_rates
 
 
@@ -418,7 +440,10 @@ def main():
                 continue
 
             tier = get_hr_score_tier(score)
-            result = hit_rates.get(tier)
+            zk = _odds_zone_key(odds_val)
+            # Prefer the tier × odds-zone rate (matches HR Analysis); fall back
+            # to tier-only if that specific zone lacks a 5+ sample.
+            result = hit_rates.get((tier, zk)) or hit_rates.get(tier)
             if result is None:
                 continue
             hit_rate, n_picks = result
