@@ -122,14 +122,22 @@ def build_hr_hit_rates(hr_all_scores):
 
 
 def in_value_zone(score, odds):
-    if score >= 13.0:
-        return odds <= 300
-    if score >= 10.0 and score < 11.0:
-        return 301 <= odds <= 499
+    # Three confirmed value zones — must match dashboard.py exactly:
+    #   13+   | ≤+300
+    #   13+   | +301-499
+    #   10-11 | +301-499
+    if score >= 13.0 and odds <= 300:
+        return True
+    if score >= 13.0 and 301 <= odds <= 499:
+        return True
+    if 10.0 <= score < 11.0 and 301 <= odds <= 499:
+        return True
     return False
 
 
-def zone_label(score):
+def zone_label(score, odds=None):
+    if score >= 13.0 and odds is not None and 301 <= odds <= 499:
+        return "13+ +301-499"
     if score >= 13.0:
         return "13+ ≤+300"
     return "10-11 +301-499"
@@ -435,7 +443,7 @@ def main():
                 "score": round(score, 1),
                 "bar_pct": min(100, round(score / 18 * 100)),
                 "odds": f"+{int(odds_val)}",
-                "zone": zone_label(score),
+                "zone": zone_label(score, odds_val),
                 "hr_fb": round(safe_float(row.get("hr_per_fb", 0)), 1),
                 "platoon": round(safe_float(row.get("platoon_score", 0)), 2),
                 "barrel_val": barrel_val, "barrel_cls": barrel_cls,
