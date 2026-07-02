@@ -1,17 +1,15 @@
 """
-compare_parlay_v1_v2.py
-Head-to-head backtest: builds the 3-leg HR parlay TWO ways on the SAME
-resolved games, so the only difference is the selection logic.
+compare_singles_v1_v2.py
+TRUE same-game singles backtest: v1 vs v2.
 
-  v1 (old): pool = old value zones; selector = platoon + hr_per_fb/20
-  v2 (new): pool = score>=8 & plus odds; selector = platoon + power_norm*2
+For every resolved historical row (before 2026-07-01), the stored hr_score IS
+the real v1 score as produced live. We recompute the v2 score on the SAME row
+using the ACTUAL live function (imported from hr_picks.py — no replication risk).
 
-power_norm is computed on the fly from stored features so the v2 selector
-can run retroactively across the full history — true apples-to-apples.
+Then, per day, we take each model's top-N picks and compare their HR hit rate.
+This answers: do v2's top picks hit better or worse than v1's, on identical games?
 
-Reports, for each: parlays attempted, per-leg hit rate, all-3-hit rate,
-and a rough ROI proxy so you can see which selection logic picks better legs.
-This does NOT change the model — pure comparison.
+Only the scoring differs — same features, same games, same days.
 """
 
 import os
@@ -24,24 +22,17 @@ import gspread
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
+# Import the REAL v2 scoring function so the backtest uses the live formula
+import hr_picks
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
 MODEL_START_DATE = "2026-06-09"
-LEG_COUNT = 3
-
-# v2 percentile bounds (from extract_feature_bounds.py) — for on-the-fly power_norm
-V2_BOUNDS = {
-    "season_barrel_pct": (0.9, 15.75), "barrel_pct_7d": (0.0, 25.0),
-    "barrel_pct_5d": (0.0, 27.0), "barrel_pct_10d": (0.0, 22.0),
-    "iso": (0.07, 0.27), "hr_per_fb": (0.0, 28.0), "hr_per_pa": (0.0, 6.0),
-}
-V2_POWER_BLEND = {
-    "season_barrel_pct": 0.30, "hr_per_fb": 0.20, "hr_per_pa": 0.15,
-    "iso": 0.15, "barrel_pct_7d": 0.08, "barrel_pct_10d": 0.07, "barrel_pct_5d": 0.05,
-}
+V2_LIVE_DATE     = "2026-07-01"   # rows on/after this already have v2 scores stored
+TOP_N_LIST       = [3, 5, 10]     # compare top-3, top-5, top-10 per day
 
 
 def get_gspread_client():
@@ -75,156 +66,15 @@ def safe_float(val, default=0.0):
         return default
 
 
-def _fl_label(fl):
-    return str(int(fl)) if float(fl).is_integer() else str(fl)
-
-
-def v2_norm(val, col):
-    v = safe_float(val, np.nan)
-    if pd.isna(v) or col not in V2_BOUNDS:
-        return 0.0
-    lo, hi = V2_BOUNDS[col]
-    return max(0.0, min(1.0, (v - lo) / (hi - lo))) if hi > lo else 0.0
-
-
-def compute_power_norm(row):
-    """On-the-fly power_norm; use stored value if present (v2 rows)."""
-    stored = str(row.get("power_norm", "")).strip()
-    if stored not in ("", "nan", "None"):
-        return safe_float(stored, 0.0)
-    return round(sum(v2_norm(row.get(c), c) * w for c, w in V2_POWER_BLEND.items()), 4)
-
-
-# ── v1 pool + selector ──────────────────────────────────────────────────
-def in_pool_v1(score, odds):
-    if score >= 13.0 and odds <= 300:
-        return True
-    if 10.0 <= score < 11.0 and 301 <= odds <= 499:
-        return True
-    if score >= 13.0 and 301 <= odds <= 499:
-        return True
-    if 12.0 <= score < 13.0 and 301 <= odds <= 499:
-        return True
-    return False
-
-
-def selector_v1(row):
-    return safe_float(row.get("platoon_score", 0)) + safe_float(row.get("hr_per_fb", 0)) / 20
-
-
-# ── v2 pool + selector ──────────────────────────────────────────────────
-def in_pool_v2(score, odds):
-    # Plus odds only; the top-20-by-score cut is applied per-day in build_parlay_v2
-    return odds >= 100
-
-
-def selector_v2(row):
-    return safe_float(row.get("platoon_score", 0)) + compute_power_norm(row) * 2.0
-
-
-def build_parlay_v2(day_df, floor=0.0, use_old_selector=False):
-    """v2 parlay: plus-odds pool, score>=floor, keep top 20 by score, selector ranks.
-    use_old_selector=True swaps in v1's platoon + hr_per_fb/20 leg picker."""
-    pool = day_df[(day_df["odds_num"] >= 100) & (day_df["hr_score"] >= floor)].copy()
-    if pool.empty:
-        return []
-    pool = pool.sort_values("hr_score", ascending=False).head(20)
-    sel_fn = selector_v1 if use_old_selector else selector_v2
-    pool["sel"] = pool.apply(sel_fn, axis=1)
-    pool = pool.sort_values("sel", ascending=False).reset_index(drop=True)
-
-    selected, used = [], set()
-    for _, row in pool.iterrows():
-        if len(selected) >= LEG_COUNT:
-            break
-        opp = str(row.get("pitcher_name", "")).strip()
-        if opp and opp in used:
-            continue
-        selected.append(row)
-        if opp:
-            used.add(opp)
-    if len(selected) < LEG_COUNT:
-        for _, row in pool.iterrows():
-            if len(selected) >= LEG_COUNT:
-                break
-            if not any(s.get("player_name") == row.get("player_name") for s in selected):
-                selected.append(row)
-    return selected
-
-
-def build_parlay_v1(day_df):
-    in_pool, selector = in_pool_v1, selector_v1
-    pool = day_df[day_df.apply(lambda r: in_pool(r["hr_score"], r["odds_num"]), axis=1)].copy()
-    if pool.empty:
-        return []
-    pool["sel"] = pool.apply(selector, axis=1)
-    pool = pool.sort_values("sel", ascending=False).reset_index(drop=True)
-
-    selected, used = [], set()
-    for _, row in pool.iterrows():
-        if len(selected) >= LEG_COUNT:
-            break
-        opp = str(row.get("pitcher_name", "")).strip()
-        if opp and opp in used:
-            continue
-        selected.append(row)
-        if opp:
-            used.add(opp)
-    if len(selected) < LEG_COUNT:
-        for _, row in pool.iterrows():
-            if len(selected) >= LEG_COUNT:
-                break
-            if not any(s.get("player_name") == row.get("player_name") for s in selected):
-                selected.append(row)
-    return selected
-
-
-def american_to_decimal(odds):
-    if odds >= 100:
-        return 1 + odds / 100
-    elif odds <= -100:
-        return 1 + 100 / abs(odds)
-    return 1.0
-
-
-def evaluate(df, builder, label):
-    days = sorted(df["date"].unique())
-    total_legs = hit_legs = 0
-    parlays = won_parlays = 0
-    roi_sum = 0.0
-
-    for d in days:
-        day_df = df[df["date"] == d]
-        legs = builder(day_df)
-        if len(legs) < LEG_COUNT:
-            continue
-        parlays += 1
-        all_hit = True
-        dec_product = 1.0
-        for leg in legs:
-            total_legs += 1
-            hit = str(leg.get("hit_hr", "")).strip() == "Yes"
-            if hit:
-                hit_legs += 1
-            else:
-                all_hit = False
-            dec_product *= american_to_decimal(safe_float(leg.get("odds_num", 0)))
-        if all_hit:
-            won_parlays += 1
-            roi_sum += (dec_product - 1)
-        else:
-            roi_sum -= 1
-
-    leg_rate = round(hit_legs / total_legs * 100, 1) if total_legs else 0
-    win_rate = round(won_parlays / parlays * 100, 1) if parlays else 0
-    roi      = round(roi_sum / parlays * 100, 1) if parlays else 0
-
-    print(f"\n  {label}")
-    print(f"    Parlays built:     {parlays}")
-    print(f"    Per-leg hit rate:  {leg_rate}%  ({hit_legs}/{total_legs})")
-    print(f"    All-3-hit rate:    {win_rate}%  ({won_parlays}/{parlays})")
-    print(f"    ROI proxy:         {roi:+.1f}% per parlay (flat $1 stake)")
-    return {"parlays": parlays, "leg_rate": leg_rate, "win_rate": win_rate, "roi": roi}
+def hit_rate_for_topn(df, score_col, n):
+    """For each day, take top-n by score_col, pool their hits. Return overall rate."""
+    total = hits = 0
+    for d, day in df.groupby("date"):
+        top = day.sort_values(score_col, ascending=False).head(n)
+        total += len(top)
+        hits  += int((top["hit_bool"]).sum())
+    rate = round(hits / total * 100, 1) if total else 0.0
+    return rate, hits, total
 
 
 def main():
@@ -240,55 +90,57 @@ def main():
     df         = pd.DataFrame(rows, columns=headers)
     df         = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
 
-    df["date"]     = df["date"].astype(str).str.strip()
-    df["dt"]       = pd.to_datetime(df["date"], errors="coerce")
-    df = df[df["dt"] >= pd.Timestamp(MODEL_START_DATE)].copy()
+    df["date"] = df["date"].astype(str).str.strip()
+    df["dt"]   = pd.to_datetime(df["date"], errors="coerce")
 
-    df["hr_score"] = df["hr_score"].apply(safe_float)
-    df["odds_num"] = df["consensus_odds"].apply(lambda x: safe_float(x, 0))
+    # Use only v1-era resolved rows: before V2_LIVE_DATE, so stored score = real v1
+    df = df[(df["dt"] >= pd.Timestamp(MODEL_START_DATE)) &
+            (df["dt"] < pd.Timestamp(V2_LIVE_DATE))].copy()
     df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    df["hit_bool"] = df["hit_hr"].astype(str).str.strip() == "Yes"
 
-    print(f"  {len(df)} resolved rows across {df['date'].nunique()} days")
+    print(f"  {len(df)} v1-era resolved rows across {df['date'].nunique()} days")
 
-    print("\n" + "="*64)
-    print("PARLAY HEAD-TO-HEAD: v1 (old) vs v2 at multiple score floors")
-    print("="*64)
+    # v1 score = stored hr_score
+    df["v1_score"] = df["hr_score"].apply(safe_float)
 
-    r1 = evaluate(df, build_parlay_v1, "v1 — OLD zones + old selector")
+    # v2 score = recompute with the REAL live function on each row
+    def recompute_v2(row):
+        score, _pn, _bd = hr_picks.compute_score_v2(row)
+        return score
+    df["v2_score"] = df.apply(recompute_v2, axis=1)
 
-    floors = [8.0, 10.0, 11.0, 12.0, 13.0, 14.0]
-    v2_pn = {}   # power_norm selector
-    v2_hf = {}   # old hr_per_fb selector on v2-style pool
-    for fl in floors:
-        v2_pn[fl] = evaluate(
-            df, lambda d, _fl=fl: build_parlay_v2(d, floor=_fl),
-            f"v2 pool>={_fl_label(fl)} + power_norm selector"
-        )
-    for fl in floors:
-        v2_hf[fl] = evaluate(
-            df, lambda d, _fl=fl: build_parlay_v2(d, floor=_fl, use_old_selector=True),
-            f"v2 pool>={_fl_label(fl)} + OLD hr_per_fb selector"
-        )
+    print("\n" + "="*60)
+    print("SINGLES BACKTEST — v1 (stored) vs v2 (recomputed) same games")
+    print("="*60)
 
-    print("\n" + "="*64)
-    print("VERDICT — v1 baseline vs v2 pools, both selectors")
-    print("="*64)
-    print(f"\n  {'Strategy':<34} {'Parlays':>7} {'Leg%':>7} {'All3%':>7}")
-    print(f"  {'-'*57}")
-    print(f"  {'v1 (old zones + old selector)':<34} {r1['parlays']:>7} {r1['leg_rate']:>6.1f}% {r1['win_rate']:>6.1f}%")
-    print(f"  {'--- v2 pool + power_norm selector ---':<34}")
-    for fl in floors:
-        r = v2_pn[fl]
-        print(f"  {'  floor '+_fl_label(fl):<34} {r['parlays']:>7} {r['leg_rate']:>6.1f}% {r['win_rate']:>6.1f}%")
-    print(f"  {'--- v2 pool + OLD hr_per_fb selector ---':<34}")
-    for fl in floors:
-        r = v2_hf[fl]
-        print(f"  {'  floor '+_fl_label(fl):<34} {r['parlays']:>7} {r['leg_rate']:>6.1f}% {r['win_rate']:>6.1f}%")
+    overall = round(df["hit_bool"].mean() * 100, 1)
+    print(f"\n  Pool baseline hit rate: {overall}%  ({int(df['hit_bool'].sum())}/{len(df)})")
 
-    print("\n  Per-leg hit rate is the trustworthy metric at this sample.")
-    print("  If the OLD-selector rows beat the power_norm rows, the selector")
-    print("  (not the pool) is what hurt v2 — revert just the parlay selector.")
-    print("  NOTE: most history is old-model scores. Directional.")
+    print(f"\n  {'Top-N/day':<12} {'v1 Hit%':>10} {'v2 Hit%':>10} {'Winner':>10}")
+    print(f"  {'-'*46}")
+    for n in TOP_N_LIST:
+        v1r, v1h, v1t = hit_rate_for_topn(df, "v1_score", n)
+        v2r, v2h, v2t = hit_rate_for_topn(df, "v2_score", n)
+        winner = "v2" if v2r > v1r else "v1" if v1r > v2r else "tie"
+        print(f"  Top {n:<8} {v1r:>9.1f}% {v2r:>9.1f}% {winner:>10}")
+        print(f"  {'':12} {f'({v1h}/{v1t})':>10} {f'({v2h}/{v2t})':>10}")
+
+    # Also: correlation / overlap — how different are the top picks?
+    print("\n  Pick overlap (are they even choosing different players?):")
+    for n in TOP_N_LIST:
+        overlap_total = shared = 0
+        for d, day in df.groupby("date"):
+            v1top = set(day.sort_values("v1_score", ascending=False).head(n)["player_name"])
+            v2top = set(day.sort_values("v2_score", ascending=False).head(n)["player_name"])
+            if v1top and v2top:
+                shared += len(v1top & v2top)
+                overlap_total += n
+        pct = round(shared / overlap_total * 100, 1) if overlap_total else 0
+        print(f"    Top {n}: {pct}% of picks shared between v1 and v2")
+
+    print("\n  Higher hit% wins. Overlap shows how much v2 actually diversifies.")
+    print("  NOTE: v2 recomputed from stored features via live compute_score_v2.")
     print("\nDone.")
 
 
