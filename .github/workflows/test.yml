@@ -20,6 +20,7 @@ on:
           - odds
           - hr_picks
           - hr_picks_v1
+          - hr_picks_v2
           - hrrbi_statcast
           - hrrbi_picks
           - ks_statcast
@@ -68,6 +69,7 @@ jobs:
           inputs.script == 'main' ||
           inputs.script == 'hr_picks' ||
           inputs.script == 'hr_picks_v1' ||
+          inputs.script == 'hr_picks_v2' ||
           inputs.script == 'hrrbi_picks' ||
           inputs.script == 'ks_picks'
         env:
@@ -81,7 +83,8 @@ jobs:
           inputs.script == 'full_hr' ||
           inputs.script == 'pitcher_statcast' ||
           inputs.script == 'hr_picks' ||
-          inputs.script == 'hr_picks_v1'
+          inputs.script == 'hr_picks_v1' ||
+          inputs.script == 'hr_picks_v2'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
@@ -96,6 +99,7 @@ jobs:
           inputs.script == 'park_factors' ||
           inputs.script == 'hr_picks' ||
           inputs.script == 'hr_picks_v1' ||
+          inputs.script == 'hr_picks_v2' ||
           inputs.script == 'hrrbi_picks' ||
           inputs.script == 'ks_picks'
         env:
@@ -109,7 +113,8 @@ jobs:
           inputs.script == 'full_hr' ||
           inputs.script == 'weather' ||
           inputs.script == 'hr_picks' ||
-          inputs.script == 'hr_picks_v1'
+          inputs.script == 'hr_picks_v1' ||
+          inputs.script == 'hr_picks_v2'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
@@ -121,7 +126,8 @@ jobs:
           inputs.script == 'full_hr' ||
           inputs.script == 'odds' ||
           inputs.script == 'hr_picks' ||
-          inputs.script == 'hr_picks_v1'
+          inputs.script == 'hr_picks_v1' ||
+          inputs.script == 'hr_picks_v2'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
@@ -144,6 +150,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks_v1.py
+
+      - name: Run hr_picks_v2.py (shadow -> HR_All_Scores_v2)
+        if: inputs.script == 'hr_picks_v2'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
+        run: python hr_picks_v2.py
 
       - name: Run extract_feature_bounds.py
         if: inputs.script == 'extract_feature_bounds'
