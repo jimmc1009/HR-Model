@@ -56,12 +56,19 @@ jobs:
          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
        run: python odds.py
 
-     # ── HR Model ──────────────────────────────────────────────────────────
+     # ── HR Model (v1 — LIVE, feeds dashboard) ─────────────────────────────
      - name: Run hr_picks.py
        env:
          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
        run: python hr_picks.py
+
+     # ── HR Model (v2 — SHADOW, logs to *_v2 tabs for comparison) ───────────
+     - name: Run hr_picks_v2.py (shadow)
+       env:
+         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+       run: python hr_picks_v2.py
 
      # ── H+R+RBI Model ─────────────────────────────────────────────────────
      - name: Run hrrbi_statcast.py
