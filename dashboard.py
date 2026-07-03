@@ -284,7 +284,12 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
     if resolved.empty:
         return hit_rates
 
-    resolved["hr_score"]  = resolved["hr_score"].apply(safe_float)
+    resolved["hr_score"]  = resolved.apply(
+        lambda r: safe_float(r.get("hr_score_corrected"))
+        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
+        else safe_float(r.get("hr_score")),
+        axis=1,
+    )
     resolved["hit_bool"]  = resolved["hit_hr"].astype(str).str.strip() == "Yes"
     resolved["odds_num"]  = resolved["consensus_odds"].apply(safe_float)
 
