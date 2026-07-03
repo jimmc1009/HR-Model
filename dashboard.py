@@ -852,6 +852,81 @@ def build_rows(
 
     rows.append((E[:], "spacer"))
 
+    # ── 2-LEG HR PARLAYS (x3) — frequent-cash fun tickets ────────────────
+    # Backtest: one 3-leg/day cashed ~1/23 days; running 3 two-leggers/day
+    # cashed ~1.2 winning tickets/week — far more frequent cashes for small
+    # stakes. Built from the same value-zone pool, pitcher-diversified, paired
+    # top1+top2, top3+top4, top5+top6 by selector.
+    rows.append((pad(["🎲  2-LEG HR PARLAYS — 3 tickets (frequent-cash fun)"]), "section_header_parlay"))
+    rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Selector", "Contact Quality", ""]), "col_header_parlay"))
+
+    if hr_source.empty or not parlay_candidates:
+        rows.append((pad(["—", "No 2-leg candidates today", ""]), "no_plays"))
+    else:
+        # Build a pitcher-diversified ranked list (reuse parlay_candidates,
+        # already sorted by selector desc), then pair into non-overlapping 2s.
+        diversified = []
+        used_g = set()
+        for c in parlay_candidates:
+            if c["opp_pit"] and c["opp_pit"] in used_g:
+                continue
+            diversified.append(c)
+            if c["opp_pit"]:
+                used_g.add(c["opp_pit"])
+        # fill if diversification left too few for 3 tickets (need 6 legs)
+        if len(diversified) < 6:
+            for c in parlay_candidates:
+                if len(diversified) >= 6:
+                    break
+                if c not in diversified:
+                    diversified.append(c)
+
+        def _delta2(recent, baseline, label):
+            r = str(recent).strip(); b = str(baseline).strip()
+            if not r or not b or r in ("0", "0.0", "") or b in ("0", "0.0", ""):
+                return f"{label}:—"
+            try:
+                return f"{label}:{round(float(r)-float(b),1):+.1f}"
+            except Exception:
+                return f"{label}:—"
+
+        pairs = []
+        i = 0
+        while i + 1 < len(diversified) and len(pairs) < 3:
+            pairs.append((diversified[i], diversified[i + 1]))
+            i += 2
+
+        if not pairs:
+            rows.append((pad(["—", "Not enough candidates for a 2-legger today", ""]), "no_plays"))
+        else:
+            for t_idx, (a, b) in enumerate(pairs, start=1):
+                # combined decimal odds -> American for the ticket payout
+                dec = (1 + a["odds"] / 100) * (1 + b["odds"] / 100)
+                combined_american = f"+{int(round((dec - 1) * 100))}"
+                for leg_idx, leg in enumerate((a, b)):
+                    p_contact = " ".join([
+                        _delta2(leg.get("barrel_7d",""), leg.get("barrel_season",""), "Brl"),
+                        _delta2(leg.get("ev_7d",""), leg.get("ev_30d",""), "EV"),
+                        _delta2(leg.get("hh_7d",""), leg.get("hh_season",""), "HH"),
+                    ])
+                    label = f"#{t_idx}" if leg_idx == 0 else ""
+                    payout_col = combined_american if leg_idx == 0 else ""
+                    rows.append((pad([
+                        label,
+                        leg["batter"],
+                        leg["team"],
+                        f"{leg['score']:.1f}",
+                        f"+{int(leg['odds'])}",
+                        payout_col,
+                        p_contact,
+                        "",
+                    ]), "data_parlay"))
+                # thin separator between tickets
+                if t_idx < len(pairs):
+                    rows.append((E[:], "spacer"))
+
+    rows.append((E[:], "spacer"))
+
     # ── PITCHER STRIKEOUT VALUE PLAYS ─────────────────────────────────────
     rows.append((pad(["⚾  PITCHER STRIKEOUT VALUE PLAYS — Hit Rate vs Breakeven"]), "section_header_ks"))
     rows.append((pad(["Rank", "Pitcher", "Team", "Score", "Line", "Direction", "Odds", "Breakeven", "Edge"]), "col_header_ks"))
@@ -1436,7 +1511,9 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
         if row_type == "section_header_hr":
             current_model = "HR Single"
         elif row_type == "section_header_parlay":
-            current_model = "HR Parlay"
+            # Two parlay sections share this type; tell them apart by header text
+            htxt = str(row_data[0])
+            current_model = "HR Parlay 2-leg" if "2-LEG" in htxt else "HR Parlay 3-leg"
         elif row_type == "section_header_ks":
             current_model = "KS"
         elif row_type == "section_header_hrrbi":
@@ -1451,14 +1528,14 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             if name and name != "—":
                 today_rows.append([today_str, "HR Single", name, team, score, "HR", odds, "", "", "", ""])
 
-        # Parlay legs
+        # Parlay legs (3-leg and 2-leg both use data_parlay)
         elif row_type == "data_parlay":
             name  = str(row_data[1]).strip()
             team  = str(row_data[2]).strip()
             score = str(row_data[3]).strip()
             odds  = str(row_data[4]).strip()
             if name and name != "—":
-                today_rows.append([today_str, "HR Parlay", name, team, score, "HR", odds, "", "", "", ""])
+                today_rows.append([today_str, current_model, name, team, score, "HR", odds, "", "", "", ""])
 
         # KS value plays
         elif row_type in ("data_ks_over", "data_ks_under"):
@@ -1521,7 +1598,8 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     # Model color coding
     model_colors = {
         "HR Single": COLOR_GOLD,
-        "HR Parlay": {"red": 0.541, "green": 0.165, "blue": 0.557},
+        "HR Parlay 3-leg": {"red": 0.541, "green": 0.165, "blue": 0.557},
+        "HR Parlay 2-leg": {"red": 0.451, "green": 0.227, "blue": 0.620},
         "KS":        COLOR_TEAL,
         "HRRBI":     COLOR_BLUE,
     }
