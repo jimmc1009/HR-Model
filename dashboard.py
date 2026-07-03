@@ -670,11 +670,16 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter — keep ONLY genuine edge plays: picks whose tier × odds-zone
-        # hit rate (from today's resolved HR_All_Scores) beats breakeven at
-        # their odds. This corresponds daily to the resolved HR Analysis —
-        # as the numbers update, so do the plays. No hardcoded zones.
-        hr_value_plays = [p for p in hr_value_plays if p.get("has_value")]
+        # Filter — genuine edge plays: require BOTH a real score (>=10, the
+        # qualified pool floor) AND positive edge vs resolved hit rates. Score
+        # alone or edge alone isn't enough — a score-2.5 player clearing a long
+        # odds breakeven by 1% isn't a real play, it's the low-tier average
+        # scraping breakeven. The model's whole premise is that score means
+        # something, so low scorers are excluded even if edge reads positive.
+        hr_value_plays = [
+            p for p in hr_value_plays
+            if p.get("has_value") and float(p["score"]) >= 10.0
+        ]
         # Sort best edge first
         hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
 
