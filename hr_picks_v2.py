@@ -520,15 +520,25 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         iso_vs_opp  = iso_vs_rhp
         label       = f"{batter_hand}HH vs LHP"
         start_rate  = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
     elif p_throws == "R":
         iso_vs_this = iso_vs_rhp
         iso_vs_opp  = iso_vs_lhp
         label       = f"{batter_hand}HH vs RHP"
         start_rate  = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
     else:
         return 0.0, ""
+
+    # Pitcher barrel% allowed keys on BATTER hand, not pitcher hand (switch
+    # hitters resolve to the side opposite the pitcher).
+    effective_bat = batter_hand
+    if batter_hand == "S":
+        effective_bat = "L" if p_throws == "R" else "R"
+    if effective_bat == "L":
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
+    elif effective_bat == "R":
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
+    else:
+        pitcher_barrel_vs_hand = 0.0
 
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
