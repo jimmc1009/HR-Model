@@ -125,7 +125,17 @@ def build_analysis(df: pd.DataFrame) -> dict:
         return {}
 
     scored["hit_bool"]    = scored["hit_hr"] == "Yes"
-    scored["hr_score"]    = scored["hr_score"].apply(safe_float)
+    # Use corrected score (barrel-handedness fix) when present; old rescored
+    # rows and new rows both carry hr_score_corrected. Fall back to hr_score.
+    if "hr_score_corrected" in scored.columns:
+        scored["hr_score"] = scored.apply(
+            lambda r: safe_float(r.get("hr_score_corrected"))
+            if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
+            else safe_float(r.get("hr_score")),
+            axis=1,
+        )
+    else:
+        scored["hr_score"] = scored["hr_score"].apply(safe_float)
     scored["date_dt"]     = pd.to_datetime(scored["date"], errors="coerce")
     scored["odds_num"]    = scored["consensus_odds"].apply(lambda x: safe_float(x, 0))
     scored["wind_bucket"] = scored.get("wind_context", pd.Series("", index=scored.index)).apply(parse_wind)
@@ -146,6 +156,16 @@ def build_analysis(df: pd.DataFrame) -> dict:
             scored[col] = scored[col].apply(lambda x: np.nan if str(x).strip() in ("", "nan", "None") else safe_float(x, np.nan))
         else:
             scored[col] = np.nan
+
+    # Overlay the corrected platoon score (barrel-handedness fix) onto the
+    # platoon_score separator when a corrected value exists for the row.
+    if "platoon_score_corrected" in scored.columns:
+        def _corr_platoon(r):
+            c = str(r.get("platoon_score_corrected", "")).strip()
+            if c not in ("", "nan", "None"):
+                return safe_float(c, np.nan)
+            return r.get("platoon_score", np.nan)
+        scored["platoon_score"] = scored.apply(_corr_platoon, axis=1)
 
     days_of_data = scored["date_dt"].nunique()
     total        = len(scored)
