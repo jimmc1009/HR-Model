@@ -81,23 +81,27 @@ def get_odds_zone(odds: float) -> str:
 
 
 def in_parlay_pool(score: float, odds: float) -> bool:
-    """Check if a player falls in one of the confirmed value zones.
-    Zones based on HR_Analysis Score Tier × Odds Zone data:
-      13+   | ≤+499  — 30.6% at ≤+300, 25.8% at +301-499
-      12-13 | ≤+499  — 25.0% at ≤+300, 27.3% at +301-499
-      11-12 | ≤+300  — 27.3% (plus odds dead: 5.1% at +301-499)
-      10-11 | +301-499 — 26.9%
+    """Check if a player falls in one of the CORRECTED value zones.
+    Zones from HR_Analysis Score Tier × Odds Zone AFTER the barrel-handedness
+    fix (hr_score_corrected):
+      13+   | ≤+300      — 30.0% (60)
+      13+   | +301-499   — 22.2% (63)
+      12-13 | +301-499   — 23.4% (47)
+      10-11 | ≤+300      — 29.7% (37)
+      9-10  | +301-499   — 25.9% (143)  ← new standout, biggest sample
+    Dropped: 10-11 | +301-499 fell to 16.0% (below breakeven) after correction.
     """
     if odds <= 0:
         return False
-    # 13+ | ≤+300 — 29.8% on 47 picks
     if score >= 13.0 and odds <= 300:
         return True
-    # 11-12 | ≤+300 — 28.0% on 25 picks
-    if 11.0 <= score < 12.0 and odds <= 300:
+    if score >= 13.0 and 301 <= odds <= 499:
         return True
-    # 10-11 | +301-499 — 28.0% on 93 picks
-    if 10.0 <= score < 11.0 and 301 <= odds <= 499:
+    if 12.0 <= score < 13.0 and 301 <= odds <= 499:
+        return True
+    if 10.0 <= score < 11.0 and odds <= 300:
+        return True
+    if 9.0 <= score < 10.0 and 301 <= odds <= 499:
         return True
     return False
 
@@ -175,7 +179,21 @@ def main():
     rows    = all_values[1:]
     df      = pd.DataFrame(rows, columns=headers)
 
-    df["hr_score"] = df["hr_score"].apply(safe_float)
+    # Use corrected columns (barrel-handedness fix) when present, falling back
+    # to originals. Both hr_score and platoon_score changed with the fix, and
+    # the parlay selector leans heavily on platoon — so the winning-leg
+    # analysis must run on corrected values to be trustworthy.
+    def _coalesce(row, corrected_col, orig_col):
+        c = str(row.get(corrected_col, "")).strip()
+        if c not in ("", "nan", "None"):
+            return safe_float(c)
+        return safe_float(row.get(orig_col))
+
+    if "hr_score_corrected" in df.columns:
+        df["hr_score"] = df.apply(lambda r: _coalesce(r, "hr_score_corrected", "hr_score"), axis=1)
+    else:
+        df["hr_score"] = df["hr_score"].apply(safe_float)
+
     df["date"]     = df["date"].astype(str).str.strip()
     df["odds_num"] = df["consensus_odds"].apply(lambda x: safe_float(x, 0))
     df["date_dt"]  = pd.to_datetime(df["date"], errors="coerce")
@@ -183,6 +201,10 @@ def main():
     # Filter to clean model data only
     df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)].copy()
     print(f"Filtered to {MODEL_START_DATE}+: {len(df)} rows")
+
+    # Overlay corrected platoon before coercing the feature columns
+    if "platoon_score_corrected" in df.columns:
+        df["platoon_score"] = df.apply(lambda r: _coalesce(r, "platoon_score_corrected", "platoon_score"), axis=1)
 
     for col in ["platoon_score", "season_barrel_pct", "hr_per_fb", "hr_weather_boost",
                 "barrel_pct_7d", "barrel_pct_5d", "pitch_matchup_score", "momentum_score"]:
