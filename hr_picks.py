@@ -1708,6 +1708,12 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "pull_rate":              str(row.get("pull_rate", "")),
             "platoon_matchup":        str(row.get("platoon_desc", "")),
             "platoon_score":          str(row.get("platoon_score", "")),
+            # Going forward the live model is already fixed, so the corrected
+            # columns simply mirror the (already-correct) values. This keeps
+            # *_corrected as the single clean source of truth across old
+            # (rescored) and new rows. Analysis + dashboard read *_corrected.
+            "platoon_score_corrected": str(row.get("platoon_score", "")),
+            "hr_score_corrected":      str(row.get("score", "")),
             "pitch_matchup":          str(row.get("pitch_matchup_desc", "")),
             "pitcher_barrel_pct":     str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":      str(row.get("pitcher_hr_per_fb", "")),
