@@ -670,11 +670,16 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter — keep ONLY genuine edge plays: picks whose tier × odds-zone
-        # hit rate (from today's resolved HR_All_Scores) beats breakeven at
-        # their odds. This corresponds daily to the resolved HR Analysis —
-        # as the numbers update, so do the plays. No hardcoded zones.
-        hr_value_plays = [p for p in hr_value_plays if p.get("has_value")]
+        # Filter — genuine edge plays: require BOTH a real score (>=9, which
+        # includes the 9-10 | +301-499 zone that the corrected-data validation
+        # showed is the single strongest zone at 25.9% / +5.8% edge) AND
+        # positive edge vs resolved hit rates. Sub-9 scorers are excluded even
+        # if edge reads positive — that's the low-tier average scraping
+        # breakeven, not a real play.
+        hr_value_plays = [
+            p for p in hr_value_plays
+            if p.get("has_value") and float(p["score"]) >= 9.0
+        ]
         # Sort best edge first
         hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
 
@@ -765,21 +770,29 @@ def build_rows(
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                # Pool filter — confirmed value zones (same as singles logic,
-                # plus 12-13 +301-499 which backtests strong for parlay legs):
+                # Pool — for parlays, leg hit rate is everything (it compounds).
+                # Use only the highest-hit-rate zones from corrected-data
+                # validation, favoring plus odds for payout:
+                #   9-10  | +301-499 — 25.9% (strongest, biggest sample)
+                #   13+   | +301-499 — 22.2%
+                #   12-13 | +301-499 — 23.4%
+                #   13+   | ≤+300    — 30.0% (highest rate; include for leg quality)
                 in_pool = (
-                    (hr_score >= 13.0 and odds_val <= 300) or
+                    (9.0 <= hr_score < 10.0 and 301 <= odds_val <= 499) or
                     (hr_score >= 13.0 and 301 <= odds_val <= 499) or
                     (12.0 <= hr_score < 13.0 and 301 <= odds_val <= 499) or
-                    (10.0 <= hr_score < 11.0 and 301 <= odds_val <= 499)
+                    (hr_score >= 13.0 and odds_val <= 300)
                 )
                 if not in_pool:
                     continue
 
-                # Combined selector — platoon (dominant leg-winner separator)
-                # + HR/FB%. Both confirmed positive on winning legs; this
-                # backtested clearly better than the power_norm blend.
-                selector = platoon + (hr_per_fb / 20)
+                # Selector — hr_per_fb is the DOMINANT winning-leg separator on
+                # corrected data (effect size 5x platoon per validation). Weight
+                # it as the primary driver; platoon is a secondary tiebreak.
+                # hr_per_fb/6 puts a 30% HR/FB at ~5.0 (primary), platoon adds
+                # up to ~2.4 (secondary). Old formula (hr_per_fb/20 + platoon)
+                # had this backwards and picked worse legs.
+                selector = (hr_per_fb / 6.0) + (platoon * 0.6)
 
                 parlay_candidates.append({
                     "batter":   batter,
