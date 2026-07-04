@@ -108,20 +108,19 @@ def in_parlay_pool(score: float, odds: float) -> bool:
 
 def compute_selector(row) -> float:
     """
-    Combined leg selector score.
-    Weights based on actual parlay leg winner analysis:
-      Platoon:  winners 2.431 vs pool 1.300 = +1.131 gap (dominant)
-      HR/FB%:   winners 25.2  vs pool 23.6  = +1.522 gap (meaningful)
-      Season barrel%, weather: barely separating — excluded
-      Momentum, barrel% 7d: negative on winning legs — excluded
+    Combined leg selector score — MATCHES the live dashboard.py selector.
+    Validation (validate_model.py Check 4, corrected data) showed hr_per_fb
+    separates winning legs ~5x better than platoon (effect size 0.35 vs 0.07),
+    yet the old formula divided hr_per_fb by 20 — burying the best signal.
+    New weighting makes hr_per_fb the primary driver, platoon a secondary
+    tiebreak:
+      hr_per_fb/6  -> a 30% HR/FB scores ~5.0 (primary)
+      platoon*0.6  -> adds up to ~1.4 (secondary)
     """
     platoon   = safe_float(row.get("platoon_score", 0))
     hr_per_fb = safe_float(row.get("hr_per_fb", 0))
 
-    return (
-        platoon +
-        (hr_per_fb / 20)
-    )
+    return (hr_per_fb / 6.0) + (platoon * 0.6)
 
 
 def simulate_parlay(day_df: pd.DataFrame) -> list:
@@ -228,9 +227,11 @@ def main():
     print("POOL STATS — Value Zone Hit Rates")
     print("=" * 60)
     for label, mask in [
-        ("10-11 | +301-499", (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 11) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
-        ("11-12 | ≤+300",    (resolved["hr_score"] >= 11) & (resolved["hr_score"] < 12) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
         ("13+   | ≤+300",    (resolved["hr_score"] >= 13) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
+        ("13+   | +301-499", (resolved["hr_score"] >= 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
+        ("12-13 | +301-499", (resolved["hr_score"] >= 12) & (resolved["hr_score"] < 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
+        ("10-11 | ≤+300",    (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 11) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
+        ("9-10  | +301-499", (resolved["hr_score"] >= 9) & (resolved["hr_score"] < 10) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
     ]:
         sub = resolved[mask]
         if sub.empty:
