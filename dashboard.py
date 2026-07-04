@@ -323,7 +323,12 @@ def get_hr_score_tier(score: float) -> str:
     if score >= 11:   return "11-12"
     if score >= 10:   return "10-11"
     if score >= 9:    return "9-10"
-    return "8.5-9"
+    if score >= 8.5:  return "8.5-9"
+    # Below 8.5 has no defined tier — return a sentinel with no hit-rate data
+    # so calc_hr_value yields "no data" and these never qualify as edge plays.
+    # (Previously fell through to "8.5-9", making a score-1.9 player borrow the
+    # 8.5-9 bucket's hit rate and fake a positive edge.)
+    return "below-8.5"
 
 
 def calc_hr_value(
