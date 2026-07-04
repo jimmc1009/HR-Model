@@ -198,6 +198,51 @@ def main():
             flag = "✅" if edge >= 3 else "❌" if edge <= -3 else "≈"
             rows.append([f"{label} | {zone}", str(len(zsub)), str(h), f"{rate}%", f"{edge:+.1f}% {flag}"])
 
+    # ── Feature separators (hit vs miss) — includes v2-specific features ──
+    rows.append(["", "", "", "", ""])
+    rows.append(["📊  v2 FEATURE SEPARATORS (hit vs miss)", "HR Avg", "Non-HR Avg", "Diff %", "Signal"])
+
+    # vuln lives inside the v2_breakdown JSON blob, not its own column — extract it
+    def _extract_vuln(blob):
+        try:
+            import json as _json
+            d = _json.loads(blob) if blob and str(blob).strip() not in ("", "nan", "None") else {}
+            return safe_float(d.get("vuln"), np.nan)
+        except Exception:
+            return np.nan
+    if "v2_breakdown" in resolved.columns:
+        resolved["vuln_score"] = resolved["v2_breakdown"].apply(_extract_vuln)
+
+    # v2-distinctive features first (power_norm, vuln), then shared ones
+    feat_defs = [
+        ("power_norm",           "Power Norm (v2)"),
+        ("vuln_score",           "Pitcher Vuln (v2)"),
+        ("pitch_matchup_score",  "Pitch Matchup (hand-split)"),
+        ("platoon_score",        "Platoon Score"),
+        ("season_barrel_pct",    "Season Barrel%"),
+        ("hr_per_fb",            "HR/FB%"),
+        ("iso",                  "ISO"),
+        ("barrel_pct_7d",        "Barrel% 7d"),
+    ]
+    for col, disp in feat_defs:
+        if col not in resolved.columns:
+            continue
+        v = resolved[col].apply(lambda x: safe_float(x, np.nan))
+        h_avg = v[resolved["hit_bool"]].mean()
+        m_avg = v[~resolved["hit_bool"]].mean()
+        if pd.isna(h_avg) or pd.isna(m_avg) or m_avg == 0:
+            continue
+        diff_pct = round((h_avg - m_avg) / abs(m_avg) * 100, 1)
+        if diff_pct >= 15:
+            sig = "🔥 STRONG +"
+        elif diff_pct >= 3:
+            sig = "✅ Positive"
+        elif diff_pct <= -3:
+            sig = "🔻 Negative"
+        else:
+            sig = "↔️ Neutral"
+        rows.append([disp, f"{h_avg:.3f}", f"{m_avg:.3f}", f"{diff_pct:+.1f}%", sig])
+
     # Write
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
