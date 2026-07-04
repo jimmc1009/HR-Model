@@ -670,16 +670,11 @@ def build_rows(
             except Exception:
                 continue
 
-        # Filter — genuine edge plays: require BOTH a real score (>=9, which
-        # includes the 9-10 | +301-499 zone that the corrected-data validation
-        # showed is the single strongest zone at 25.9% / +5.8% edge) AND
-        # positive edge vs resolved hit rates. Sub-9 scorers are excluded even
-        # if edge reads positive — that's the low-tier average scraping
-        # breakeven, not a real play.
-        hr_value_plays = [
-            p for p in hr_value_plays
-            if p.get("has_value") and float(p["score"]) >= 9.0
-        ]
+        # Filter — keep ONLY genuine edge plays: picks whose tier × odds-zone
+        # hit rate (from today's resolved HR_All_Scores) beats breakeven at
+        # their odds. This corresponds daily to the resolved HR Analysis —
+        # as the numbers update, so do the plays. No hardcoded zones.
+        hr_value_plays = [p for p in hr_value_plays if p.get("has_value")]
         # Sort best edge first
         hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
 
@@ -781,13 +776,10 @@ def build_rows(
                 if not in_pool:
                     continue
 
-                # Selector — hr_per_fb is the DOMINANT winning-leg separator on
-                # corrected data (effect size 5x platoon per validation). Weight
-                # it as the primary driver; platoon is a secondary tiebreak.
-                # hr_per_fb/6 puts a 30% HR/FB at ~5.0 (primary), platoon adds
-                # up to ~2.4 (secondary). Old formula (hr_per_fb/20 + platoon)
-                # had this backwards and picked worse legs.
-                selector = (hr_per_fb / 6.0) + (platoon * 0.6)
+                # Combined selector — platoon (dominant leg-winner separator)
+                # + HR/FB%. Both confirmed positive on winning legs; this
+                # backtested clearly better than the power_norm blend.
+                selector = platoon + (hr_per_fb / 20)
 
                 parlay_candidates.append({
                     "batter":   batter,
