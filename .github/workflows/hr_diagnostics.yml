@@ -17,6 +17,7 @@ on:
           - check_hr_parlay_history
           - test_parlay_blend
           - test_ticket_overlap
+          - test_2legger_roi
 
 jobs:
   diagnostic:
@@ -94,4 +95,12 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_ticket_overlap.py
+
+      - name: Run test_2legger_roi.py
+        if: inputs.script == 'test_2legger_roi'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_2legger_roi.py
+
 
