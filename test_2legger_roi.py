@@ -59,9 +59,9 @@ def tier(s):
     return "<8.5"
 def in_pool(s,o):
     if o<=0:return False
-    if 9.0<=s<10.0 and 301<=o<=499:return True
-    if s>=13.0 and 301<=o<=499:return True
-    if 12.0<=s<13.0 and 301<=o<=499:return True
+    if 9.0<=s<10.0 and 301<=o<=400:return True
+    if 12.0<=s<13.0 and 301<=o<=400:return True
+    if s>=13.0 and 301<=o<=400:return True
     if s>=13.0 and o<=300:return True
     return False
 
