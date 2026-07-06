@@ -16,6 +16,7 @@ on:
           - compare_parlay_legcount
           - check_hr_parlay_history
           - test_parlay_blend
+          - test_ticket_overlap
 
 jobs:
   diagnostic:
@@ -86,3 +87,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_parlay_blend.py
+
+      - name: Run test_ticket_overlap.py
+        if: inputs.script == 'test_ticket_overlap'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_ticket_overlap.py
+
