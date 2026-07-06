@@ -775,29 +775,38 @@ def build_rows(
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                # Pool — for parlays, leg hit rate is everything (it compounds).
-                # Use only the highest-hit-rate zones from corrected-data
-                # validation, favoring plus odds for payout:
-                #   9-10  | +301-499 — 25.9% (strongest, biggest sample)
-                #   13+   | +301-499 — 22.2%
-                #   12-13 | +301-499 — 23.4%
-                #   13+   | ≤+300    — 30.0% (highest rate; include for leg quality)
+                # Pool — confirmed zones from latest HR_Analysis cross-tab that
+                # clear TRUE breakeven, narrowed to the +301-400 odds SWEET SPOT
+                # (test_odds_sweetspot.py: +301-400 legs give +0.21u/ticket parlay
+                # EV; +401-499 legs hit too rarely and drag EV negative).
+                #   9-10  | +301-400 — 25.0% zone (n=156, anchor)
+                #   12-13 | +301-400 — 26.9%
+                #   13+   | +301-400 — 21.7%
+                #   13+   | ≤+300    — 32.9% (highest rate; kept for leg quality)
                 in_pool = (
-                    (9.0 <= hr_score < 10.0 and 301 <= odds_val <= 499) or
-                    (hr_score >= 13.0 and 301 <= odds_val <= 499) or
-                    (12.0 <= hr_score < 13.0 and 301 <= odds_val <= 499) or
+                    (9.0 <= hr_score < 10.0 and 301 <= odds_val <= 400) or
+                    (12.0 <= hr_score < 13.0 and 301 <= odds_val <= 400) or
+                    (hr_score >= 13.0 and 301 <= odds_val <= 400) or
                     (hr_score >= 13.0 and odds_val <= 300)
                 )
                 if not in_pool:
                     continue
 
-                # Selector — hr_per_fb is the DOMINANT winning-leg separator on
-                # corrected data (effect size 5x platoon per validation). Weight
-                # it as the primary driver; platoon is a secondary tiebreak.
-                # hr_per_fb/6 puts a 30% HR/FB at ~5.0 (primary), platoon adds
-                # up to ~2.4 (secondary). Old formula (hr_per_fb/20 + platoon)
-                # had this backwards and picked worse legs.
-                selector = (hr_per_fb / 6.0) + (platoon * 0.6)
+                # Selector — BLEND 1 (validated via test_parlay_blend.py):
+                #   hr_per_fb/8  (power — keeps legs on real power bats)
+                # + edge*0.8     (value — zone hit rate minus breakeven; lifts
+                #                 avg odds off low-odds favorites toward +350)
+                # Tested best: 33.3% leg rate (vs 28% power-only) at higher avg
+                # odds, while most-picked stay recognizable power hitters.
+                # edge here = (tier×zone hit rate − implied breakeven), as %.
+                leg_hit_rate, _leg_be, _leg_hasval, leg_edge_str = calc_hr_value(
+                    hr_score, odds_val, hr_hit_rates
+                )
+                try:
+                    leg_edge = float(leg_edge_str.replace("%", "").replace("+", ""))
+                except (ValueError, AttributeError):
+                    leg_edge = -99.0  # unknown zone → effectively excluded from top
+                selector = (hr_per_fb / 8.0) + (leg_edge * 0.8)
 
                 parlay_candidates.append({
                     "batter":   batter,
@@ -880,7 +889,7 @@ def build_rows(
     # cashed ~1.2 winning tickets/week — far more frequent cashes for small
     # stakes. Built from the same value-zone pool, pitcher-diversified, paired
     # top1+top2, top3+top4, top5+top6 by selector.
-    rows.append((pad(["🎲  2-LEG HR PARLAYS — 3 tickets (frequent-cash fun)"]), "section_header_parlay"))
+    rows.append((pad(["🎲  2-LEG HR PARLAYS — 2 tickets (proven +EV slots)"]), "section_header_parlay"))
     rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Selector", "Contact Quality", ""]), "col_header_parlay"))
 
     if hr_source.empty or not parlay_candidates:
@@ -913,11 +922,17 @@ def build_rows(
             except Exception:
                 return f"{label}:—"
 
+        # NO-OVERLAP + proven slots (test_2legger_roi.py on +301-400 pool):
+        #   top4+5 (idx 3,4): +169% ROI, 16% hit — the moneymaker
+        #   top6+7 (idx 5,6): ~breakeven, kept as a second ticket
+        #   top8+9 dropped — went 0/11, dead money.
+        # The 3-legger above uses top1-3 (idx 0,1,2); these use distinct
+        # players below it so no name repeats across tickets.
+        slot_pairs = [(3, 4), (5, 6)]
         pairs = []
-        i = 0
-        while i + 1 < len(diversified) and len(pairs) < 3:
-            pairs.append((diversified[i], diversified[i + 1]))
-            i += 2
+        for i, j in slot_pairs:
+            if j < len(diversified):
+                pairs.append((diversified[i], diversified[j]))
 
         if not pairs:
             rows.append((pad(["—", "Not enough candidates for a 2-legger today", ""]), "no_plays"))
