@@ -20,6 +20,7 @@ on:
           - test_2legger_roi
           - test_3legger_style
           - test_odds_sweetspot
+          - test_3legger_ev
 
 jobs:
   diagnostic:
@@ -118,6 +119,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_odds_sweetspot.py
+
+      - name: Run test_3legger_ev.py
+        if: inputs.script == 'test_3legger_ev'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_3legger_ev.py
+
 
 
 
