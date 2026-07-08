@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - validate_ks_model
+          - validate_hrrbi_model
 
 jobs:
   diagnostic:
@@ -30,3 +31,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python validate_ks_model.py
+
+      - name: Run validate_hrrbi_model.py
+        if: inputs.script == 'validate_hrrbi_model'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python validate_hrrbi_model.py
+
