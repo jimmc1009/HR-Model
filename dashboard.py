@@ -1020,28 +1020,27 @@ def build_rows(
                 odds_str = f"+{odds_str}"
 
             breakeven_american = breakeven
-            # Strength tag — flag the specific tier×line×direction cells that
-            # validate_ks_model.py proved clear breakeven by +4% on 15+ sample.
-            # These are the ONLY K spots with demonstrated edge; everything else
-            # is bet-all-negative (overs -6.2%, unders -8.8% ROI). Fewer, better.
-            def _ks_tier(s):
-                if s >= 8: return "8+"
-                if s >= 6: return "6-8"
-                if s >= 4: return "4-6"
-                if s >= 2: return "2-4"
-                if s >= 0: return "0-2"
-                return "<0"
-            # (tier, line, direction) -> label. From the diagnostic:
-            #   4-6 | 6.5 | under  78.1% +20.8%  (anchor)
-            #   6-8 | 6.5 | over   58.7% +5.4%
-            #   <0  | 5.5 | over   52.9% +4.5%
-            PROVEN = {
-                ("4-6", 6.5, "UNDER"): "🔥 STRONG",
-                ("6-8", 6.5, "OVER"):  "🔥 STRONG",
-                ("<0",  5.5, "OVER"):  "✓ ok",
-            }
-            cell = (_ks_tier(score), line, direction)
-            ks_strength = PROVEN.get(cell, "· unproven")
+            # Strength tag — computed LIVE from the hit-rate data (self-updating,
+            # no retest needed). A cell earns 🔥 STRONG only with BOTH a real
+            # edge AND enough sample to trust it. Small-sample "edges" are the
+            # noise that bled the bankroll, so they're flagged unproven.
+            #   edge from calc_ks_value (edge_str); sample from hit_rates tuple.
+            _edge_val = safe_float(edge_str.replace("%", "").replace("+", "")) if edge_str else -99
+            # look up this cell's sample size (tier,line,direction) -> (rate,n)
+            _tier_lbl = None
+            for _tl, _lo, _hi in [("8+",8,999),("6-8",6,8),("4-6",4,6),
+                                   ("2-4",2,4),("Under 2",0,2),("Under 0",-999,0)]:
+                if _lo <= score < _hi: _tier_lbl = _tl; break
+            _cell = hit_rates.get((_tier_lbl, line, direction.lower()))
+            _n = _cell[1] if isinstance(_cell, tuple) and len(_cell) > 1 else 0
+            if _edge_val >= 4.0 and _n >= 30:
+                ks_strength = f"🔥 STRONG (n={_n})"
+            elif _edge_val >= 4.0 and _n >= 15:
+                ks_strength = f"✓ ok (n={_n})"
+            elif _n < 15:
+                ks_strength = f"· thin (n={_n})"
+            else:
+                ks_strength = f"· weak edge (n={_n})"
 
             value_plays.append({
                 "rank":       safe_val(row, "Rank"),
@@ -1061,11 +1060,14 @@ def build_rows(
         if not value_plays:
             rows.append((pad(["—", "No value plays today — no edge found vs hit rates"]), "no_plays"))
         else:
-            # Proven cells first (validated edge), then by edge within group —
-            # so the bettable spots rise to the top and unproven ones sink.
-            _ksrank = {"🔥 STRONG": 0, "✓ ok": 1, "· unproven": 2}
+            # Proven cells first (real edge + sample), then by edge within group.
+            def _ks_rank(s):
+                if s.startswith("🔥"): return 0
+                if s.startswith("✓"):  return 1
+                if "weak" in s:         return 2
+                return 3  # thin (small sample)
             value_plays.sort(key=lambda x: (
-                _ksrank.get(x.get("strength",""), 9),
+                _ks_rank(x.get("strength","")),
                 -float(x["edge"].replace("%", "").replace("+", "")),
             ))
             for i, play in enumerate(value_plays):
