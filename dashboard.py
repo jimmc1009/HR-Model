@@ -654,15 +654,33 @@ def build_rows(
 
                 odds_display = f"+{int(odds_val)}" if odds_val > 0 else str(int(odds_val))
 
+                # Strength tag — from what actually profited in real betting:
+                #   proven odds band = +251..+600 (JuiceReel realized: +15-18%
+                #     ROI here; ≤+250 and +601+ both lost ~-32%)
+                #   edge cushion: >=4% = real; 2-4% = thin; the vig likely eats
+                #     anything under ~2% at real book prices.
+                _edge_val = float(edge_str.replace("%", "").replace("+", "")) if edge_str else -99
+                _in_band  = 251 <= odds_val <= 600
+                if _in_band and _edge_val >= 4.0:
+                    strength = "🔥 STRONG"
+                elif _in_band and _edge_val >= 2.0:
+                    strength = "✓ ok"
+                elif not _in_band:
+                    strength = "⚠️ odds"      # outside proven band — skip
+                else:
+                    strength = "· thin"       # edge under 2% — vig likely eats it
+
                 # Capture contact quality HERE, per-row, while `row` is correct
                 hr_value_plays.append({
                     "batter":    batter,
                     "team":      team,
                     "score":     str(round(hr_score, 1)),
                     "odds":      odds_display,
+                    "odds_val":  odds_val,
+                    "strength":  strength,
                     "breakeven": breakeven,
                     "edge":      edge_str,
-                    "edge_num":  float(edge_str.replace("%", "").replace("+", "")),
+                    "edge_num":  _edge_val,
                     "has_value": has_value,
                     "hit_rate":  hit_rate,
                     "barrel_7d":     row.get("barrel_pct_7d", ""),
@@ -685,8 +703,11 @@ def build_rows(
             p for p in hr_value_plays
             if p.get("has_value") and float(p["score"]) >= 9.0
         ]
-        # Sort best edge first
-        hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
+        # Sort: STRONG plays first (proven odds band + real cushion), then by
+        # edge within each strength group — so what's actually worth betting
+        # rises to the top instead of thin/out-of-band picks.
+        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3}
+        hr_value_plays.sort(key=lambda x: (_rank.get(x.get("strength",""), 9), -x["edge_num"]))
 
         if not hr_value_plays:
             rows.append((pad(["—", "No edge plays today — no picks beat breakeven vs resolved rates", ""]), "no_plays"))
@@ -736,7 +757,7 @@ def build_rows(
                     f"{tier_tag} {play['score']}",
                     play["odds"],
                     f"{play['hit_rate']}%",
-                    play["edge"],
+                    f"{play['edge']}  {play.get('strength','')}",
                     contact_str,
                 ]), f"data_hr_{'strong' if score_val >= 13 else 'moderate' if score_val >= 12 else 'light'}"))
 
