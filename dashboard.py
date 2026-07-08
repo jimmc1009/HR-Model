@@ -1020,6 +1020,29 @@ def build_rows(
                 odds_str = f"+{odds_str}"
 
             breakeven_american = breakeven
+            # Strength tag — flag the specific tier×line×direction cells that
+            # validate_ks_model.py proved clear breakeven by +4% on 15+ sample.
+            # These are the ONLY K spots with demonstrated edge; everything else
+            # is bet-all-negative (overs -6.2%, unders -8.8% ROI). Fewer, better.
+            def _ks_tier(s):
+                if s >= 8: return "8+"
+                if s >= 6: return "6-8"
+                if s >= 4: return "4-6"
+                if s >= 2: return "2-4"
+                if s >= 0: return "0-2"
+                return "<0"
+            # (tier, line, direction) -> label. From the diagnostic:
+            #   4-6 | 6.5 | under  78.1% +20.8%  (anchor)
+            #   6-8 | 6.5 | over   58.7% +5.4%
+            #   <0  | 5.5 | over   52.9% +4.5%
+            PROVEN = {
+                ("4-6", 6.5, "UNDER"): "🔥 STRONG",
+                ("6-8", 6.5, "OVER"):  "🔥 STRONG",
+                ("<0",  5.5, "OVER"):  "✓ ok",
+            }
+            cell = (_ks_tier(score), line, direction)
+            ks_strength = PROVEN.get(cell, "· unproven")
+
             value_plays.append({
                 "rank":       safe_val(row, "Rank"),
                 "pitcher":    safe_val(row, "pitcher_name") or safe_val(row, "Pitcher"),
@@ -1029,6 +1052,7 @@ def build_rows(
                 "odds":       odds_str,
                 "breakeven":  breakeven_american,
                 "edge":       edge_str,
+                "strength":   ks_strength,
                 "score":      score,
                 "score_str":  str(round(score, 1)),
                 "direction_raw": direction,
@@ -1037,7 +1061,13 @@ def build_rows(
         if not value_plays:
             rows.append((pad(["—", "No value plays today — no edge found vs hit rates"]), "no_plays"))
         else:
-            value_plays.sort(key=lambda x: float(x["edge"].replace("%", "").replace("+", "")), reverse=True)
+            # Proven cells first (validated edge), then by edge within group —
+            # so the bettable spots rise to the top and unproven ones sink.
+            _ksrank = {"🔥 STRONG": 0, "✓ ok": 1, "· unproven": 2}
+            value_plays.sort(key=lambda x: (
+                _ksrank.get(x.get("strength",""), 9),
+                -float(x["edge"].replace("%", "").replace("+", "")),
+            ))
             for i, play in enumerate(value_plays):
                 rows.append((pad([
                     str(i + 1),
@@ -1048,7 +1078,7 @@ def build_rows(
                     play["direction"],
                     play["odds"],
                     play["breakeven"],
-                    play["edge"],
+                    f"{play['edge']}  {play.get('strength','')}",
                 ]), f"data_ks_{play['direction_raw'].lower()}"))
 
     rows.append((E[:], "spacer"))
