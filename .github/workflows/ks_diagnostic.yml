@@ -1,0 +1,32 @@
+name: KS Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Which KS diagnostic to run"
+        required: true
+        type: choice
+        options:
+          - validate_ks_model
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install gspread google-auth pandas numpy pytz pybaseball requests
+
+      - name: Run validate_ks_model.py
+        if: inputs.script == 'validate_ks_model'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python validate_ks_model.py
