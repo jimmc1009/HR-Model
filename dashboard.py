@@ -1028,10 +1028,11 @@ def build_rows(
             _edge_val = safe_float(edge_str.replace("%", "").replace("+", "")) if edge_str else -99
             # look up this cell's sample size (tier,line,direction) -> (rate,n)
             _tier_lbl = None
-            for _tl, _lo, _hi in [("8+",8,999),("6-8",6,8),("4-6",4,6),
-                                   ("2-4",2,4),("Under 2",0,2),("Under 0",-999,0)]:
+            for _tl, _lo, _hi in [("12+",12,999),("10-12",10,12),("8-10",8,10),
+                                   ("6-8",6,8),("4-6",4,6),("2-4",2,4),
+                                   ("Under 2",0,2),("Under 0",-999,0)]:
                 if _lo <= score < _hi: _tier_lbl = _tl; break
-            _cell = hit_rates.get((_tier_lbl, line, direction.lower()))
+            _cell = ks_hit_rates.get((_tier_lbl, line, direction.lower()))
             _n = _cell[1] if isinstance(_cell, tuple) and len(_cell) > 1 else 0
             if _edge_val >= 4.0 and _n >= 30:
                 ks_strength = f"🔥 STRONG (n={_n})"
