@@ -92,12 +92,27 @@ def load_hr_scores(gc,sid):
     return sh,df
 
 def get_or_create_tracker(sh):
+    NEW_HEADER=["date","bet_type","players","odds_each","combined_odds",
+                "result","pnl_units","running_total","logged_at"]
     try:
         ws=sh.worksheet(TRACKER_TAB)
+        # Migrate old tabs that predate the running_total column: if the header
+        # lacks it, insert it before logged_at and shift existing rows so the
+        # column lines up (old rows get a blank running_total, recomputed below).
+        cur=ws.get_all_values()
+        if cur and "running_total" not in cur[0]:
+            head=cur[0]; body=cur[1:]
+            li=head.index("logged_at") if "logged_at" in head else len(head)
+            new_body=[]
+            for r in body:
+                r=r+[""]*(len(head)-len(r))
+                r=r[:li]+[""]+r[li:]   # insert blank running_total before logged_at
+                new_body.append(r)
+            ws.clear()
+            ws.update([NEW_HEADER]+new_body)
     except gspread.WorksheetNotFound:
         ws=sh.add_worksheet(title=TRACKER_TAB,rows=2000,cols=12)
-        ws.update([["date","bet_type","players","odds_each","combined_odds",
-                    "result","pnl_units","running_total","logged_at"]])
+        ws.update([NEW_HEADER])
     return ws
 
 def build_todays_picks(df_today,zr):
