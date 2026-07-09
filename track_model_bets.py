@@ -196,12 +196,14 @@ def main():
         print(f"No new picks to log for {latest} (already logged or none qualify)")
 
     # ── STEP 2: resolve pending picks via HR_All_Scores hit_hr ───────────
-    # outcome lookup: (date, player_norm) -> Yes/No
+    # outcome lookup: (date, player_norm) -> Yes / No / Void
+    # (resolve_picks.py marks DNP/scratched/postponed players as "Void")
     def norm(n): return str(n).strip().lower()
     outcome={}
     for _,r in df.iterrows():
-        if r["hit_str"] in ("Yes","No"):
-            outcome[(str(r["date"]),norm(r["player_name"]))]=r["hit_str"]
+        v=r["hit_str"]
+        if v in ("Yes","No","Void"):
+            outcome[(str(r["date"]),norm(r["player_name"]))]=v
 
     allvals=wr(lambda:ws.get_all_values())
     head=allvals[0]; rows=allvals[1:]
@@ -215,7 +217,16 @@ def main():
         # look up each leg
         legs_res=[outcome.get((d,norm(p))) for p in players]
         if any(lr is None for lr in legs_res):
-            continue  # not all legs resolved yet — leave pending
+            continue  # not all legs graded yet — leave pending
+        # A voided leg voids the whole ticket: stake returned, 0 P&L, excluded
+        # from ROI. (For a parlay, most books drop the void leg and grade the
+        # rest — but modeling it as a push on the ticket is the safe, simple
+        # choice and matches how a voided single behaves.)
+        if any(lr=="Void" for lr in legs_res):
+            row[ci["result"]]="Void"
+            row[ci["pnl_units"]]="0.000"
+            rows[ri]=row; updates+=1
+            continue
         all_hit=all(lr=="Yes" for lr in legs_res)
         bet_type=row[ci["bet_type"]]
         if bet_type=="single":
