@@ -97,7 +97,7 @@ def get_or_create_tracker(sh):
     except gspread.WorksheetNotFound:
         ws=sh.add_worksheet(title=TRACKER_TAB,rows=2000,cols=12)
         ws.update([["date","bet_type","players","odds_each","combined_odds",
-                    "result","pnl_units","logged_at"]])
+                    "result","pnl_units","running_total","logged_at"]])
     return ws
 
 def build_todays_picks(df_today,zr):
@@ -173,7 +173,7 @@ def main():
         if key in logged_keys: continue
         new_rows.append([latest,bet_type,"|".join(str(p) for p in players),
                          ",".join(str(o) for o in odds_each),str(combined),
-                         "Pending","",datetime.utcnow().isoformat()])
+                         "Pending","","",datetime.utcnow().isoformat()])
     if new_rows:
         wr(lambda:ws.append_rows(new_rows))
         print(f"Logged {len(new_rows)} new picks for {latest}")
@@ -212,9 +212,22 @@ def main():
         row[ci["result"]]="Won" if all_hit else "Lost"
         row[ci["pnl_units"]]=f"{pnl:.3f}"
         rows[ri]=row; updates+=1
-    if updates:
+
+    # Recompute the running cumulative P&L total across ALL graded rows, in
+    # sheet order (chronological), so the running_total column shows the trend
+    # after every settled bet — like the Pikkit chart, but for model picks.
+    if "running_total" in ci:
+        cum=0.0
+        for ri,row in enumerate(rows):
+            if len(row)<len(head): row=row+[""]*(len(head)-len(row))
+            if row[ci["result"]].strip() in ("Won","Lost"):
+                cum+=sf(row[ci["pnl_units"]])
+                row[ci["running_total"]]=f"{cum:.3f}"
+                rows[ri]=row
+
+    if updates or "running_total" in ci:
         wr(lambda:ws.update([head]+rows))
-        print(f"Resolved {updates} pending picks")
+        print(f"Resolved {updates} pending picks; running total updated")
     else:
         print("No newly resolvable pending picks")
 
@@ -228,6 +241,10 @@ def main():
         pnl=sum(sf(r[ci["pnl_units"]]) for r in sub)
         roi=pnl/n*100 if n else 0
         print(f"  {bt:<8} n={n:>4}  W={w:>3}  hit={w/n*100:>5.1f}%  P&L={pnl:>+7.2f}u  ROI={roi:>+6.1f}%")
+    # Running cumulative total across everything graded
+    total_pnl=sum(sf(r[ci["pnl_units"]]) for r in graded)
+    print("-"*56)
+    print(f"  RUNNING TOTAL P&L (all model picks): {total_pnl:+.2f}u")
     print("="*56)
     print("  This is the CLEAN forward record on corrected picks. Let it")
     print("  build a few weeks before judging. Singles vs parlays shown")
