@@ -133,10 +133,15 @@ def compute_selector(row, zone_rates) -> float:
     return (hr_per_fb / 8.0) + (leg_edge * 0.8)
 
 
-def simulate_parlay(day_df: pd.DataFrame, zone_rates: dict) -> list:
+def rank_day(day_df: pd.DataFrame, zone_rates: dict, want: int = 7) -> list:
     """
-    Simulate the parlay picker for one day.
-    Returns list of selected candidate dicts (up to 3).
+    Rank one day's parlay pool exactly like dashboard.py: filter to the value
+    zones, score by BLEND-1 selector, sort desc, then diversify to one batter
+    per opposing pitcher. Returns the ranked, pitcher-diversified list.
+
+    `want` = how many legs we try to surface (filled from the pool if
+    diversification left us short). The 3-legger uses the first 3; the two
+    2-leggers use slots (3,4) and (5,6), so we want up to 7.
     """
     pool = day_df[day_df.apply(
         lambda r: in_parlay_pool(r["hr_score"], r["odds_num"]), axis=1
@@ -148,32 +153,37 @@ def simulate_parlay(day_df: pd.DataFrame, zone_rates: dict) -> list:
     pool["selector"] = pool.apply(lambda r: compute_selector(r, zone_rates), axis=1)
     pool = pool.sort_values("selector", ascending=False).reset_index(drop=True)
 
-    selected   = []
+    ranked     = []
     used_games = set()
-
     for _, row in pool.iterrows():
-        if len(selected) >= LEG_COUNT:
-            break
         opp_pit = str(row.get("pitcher_name", "")).strip()
         if opp_pit and opp_pit in used_games:
             continue
-        selected.append(row)
+        ranked.append(row)
         if opp_pit:
             used_games.add(opp_pit)
 
-    # Fill remaining if diversification left us short
-    if len(selected) < LEG_COUNT:
+    # Fill from the remaining pool if diversification left us short of `want`
+    if len(ranked) < want:
         for _, row in pool.iterrows():
-            if len(selected) >= LEG_COUNT:
+            if len(ranked) >= want:
                 break
             already = any(
-                s.get("player_name") == row.get("player_name")
-                for s in selected
+                s.get("player_name") == row.get("player_name") for s in ranked
             )
             if not already:
-                selected.append(row)
+                ranked.append(row)
 
-    return selected
+    return ranked
+
+
+def simulate_parlay(day_df: pd.DataFrame, zone_rates: dict) -> list:
+    """3-legger = top 3 of the pitcher-diversified ranked list."""
+    return rank_day(day_df, zone_rates, want=LEG_COUNT)[:LEG_COUNT]
+
+
+def _leg_hit(s) -> bool:
+    return safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool", "")) == "True"
 
 
 def main():
@@ -253,7 +263,7 @@ def main():
         print(f"  {label:20s}: {h}/{n} = {rate}%  (breakeven-edge feeds selector)")
     print()
 
-    # ── Simulate parlay day by day ────────────────────────────────────────
+    # ── Simulate parlays day by day ───────────────────────────────────────
     days_with_parlay      = 0
     days_parlay_hit       = 0
     days_all_3_hit        = 0
@@ -261,6 +271,11 @@ def main():
     total_legs            = 0
     total_legs_hit        = 0
     winning_leg_data      = []
+
+    # 2-legger slots (dashboard.py:952): #1 = top4+5 (idx 3,4), #2 = top6+7 (idx 5,6)
+    two_leg_slots = {"#1 top4+5": (3, 4), "#2 top6+7": (5, 6)}
+    two_leg = {name: {"formed": 0, "won": 0, "staked": 0.0, "returned": 0.0}
+               for name in two_leg_slots}
 
     print("=" * 60)
     print("SIMULATED PARLAY — Day by Day")
@@ -271,20 +286,19 @@ def main():
         if day_df.empty:
             continue
 
-        selected = simulate_parlay(day_df, zone_rates)
+        ranked   = rank_day(day_df, zone_rates, want=7)
+        selected = ranked[:LEG_COUNT]
 
         if not selected:
             days_no_pool += 1
             continue
 
+        # ── 3-legger (top1-3) ──
         days_with_parlay += 1
-        legs_hit = sum(1 for s in selected if safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool", "")) == "True")
-
+        legs_hit = sum(1 for s in selected if _leg_hit(s))
         total_legs     += len(selected)
         total_legs_hit += legs_hit
-
         all_hit = legs_hit == len(selected) and len(selected) == LEG_COUNT
-
         if all_hit:
             days_parlay_hit += 1
             days_all_3_hit  += 1
@@ -292,13 +306,31 @@ def main():
         status = "✅ HIT" if all_hit else f"❌ {legs_hit}/{len(selected)}"
         print(f"\n{d} — {status}")
         for s in selected:
-            hit_str  = "✅" if (safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool","")) == "True") else "❌"
+            hit_str  = "✅" if _leg_hit(s) else "❌"
             tier     = get_score_tier(s["hr_score"])
             zone     = get_odds_zone(s["odds_num"])
             selector = safe_float(s.get("selector", 0))
             print(f"  {hit_str} {str(s.get('player_name',''))[:22]:22s} score={s['hr_score']:.1f} tier={tier:6s} odds=+{int(s['odds_num'])} zone={zone} selector={selector:.3f}")
-            if all_hit or safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool","")) == "True":
+            if _leg_hit(s):
                 winning_leg_data.append(s)
+
+        # ── 2-leggers (top4+5, top6+7) ──
+        for name, (i, j) in two_leg_slots.items():
+            if j >= len(ranked):
+                continue                       # not enough legs to form this ticket
+            a, b = ranked[i], ranked[j]
+            two_leg[name]["formed"] += 1
+            two_leg[name]["staked"] += 1.0
+            if _leg_hit(a) and _leg_hit(b):
+                dec_payout = (1 + a["odds_num"] / 100.0) * (1 + b["odds_num"] / 100.0)
+                two_leg[name]["won"]      += 1
+                two_leg[name]["returned"] += dec_payout
+                mark = "✅✅"
+            else:
+                mark = "✅❌" if (_leg_hit(a) or _leg_hit(b)) else "❌❌"
+            print(f"    2-leg {name}: {mark} "
+                  f"{str(a.get('player_name',''))[:16]} +{int(a['odds_num'])} / "
+                  f"{str(b.get('player_name',''))[:16]} +{int(b['odds_num'])}")
 
     print()
     print("=" * 60)
@@ -310,6 +342,31 @@ def main():
     print(f"")
     print(f"All-3-hit days:         {days_all_3_hit} / {days_with_parlay} = {round(days_all_3_hit/days_with_parlay*100,1) if days_with_parlay else 0}%")
     print(f"Individual leg hit rate:{total_legs_hit} / {total_legs} = {round(total_legs_hit/total_legs*100,1) if total_legs else 0}%")
+    print()
+
+    # ── 2-LEGGER RESULTS ──────────────────────────────────────────────────
+    print("=" * 60)
+    print("2-LEGGER RESULTS  (1u flat per ticket)")
+    print("=" * 60)
+    grand_stake = grand_return = 0.0
+    for name in two_leg_slots:
+        t = two_leg[name]
+        formed, won = t["formed"], t["won"]
+        staked, returned = t["staked"], t["returned"]
+        profit = returned - staked
+        roi = (profit / staked * 100) if staked else 0.0
+        hit = (won / formed * 100) if formed else 0.0
+        grand_stake  += staked
+        grand_return += returned
+        print(f"  {name:12s}: formed {formed}/{days_with_parlay} days | "
+              f"won {won} ({hit:.1f}%) | P/L {profit:+.1f}u | ROI {roi:+.1f}%")
+    g_profit = grand_return - grand_stake
+    g_roi = (g_profit / grand_stake * 100) if grand_stake else 0.0
+    print(f"  {'COMBINED':12s}: staked {grand_stake:.0f}u | "
+          f"P/L {g_profit:+.1f}u | ROI {g_roi:+.1f}%")
+    print("  NOTE: live dashboard fills its ranked list to only 6 legs, so slot")
+    print("  #2 (top6+7, needs a 7th leg) often will NOT form in production even")
+    print("  though it forms here whenever the pool has 7+ legs. Likely a bug.")
     print()
 
     if not winning_leg_data:
