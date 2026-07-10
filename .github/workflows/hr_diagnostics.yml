@@ -23,6 +23,7 @@ on:
           - test_3legger_ev
           - test_battracking
           - test_scoring_systems
+          - feature_separation
 
 jobs:
   diagnostic:
@@ -143,8 +144,9 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_scoring_systems.py
 
-
-
-
-
-
+      - name: Run feature_separation.py
+        if: inputs.script == 'feature_separation'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python feature_separation.py
