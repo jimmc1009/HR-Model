@@ -156,11 +156,22 @@ def part2(res):
         m,s=st[f]; return (r[f]-m)/s if s else 0.0
     def zpower(r): return sum(z(r,f) for f in zfeats)
 
+    # Pre-committed power-anchor swaps: keep edge*0.8 identical, replace the
+    # hr_per_fb/8 power term with season Barrel% or HR/PA%, each scaled so its
+    # spread matches hr_per_fb/8's on TRAIN (a fair swap, not a rescale).
+    base_pow_std=(train["hr_per_fb"]/8).std(ddof=0) or 1.0
+    def kscale(col):
+        s=train[col].std(ddof=0) or 1.0
+        return base_pow_std/s
+    kb=kscale("season_barrel_pct"); kp=kscale("hr_per_pa")
+
     selectors={
         "power only (hr_per_fb)": lambda r:r["hr_per_fb"],
         "iso only":               lambda r:r["iso"],
         "season barrel only":     lambda r:r["season_barrel_pct"],
         "blend1  (CURRENT)":      lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8,
+        "blend: barrel + edge":   lambda r:r["season_barrel_pct"]*kb + _edge(r["score"],r["odds"],zr)*0.8,
+        "blend: hr_per_pa + edge":lambda r:r["hr_per_pa"]*kp + _edge(r["score"],r["odds"],zr)*0.8,
         "power composite (z)":    zpower,
         "blend1 + platoon*0.8":   lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + r["platoon_score"]*0.8,
     }
