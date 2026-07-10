@@ -26,13 +26,27 @@ SCOPES=["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.c
 TRAIN_FRAC=0.70
 MIN_ZONE_SAMPLE=15
 
-FEATURES=[  # (column, label)
+FEATURES=[  # (column, label) — must match HR_All_Scores headers exactly
+    ("iso",                "ISO"),
+    ("season_barrel_pct",  "Barrel% (season)"),
+    ("barrel_pct_5d",      "Barrel% (5d)"),
+    ("barrel_pct_7d",      "Barrel% (7d)"),
+    ("barrel_pct_10d",     "Barrel% (10d)"),
     ("hr_per_fb",          "HR/FB%"),
-    ("season_barrel_pct",  "Season Barrel%"),
-    ("barrel_pct_7d",      "Barrel% 7d"),
-    ("platoon_score",      "Platoon Score"),
-    ("hr_weather_boost",   "Weather Boost"),
+    ("hr_per_pa",          "HR/PA%"),
+    ("hard_hit_pct_7d",    "HardHit% (7d)"),
+    ("hard_hit_pct_season","HardHit% (season)"),
+    ("avg_ev_7d",          "Avg EV (7d)"),
+    ("avg_ev_5d",          "Avg EV (5d)"),
+    ("avg_ev_10d",         "Avg EV (10d)"),
+    ("avg_la_7d",          "Avg LA (7d)"),
+    ("pull_rate",          "Pull Rate"),
+    ("park_hr_factor",     "Park HR Factor"),
     ("pitch_matchup_score","Pitch Matchup"),
+    ("hr_weather_boost",   "Weather Boost"),
+    ("temp_f",             "Temperature"),
+    ("platoon_score",      "Platoon Score"),
+    ("top_pitch_iso_vs_hand","Top Pitch ISO vs Hand"),
     ("momentum_score",     "Momentum"),
 ]
 
@@ -135,11 +149,20 @@ def part2(res):
     test=test[test.apply(lambda r:zone_key(r["score"],r["odds"]) is not None,axis=1)].copy()
     pool_rate=test["win"].mean()*100 if len(test) else 0.0
 
+    # train-only stats for scale-free (z-scored) composites — no leakage
+    zfeats=["hr_per_fb","iso","season_barrel_pct","barrel_pct_5d"]
+    st={f:(train[f].mean(), (train[f].std(ddof=0) or 1.0)) for f in zfeats}
+    def z(r,f):
+        m,s=st[f]; return (r[f]-m)/s if s else 0.0
+    def zpower(r): return sum(z(r,f) for f in zfeats)
+
     selectors={
         "power only (hr_per_fb)": lambda r:r["hr_per_fb"],
+        "iso only":               lambda r:r["iso"],
+        "season barrel only":     lambda r:r["season_barrel_pct"],
         "blend1  (CURRENT)":      lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8,
+        "power composite (z)":    zpower,
         "blend1 + platoon*0.8":   lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + r["platoon_score"]*0.8,
-        "blend1 + barrel/20":     lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + r["season_barrel_pct"]/20,
     }
     # a pool-filter variant: drop negative-platoon legs, then rank with blend1
     gate_name="blend1 + drop platoon<0"
