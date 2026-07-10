@@ -48,6 +48,13 @@ FEATURES=[  # (column, label) — must match HR_All_Scores headers exactly
     ("platoon_score",      "Platoon Score"),
     ("top_pitch_iso_vs_hand","Top Pitch ISO vs Hand"),
     ("momentum_score",     "Momentum"),
+    # — pitcher (opponent) "gives up HR" signals —
+    ("pitcher_hr_per_fb",     "Pitcher HR/FB-allowed"),
+    ("pitcher_barrel_pct",    "Pitcher Barrel%-allowed"),
+    ("pitcher_hr9",           "Pitcher HR/9"),
+    ("pitcher_hr_7d",         "Pitcher HR (7d)"),
+    ("pitcher_fb_rate_allowed","Pitcher FB%-allowed"),
+    ("pitcher_barrel_7d",     "Pitcher Barrel% (7d)"),
 ]
 
 def gcc():
@@ -165,6 +172,14 @@ def part2(res):
         return base_pow_std/s
     kb=kscale("season_barrel_pct"); kp=kscale("hr_per_pa")
 
+    # pitcher HR-vulnerability composite (z on TRAIN) — positive = HR-prone pitcher
+    pv_feats=[c for c in ["pitcher_hr_per_fb","pitcher_barrel_pct","pitcher_hr9"]
+              if c in train.columns and train[c].std(ddof=0)>0]
+    pst={f:(train[f].mean(),(train[f].std(ddof=0) or 1.0)) for f in pv_feats}
+    def pvuln(r):
+        if not pv_feats: return 0.0
+        return sum((r[f]-pst[f][0])/pst[f][1] for f in pv_feats)/len(pv_feats)
+
     selectors={
         "power only (hr_per_fb)": lambda r:r["hr_per_fb"],
         "iso only":               lambda r:r["iso"],
@@ -172,6 +187,7 @@ def part2(res):
         "blend1  (CURRENT)":      lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8,
         "blend: barrel + edge":   lambda r:r["season_barrel_pct"]*kb + _edge(r["score"],r["odds"],zr)*0.8,
         "blend: hr_per_pa + edge":lambda r:r["hr_per_pa"]*kp + _edge(r["score"],r["odds"],zr)*0.8,
+        "blend1 + pitchHR(z)":    lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + pvuln(r)*base_pow_std,
         "power composite (z)":    zpower,
         "blend1 + platoon*0.8":   lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + r["platoon_score"]*0.8,
     }
@@ -206,12 +222,53 @@ def part2(res):
     print("  proof. A candidate only earns a change if it beats blend1 here AND")
     print("  its feature shows real separation in PART 1.\n")
 
+PITCH_VULN=[
+    ("pitcher_hr_per_fb",     "Pitcher HR/FB-allowed"),
+    ("pitcher_barrel_pct",    "Pitcher Barrel%-allowed"),
+    ("pitcher_hr9",           "Pitcher HR/9"),
+    ("pitcher_hr_7d",         "Pitcher HR (7d)"),
+    ("pitcher_fb_rate_allowed","Pitcher FB%-allowed"),
+]
+
+def _bin_hit(fr, col, title):
+    fr=fr[fr[col].notna()]
+    if len(fr)<20 or fr[col].std(ddof=0)==0:
+        print(f"  {title}: not enough spread / sample"); return
+    try:
+        fr=fr.assign(_q=pd.qcut(fr[col],4,labels=["Q1 low","Q2","Q3","Q4 high"],duplicates="drop"))
+    except Exception:
+        print(f"  {title}: not enough spread"); return
+    print(f"  {title}")
+    for lab,sub in fr.groupby("_q",observed=True):
+        print(f"      {str(lab):8s}  hit {sub['win'].mean()*100:5.1f}%   n={len(sub)}")
+
+def part3(res):
+    print("="*68)
+    print("PART 3 — PITCHER VULNERABILITY -> LEG HIT RATE")
+    print("         (does facing a HR-prone pitcher lift the hit rate? Q1 low -> Q4 high)")
+    print("="*68)
+    for col,label in PITCH_VULN:
+        if col in res.columns and res[col].std(ddof=0)>0:
+            _bin_hit(res, col, label)
+    # combined pitcher HR-vulnerability composite, full base vs within-pool
+    zc=[c for c,_ in PITCH_VULN if c in res.columns and res[c].std(ddof=0)>0]
+    if zc:
+        res=res.copy()
+        res["_pvuln"]=sum((res[c]-res[c].mean())/(res[c].std(ddof=0) or 1) for c in zc)
+        print("\n  Combined pitcher HR-vulnerability (z-sum of the above):")
+        _bin_hit(res, "_pvuln", "  full base")
+        pool=res[res.apply(lambda r:zone_key(r["score"],r["odds"]) is not None,axis=1)]
+        _bin_hit(pool, "_pvuln", "  within +301-400 pool only")
+    print("\n  Rising Q1->Q4 = your hunch holds. If it's flat WITHIN the pool, the")
+    print("  eligibility gate already captured it and the blend can't add much.\n")
+
 def main():
     gc=gcc(); sid=os.environ["GOOGLE_SHEET_ID"]
     res=load(gc,sid)
     if res.empty:
         print("No resolved rows in HR_All_Scores."); return
     part1(res)
+    part3(res)
     part2(res)
     print("Done.")
 
