@@ -1,0 +1,152 @@
+name: HR Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Which diagnostic to run"
+        required: true
+        type: choice
+        options:
+          - validate_model
+          - test_tier_expansion
+          - measure_edge_picks
+          - compare_singles_v1_v2
+          - compare_parlay_v1_v2
+          - compare_parlay_legcount
+          - check_hr_parlay_history
+          - test_parlay_blend
+          - test_ticket_overlap
+          - test_2legger_roi
+          - test_3legger_style
+          - test_odds_sweetspot
+          - test_3legger_ev
+          - test_battracking
+          - test_scoring_systems
+          - feature_separation
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install gspread google-auth pandas numpy pytz pybaseball requests
+
+      - name: Run validate_model.py
+        if: inputs.script == 'validate_model'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python validate_model.py
+
+      - name: Run test_tier_expansion.py
+        if: inputs.script == 'test_tier_expansion'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_tier_expansion.py
+
+      - name: Run measure_edge_picks.py
+        if: inputs.script == 'measure_edge_picks'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python measure_edge_picks.py
+
+      - name: Run compare_singles_v1_v2.py
+        if: inputs.script == 'compare_singles_v1_v2'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python compare_singles_v1_v2.py
+
+      - name: Run compare_parlay_v1_v2.py
+        if: inputs.script == 'compare_parlay_v1_v2'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python compare_parlay_v1_v2.py
+
+      - name: Run compare_parlay_legcount.py
+        if: inputs.script == 'compare_parlay_legcount'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python compare_parlay_legcount.py
+
+      - name: Run check_hr_parlay_history.py
+        if: inputs.script == 'check_hr_parlay_history'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python check_hr_parlay_history.py
+
+      - name: Run test_parlay_blend.py
+        if: inputs.script == 'test_parlay_blend'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_parlay_blend.py
+
+      - name: Run test_ticket_overlap.py
+        if: inputs.script == 'test_ticket_overlap'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_ticket_overlap.py
+
+      - name: Run test_2legger_roi.py
+        if: inputs.script == 'test_2legger_roi'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_2legger_roi.py
+
+      - name: Run test_3legger_style.py
+        if: inputs.script == 'test_3legger_style'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_3legger_style.py
+
+      - name: Run test_odds_sweetspot.py
+        if: inputs.script == 'test_odds_sweetspot'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_odds_sweetspot.py
+
+      - name: Run test_3legger_ev.py
+        if: inputs.script == 'test_3legger_ev'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_3legger_ev.py
+
+      - name: Run test_battracking.py
+        if: inputs.script == 'test_battracking'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_battracking.py
+
+      - name: Run test_scoring_systems.py
+        if: inputs.script == 'test_scoring_systems'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_scoring_systems.py
+
+      - name: Run feature_separation.py
+        if: inputs.script == 'feature_separation'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python feature_separation.py

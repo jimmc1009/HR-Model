@@ -159,7 +159,16 @@ def main():
         v = resolved[f].apply(lambda x: sf(x, np.nan))
         h = v[resolved["hit"]].mean(); m = v[~resolved["hit"]].mean()
         if pd.isna(h) or pd.isna(m) or m == 0: continue
-        pct = (h-m)/abs(m)*100
+        # Guard against near-zero-denominator blowup: features that center on
+        # ~0 (like momentum_score) produce meaningless giant % from tiny diffs.
+        # When |miss avg| is tiny, express the gap relative to the feature's
+        # spread instead, capped, so it can't fake a "+368%" strongest signal.
+        if abs(m) < 0.5:
+            spread = v.std()
+            pct = ((h - m) / spread * 100) if spread and not pd.isna(spread) else 0.0
+            pct = max(-99.9, min(99.9, pct))
+        else:
+            pct = (h-m)/abs(m)*100
         seps.append((f, round(h,3), round(m,3), round(pct,1)))
     seps.sort(key=lambda x:-x[3])
     print(f"  {'feature':<22} {'hit':>8} {'miss':>8} {'sep%':>8}")
@@ -174,61 +183,58 @@ def main():
 
     # ══ CHECK 4: SELECTOR CHECK (parlay winning-leg reality) ══════════════
     print("="*62); print("4. PARLAY SELECTOR vs WINNING-LEG REALITY"); print("="*62)
-    # current selector = platoon + hr_per_fb/20. Which of its inputs actually
-    # separates winning HR legs more?
+    # DEPLOYED selector = BLEND 1: hr_per_fb/8 + edge*0.8. hr_per_fb is the
+    # primary power driver (no longer buried by /20); edge (value) is the other
+    # half. This check confirms hr_per_fb still out-separates platoon so the
+    # weighting stays justified.
     plat = resolved["platoon_score"].apply(lambda x: sf(x, np.nan)) if "platoon_score" in resolved.columns else None
     hrfb = resolved["hr_per_fb"].apply(lambda x: sf(x, np.nan)) if "hr_per_fb" in resolved.columns else None
     for name, series, weight_note in [
-        ("platoon_score", plat, "selector uses raw (up to ~2.4)"),
-        ("hr_per_fb",     hrfb, "selector uses /20 (30% -> only 1.5)"),
+        ("platoon_score", plat, "Blend1: not in selector (dropped as primary)"),
+        ("hr_per_fb",     hrfb, "Blend1: hr_per_fb/8 = primary power driver"),
     ]:
         if series is None: continue
         h = series[resolved["hit"]].mean(); m = series[~resolved["hit"]].mean()
         gap = h - m
         print(f"  {name:<16} winners={h:>7.3f} miss={m:>7.3f} gap={gap:>+7.3f}   [{weight_note}]")
     if plat is not None and hrfb is not None:
-        # normalize gaps to comparable scale via separation %
         pg = (plat[resolved["hit"]].mean()-plat[~resolved["hit"]].mean())
         hg = (hrfb[resolved["hit"]].mean()-hrfb[~resolved["hit"]].mean())
-        # hr_per_fb is on a 0-40ish scale, platoon on ~-2..2.4; compare their
-        # separation relative to their pooled std
         pstd = plat.std(); hstd = hrfb.std()
         p_eff = pg/pstd if pstd else 0
         h_eff = hg/hstd if hstd else 0
         print(f"\n  Effect size (gap / std):  platoon={p_eff:+.2f}  hr_per_fb={h_eff:+.2f}")
-        if h_eff > p_eff * 1.2:
-            flag(2, "hr_per_fb separates winning legs MORE than platoon, but the "
-                    "selector divides it by 20 — reweight selector toward hr_per_fb")
-            print("  ⚠️  hr_per_fb is the stronger leg signal but is under-weighted in selector")
-        elif p_eff > h_eff * 1.2:
-            print("  ✓ platoon is the stronger leg signal — current selector weighting OK")
+        if h_eff >= p_eff:
+            print("  ✓ hr_per_fb ≥ platoon as a leg separator — Blend-1 weighting justified")
         else:
-            print("  ~ platoon and hr_per_fb separate similarly")
+            flag(2, "platoon now out-separates hr_per_fb — revisit Blend-1 weighting")
+            print("  ⚠️  platoon has overtaken hr_per_fb — Blend-1 may need retuning")
     print()
 
     # ══ CHECK 5: SINGLES EDGE GATE (low-score leak) ═══════════════════════
     print("="*62); print("5. SINGLES EDGE GATE (low-score leak check)"); print("="*62)
-    # simulate the dashboard's positive-edge test using zone rates, see if any
-    # sub-10 players would clear breakeven (the leak we found earlier)
+    # Deployed dashboard uses a score>=9 floor AND get_hr_score_tier returns
+    # "below-8.5" (no hit-rate data) for sub-8.5. So the real leak risk is only
+    # sub-9 players clearing breakeven. Check for those specifically.
     zone_rate = {}
     for (t,z), sub in resolved.groupby(["tier","zone"]):
         if len(sub) >= 15: zone_rate[(t,z)] = sub["hit"].mean()
     leaks = 0; leak_ex = []
     for _, r in resolved.iterrows():
         s = r["score"]
-        if s >= 10: continue  # only care about sub-10 leaking
+        if s >= 9: continue  # dashboard floor is 9 — only sub-9 could leak
         zr = zone_rate.get((tier_of(s), zone_of(r["odds"])))
-        if zr is None: continue
+        if zr is None: continue  # below-8.5 has no zone rate -> can't leak
         if zr - breakeven(r["odds"]) > 0:
             leaks += 1
             if len(leak_ex) < 3:
                 leak_ex.append(f"{r.get('player_name','?')} score={s:.1f}")
     if leaks:
-        print(f"  ⚠️  {leaks} sub-10 rows would clear breakeven (leak if no score floor)")
+        print(f"  ⚠️  {leaks} sub-9 rows would clear breakeven (leak ONLY if floor absent)")
         print(f"     e.g. {', '.join(leak_ex)}")
-        flag(2, f"{leaks} sub-10 players can pass edge test — confirm dashboard has score>=10 (or 9) floor")
+        flag(2, f"{leaks} sub-9 players clear edge in raw data — confirm dashboard floor=9 is deployed")
     else:
-        print("  ✓ No sub-10 leak detected")
+        print("  ✓ No sub-9 leak (floor=9 + below-8.5 tier guard covers it)")
     print()
 
     # ══ CHECK 6: CONSISTENCY ══════════════════════════════════════════════

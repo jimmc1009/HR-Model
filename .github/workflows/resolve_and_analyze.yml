@@ -59,6 +59,12 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python hrrbi_analysis.py
 
+      - name: Run track_model_bets.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python track_model_bets.py
+
       # ── Dashboard ─────────────────────────────────────────────────────────
       - name: Run dashboard.py
         env:

@@ -2,13 +2,17 @@
 check_hr_parlay_history.py
 Diagnostic: simulates the 3-leg HR parlay picker against historical data.
 
-Pool definition (data-driven value zones):
-  - 10-11 score | +301-499 odds  (26.7% hit rate)
-  - 12+   score | +301-499 odds  (30.4% hit rate)
-  - 13+   score | up to +499     (27.6% at ≤+300, 26.9% at +301-499)
+RECONCILED to the live dashboard.py parlay build (2026-07-09):
+Pool = confirmed value zones narrowed to the +301-400 SWEET SPOT
+(test_odds_sweetspot.py); 13+|≤+300 kept for leg quality:
+  - 9-10  | +301-400
+  - 12-13 | +301-400
+  - 13+   | +301-400
+  - 13+   | ≤+300
 
-Leg selector — combined score of confirmed positive separators:
-  platoon_score + (season_barrel_pct / 20) + (hr_per_fb / 30) + (hr_weather_boost * 0.5)
+Leg selector — BLEND-1 (dashboard.py:830, validated via test_parlay_blend.py):
+  (hr_per_fb / 8.0) + (leg_edge * 0.8)
+  where leg_edge = tier×zone hit rate − implied breakeven, in % points.
 
 Picks top 3 by selector score, diversified by opposing pitcher.
 Reports simulated parlay hit rate and what winning legs had in common.
@@ -80,53 +84,64 @@ def get_odds_zone(odds: float) -> str:
     return "+700+"
 
 
-def in_parlay_pool(score: float, odds: float) -> bool:
-    """Check if a player falls in one of the CORRECTED value zones.
-    Zones from HR_Analysis Score Tier × Odds Zone AFTER the barrel-handedness
-    fix (hr_score_corrected):
-      13+   | ≤+300      — 30.0% (60)
-      13+   | +301-499   — 22.2% (63)
-      12-13 | +301-499   — 23.4% (47)
-      10-11 | ≤+300      — 29.7% (37)
-      9-10  | +301-499   — 25.9% (143)  ← new standout, biggest sample
-    Dropped: 10-11 | +301-499 fell to 16.0% (below breakeven) after correction.
-    """
+def american_breakeven(odds: float) -> float:
+    """Implied breakeven probability (%) for positive American odds."""
     if odds <= 0:
-        return False
+        return 100.0
+    return 100.0 * 100.0 / (odds + 100.0)
+
+
+def zone_key(score: float, odds: float):
+    """Deployed value-zone key for a leg (dashboard.py:810), or None if out
+    of pool. Zones narrowed to the +301-400 sweet spot; 13+|≤+300 kept."""
+    if odds <= 0:
+        return None
     if score >= 13.0 and odds <= 300:
-        return True
-    if score >= 13.0 and 301 <= odds <= 499:
-        return True
-    if 12.0 <= score < 13.0 and 301 <= odds <= 499:
-        return True
-    if 10.0 <= score < 11.0 and odds <= 300:
-        return True
-    if 9.0 <= score < 10.0 and 301 <= odds <= 499:
-        return True
-    return False
+        return "13+|<=300"
+    if score >= 13.0 and 301 <= odds <= 400:
+        return "13+|301-400"
+    if 12.0 <= score < 13.0 and 301 <= odds <= 400:
+        return "12-13|301-400"
+    if 9.0 <= score < 10.0 and 301 <= odds <= 400:
+        return "9-10|301-400"
+    return None
 
 
-def compute_selector(row) -> float:
+def in_parlay_pool(score: float, odds: float) -> bool:
+    """Deployed parlay pool = the four value zones above (dashboard.py:810)."""
+    return zone_key(score, odds) is not None
+
+
+def compute_selector(row, zone_rates) -> float:
     """
-    Combined leg selector score — MATCHES the live dashboard.py selector.
-    Validation (validate_model.py Check 4, corrected data) showed hr_per_fb
-    separates winning legs ~5x better than platoon (effect size 0.35 vs 0.07),
-    yet the old formula divided hr_per_fb by 20 — burying the best signal.
-    New weighting makes hr_per_fb the primary driver, platoon a secondary
-    tiebreak:
-      hr_per_fb/6  -> a 30% HR/FB scores ~5.0 (primary)
-      platoon*0.6  -> adds up to ~1.4 (secondary)
+    BLEND-1 selector — mirrors the live dashboard.py:830 parlay selector:
+        (hr_per_fb / 8.0) + (leg_edge * 0.8)
+    leg_edge = (tier×zone hit rate − implied breakeven), in % points, using the
+    same value-zone hit-rate table the dashboard looks up via calc_hr_value.
+    Unknown zone → leg_edge = -99 so it sinks to the bottom, as in dashboard.
     """
-    platoon   = safe_float(row.get("platoon_score", 0))
     hr_per_fb = safe_float(row.get("hr_per_fb", 0))
+    score     = safe_float(row.get("hr_score", 0))
+    odds      = safe_float(row.get("odds_num", 0))
 
-    return (hr_per_fb / 6.0) + (platoon * 0.6)
+    key = zone_key(score, odds)
+    if key is None or key not in zone_rates:
+        leg_edge = -99.0
+    else:
+        leg_edge = zone_rates[key] - american_breakeven(odds)
+
+    return (hr_per_fb / 8.0) + (leg_edge * 0.8)
 
 
-def simulate_parlay(day_df: pd.DataFrame) -> list:
+def rank_day(day_df: pd.DataFrame, zone_rates: dict, want: int = 7) -> list:
     """
-    Simulate the parlay picker for one day.
-    Returns list of selected candidate dicts (up to 3).
+    Rank one day's parlay pool exactly like dashboard.py: filter to the value
+    zones, score by BLEND-1 selector, sort desc, then diversify to one batter
+    per opposing pitcher. Returns the ranked, pitcher-diversified list.
+
+    `want` = how many legs we try to surface (filled from the pool if
+    diversification left us short). The 3-legger uses the first 3; the two
+    2-leggers use slots (3,4) and (5,6), so we want up to 7.
     """
     pool = day_df[day_df.apply(
         lambda r: in_parlay_pool(r["hr_score"], r["odds_num"]), axis=1
@@ -135,35 +150,40 @@ def simulate_parlay(day_df: pd.DataFrame) -> list:
     if pool.empty:
         return []
 
-    pool["selector"] = pool.apply(compute_selector, axis=1)
+    pool["selector"] = pool.apply(lambda r: compute_selector(r, zone_rates), axis=1)
     pool = pool.sort_values("selector", ascending=False).reset_index(drop=True)
 
-    selected   = []
+    ranked     = []
     used_games = set()
-
     for _, row in pool.iterrows():
-        if len(selected) >= LEG_COUNT:
-            break
         opp_pit = str(row.get("pitcher_name", "")).strip()
         if opp_pit and opp_pit in used_games:
             continue
-        selected.append(row)
+        ranked.append(row)
         if opp_pit:
             used_games.add(opp_pit)
 
-    # Fill remaining if diversification left us short
-    if len(selected) < LEG_COUNT:
+    # Fill from the remaining pool if diversification left us short of `want`
+    if len(ranked) < want:
         for _, row in pool.iterrows():
-            if len(selected) >= LEG_COUNT:
+            if len(ranked) >= want:
                 break
             already = any(
-                s.get("player_name") == row.get("player_name")
-                for s in selected
+                s.get("player_name") == row.get("player_name") for s in ranked
             )
             if not already:
-                selected.append(row)
+                ranked.append(row)
 
-    return selected
+    return ranked
+
+
+def simulate_parlay(day_df: pd.DataFrame, zone_rates: dict) -> list:
+    """3-legger = top 3 of the pitcher-diversified ranked list."""
+    return rank_day(day_df, zone_rates, want=LEG_COUNT)[:LEG_COUNT]
+
+
+def _leg_hit(s) -> bool:
+    return safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool", "")) == "True"
 
 
 def main():
@@ -219,29 +239,31 @@ def main():
     dates = sorted(resolved["date"].unique())
     print(f"Analyzing {len(dates)} days\n")
 
-    # ── Pool stats (before leg selection) ────────────────────────────────
-    pool_rows = resolved[resolved.apply(
-        lambda r: in_parlay_pool(r["hr_score"], r["odds_num"]), axis=1
-    )]
+    # ── Value-zone hit rates (deployed 4 zones) ──────────────────────────
+    # These feed the BLEND-1 edge term, mirroring the dashboard's hr_hit_rates
+    # lookup. NOTE: computed in-sample for this diagnostic; the live dashboard
+    # uses its attached (trailing) table, so live selector edges can differ
+    # slightly. Ranking within a day is the same idea either way.
+    zone_defs = [
+        ("13+|<=300",     "13+   | ≤+300",    (resolved["hr_score"] >= 13) & (resolved["odds_num"] > 0)  & (resolved["odds_num"] <= 300)),
+        ("13+|301-400",   "13+   | +301-400", (resolved["hr_score"] >= 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 400)),
+        ("12-13|301-400", "12-13 | +301-400", (resolved["hr_score"] >= 12) & (resolved["hr_score"] < 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 400)),
+        ("9-10|301-400",  "9-10  | +301-400", (resolved["hr_score"] >= 9)  & (resolved["hr_score"] < 10) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 400)),
+    ]
+    zone_rates = {}
     print("=" * 60)
-    print("POOL STATS — Value Zone Hit Rates")
+    print("POOL STATS — Value Zone Hit Rates (deployed +301-400 sweet spot)")
     print("=" * 60)
-    for label, mask in [
-        ("13+   | ≤+300",    (resolved["hr_score"] >= 13) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
-        ("13+   | +301-499", (resolved["hr_score"] >= 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
-        ("12-13 | +301-499", (resolved["hr_score"] >= 12) & (resolved["hr_score"] < 13) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
-        ("10-11 | ≤+300",    (resolved["hr_score"] >= 10) & (resolved["hr_score"] < 11) & (resolved["odds_num"] > 0) & (resolved["odds_num"] <= 300)),
-        ("9-10  | +301-499", (resolved["hr_score"] >= 9) & (resolved["hr_score"] < 10) & (resolved["odds_num"] >= 301) & (resolved["odds_num"] <= 499)),
-    ]:
+    for key, label, mask in zone_defs:
         sub = resolved[mask]
-        if sub.empty:
-            continue
-        h = int(sub["hit_bool"].sum())
-        n = len(sub)
-        print(f"  {label:20s}: {h}/{n} = {round(h/n*100,1)}%")
+        n   = len(sub)
+        rate = round(sub["hit_bool"].mean() * 100, 1) if n else 0.0
+        zone_rates[key] = rate
+        h = int(sub["hit_bool"].sum()) if n else 0
+        print(f"  {label:20s}: {h}/{n} = {rate}%  (breakeven-edge feeds selector)")
     print()
 
-    # ── Simulate parlay day by day ────────────────────────────────────────
+    # ── Simulate parlays day by day ───────────────────────────────────────
     days_with_parlay      = 0
     days_parlay_hit       = 0
     days_all_3_hit        = 0
@@ -249,6 +271,11 @@ def main():
     total_legs            = 0
     total_legs_hit        = 0
     winning_leg_data      = []
+
+    # 2-legger slots (dashboard.py:952): #1 = top4+5 (idx 3,4), #2 = top6+7 (idx 5,6)
+    two_leg_slots = {"#1 top4+5": (3, 4), "#2 top6+7": (5, 6)}
+    two_leg = {name: {"formed": 0, "won": 0, "staked": 0.0, "returned": 0.0}
+               for name in two_leg_slots}
 
     print("=" * 60)
     print("SIMULATED PARLAY — Day by Day")
@@ -259,20 +286,19 @@ def main():
         if day_df.empty:
             continue
 
-        selected = simulate_parlay(day_df)
+        ranked   = rank_day(day_df, zone_rates, want=7)
+        selected = ranked[:LEG_COUNT]
 
         if not selected:
             days_no_pool += 1
             continue
 
+        # ── 3-legger (top1-3) ──
         days_with_parlay += 1
-        legs_hit = sum(1 for s in selected if safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool", "")) == "True")
-
+        legs_hit = sum(1 for s in selected if _leg_hit(s))
         total_legs     += len(selected)
         total_legs_hit += legs_hit
-
         all_hit = legs_hit == len(selected) and len(selected) == LEG_COUNT
-
         if all_hit:
             days_parlay_hit += 1
             days_all_3_hit  += 1
@@ -280,13 +306,31 @@ def main():
         status = "✅ HIT" if all_hit else f"❌ {legs_hit}/{len(selected)}"
         print(f"\n{d} — {status}")
         for s in selected:
-            hit_str  = "✅" if (safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool","")) == "True") else "❌"
+            hit_str  = "✅" if _leg_hit(s) else "❌"
             tier     = get_score_tier(s["hr_score"])
             zone     = get_odds_zone(s["odds_num"])
             selector = safe_float(s.get("selector", 0))
             print(f"  {hit_str} {str(s.get('player_name',''))[:22]:22s} score={s['hr_score']:.1f} tier={tier:6s} odds=+{int(s['odds_num'])} zone={zone} selector={selector:.3f}")
-            if all_hit or safe_float(s.get("hit_bool", 0)) == 1.0 or str(s.get("hit_bool","")) == "True":
+            if _leg_hit(s):
                 winning_leg_data.append(s)
+
+        # ── 2-leggers (top4+5, top6+7) ──
+        for name, (i, j) in two_leg_slots.items():
+            if j >= len(ranked):
+                continue                       # not enough legs to form this ticket
+            a, b = ranked[i], ranked[j]
+            two_leg[name]["formed"] += 1
+            two_leg[name]["staked"] += 1.0
+            if _leg_hit(a) and _leg_hit(b):
+                dec_payout = (1 + a["odds_num"] / 100.0) * (1 + b["odds_num"] / 100.0)
+                two_leg[name]["won"]      += 1
+                two_leg[name]["returned"] += dec_payout
+                mark = "✅✅"
+            else:
+                mark = "✅❌" if (_leg_hit(a) or _leg_hit(b)) else "❌❌"
+            print(f"    2-leg {name}: {mark} "
+                  f"{str(a.get('player_name',''))[:16]} +{int(a['odds_num'])} / "
+                  f"{str(b.get('player_name',''))[:16]} +{int(b['odds_num'])}")
 
     print()
     print("=" * 60)
@@ -298,6 +342,31 @@ def main():
     print(f"")
     print(f"All-3-hit days:         {days_all_3_hit} / {days_with_parlay} = {round(days_all_3_hit/days_with_parlay*100,1) if days_with_parlay else 0}%")
     print(f"Individual leg hit rate:{total_legs_hit} / {total_legs} = {round(total_legs_hit/total_legs*100,1) if total_legs else 0}%")
+    print()
+
+    # ── 2-LEGGER RESULTS ──────────────────────────────────────────────────
+    print("=" * 60)
+    print("2-LEGGER RESULTS  (1u flat per ticket)")
+    print("=" * 60)
+    grand_stake = grand_return = 0.0
+    for name in two_leg_slots:
+        t = two_leg[name]
+        formed, won = t["formed"], t["won"]
+        staked, returned = t["staked"], t["returned"]
+        profit = returned - staked
+        roi = (profit / staked * 100) if staked else 0.0
+        hit = (won / formed * 100) if formed else 0.0
+        grand_stake  += staked
+        grand_return += returned
+        print(f"  {name:12s}: formed {formed}/{days_with_parlay} days | "
+              f"won {won} ({hit:.1f}%) | P/L {profit:+.1f}u | ROI {roi:+.1f}%")
+    g_profit = grand_return - grand_stake
+    g_roi = (g_profit / grand_stake * 100) if grand_stake else 0.0
+    print(f"  {'COMBINED':12s}: staked {grand_stake:.0f}u | "
+          f"P/L {g_profit:+.1f}u | ROI {g_roi:+.1f}%")
+    print("  NOTE: live dashboard fills its ranked list to only 6 legs, so slot")
+    print("  #2 (top6+7, needs a 7th leg) often will NOT form in production even")
+    print("  though it forms here whenever the pool has 7+ legs. Likely a bug.")
     print()
 
     if not winning_leg_data:
