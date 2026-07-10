@@ -703,11 +703,8 @@ def build_rows(
             p for p in hr_value_plays
             if p.get("has_value") and float(p["score"]) >= 9.0
         ]
-        # Sort: STRONG plays first (proven odds band + real cushion), then by
-        # edge within each strength group — so what's actually worth betting
-        # rises to the top instead of thin/out-of-band picks.
-        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3}
-        hr_value_plays.sort(key=lambda x: (_rank.get(x.get("strength",""), 9), -x["edge_num"]))
+        # Sort best edge first
+        hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
 
         if not hr_value_plays:
             rows.append((pad(["—", "No edge plays today — no picks beat breakeven vs resolved rates", ""]), "no_plays"))
