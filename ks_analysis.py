@@ -171,6 +171,16 @@ def build_analysis(df: pd.DataFrame) -> dict:
         if odds < 0:  return round(abs(odds) / (abs(odds) + 100) * 100, 1)
         return round(100 / (odds + 100) * 100, 1)
 
+    # ── Score tier × Line × Bet — clean bettable-cells table ─────────────
+    # One row per REAL bet (tier x line x side x odds sign). No blank half-
+    # rows. Each row tagged, and the whole table sorted so the best ranges to
+    # bet surface at the top.
+    def _ks_tag(edge, n):
+        if edge >= 4.0 and n >= 30: return "🔥 STRONG"
+        if edge >= 4.0 and n >= 15: return "✓ ok"
+        if n < 15:                  return "· thin"
+        return "· pass"
+
     score_x_line_rows = []
     for tier_label, lo, hi in score_tier_defs:
         tier_sub = with_line[(with_line["ks_score"] >= lo) & (with_line["ks_score"] < hi)]
@@ -178,77 +188,37 @@ def build_analysis(df: pd.DataFrame) -> dict:
             continue
         for line_val in line_vals:
             sub = tier_sub[tier_sub["k_line"] == line_val]
-            if sub.empty or len(sub) < 3:
+            if sub.empty:
                 continue
-
-            # Overall row
-            n       = len(sub)
-            over_h  = int(sub["over_bool"].sum())
-            under_h = int(sub["under_bool"].sum())
-            over_r  = round(over_h / n * 100, 1)
-            under_r = round(under_h / n * 100, 1)
-            score_x_line_rows.append({
-                "tier":       tier_label,
-                "line":       f"O/U {line_val}",
-                "odds_split": "All",
-                "total":      n,
-                "over_hits":  over_h,
-                "over_rate":  over_r,
-                "under_hits": under_h,
-                "under_rate": under_r,
-            })
-
-            # Split by over odds sign — minus vs plus
-            for odds_label, mask in [
-                ("Over: Minus odds", sub["over_odds"] < 0),
-                ("Over: Plus odds",  sub["over_odds"] > 0),
+            for side, odds_col, hit_col in [
+                ("Over",  "over_odds",  "over_bool"),
+                ("Under", "under_odds", "under_bool"),
             ]:
-                s = sub[mask]
-                if len(s) < 3:
-                    continue
-                sn = len(s)
-                oh = int(s["over_bool"].sum())
-                or_ = round(oh / sn * 100, 1)
-                avg_o = round(s["over_odds"].mean(), 0)
-                be  = american_to_be(avg_o)
-                edge = round(or_ - be, 1)
-                fmt_o = f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o))
-                score_x_line_rows.append({
-                    "tier":       "",
-                    "line":       f"  ↳ {odds_label}",
-                    "odds_split": fmt_o,
-                    "total":      sn,
-                    "over_hits":  oh,
-                    "over_rate":  or_,
-                    "under_hits": "",
-                    "under_rate": f"BE: {be}% | Edge: {'+' if edge>=0 else ''}{edge}%",
-                })
+                for mask in [sub[odds_col] < 0, sub[odds_col] > 0]:
+                    s2 = sub[mask]
+                    if len(s2) < 5:           # drop tiny-sample noise
+                        continue
+                    sn    = len(s2)
+                    hits  = int(s2[hit_col].sum())
+                    rate  = round(hits / sn * 100, 1)
+                    avg_o = round(s2[odds_col].mean(), 0)
+                    be    = american_to_be(avg_o)
+                    edge  = round(rate - be, 1)
+                    score_x_line_rows.append({
+                        "rating": _ks_tag(edge, sn),
+                        "tier":   tier_label,
+                        "line":   f"O/U {line_val}",
+                        "bet":    side,
+                        "odds":   f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o)),
+                        "n":      sn,
+                        "hit":    rate,
+                        "be":     be,
+                        "edge":   edge,
+                    })
 
-            # Split by under odds sign — minus vs plus
-            for odds_label, mask in [
-                ("Under: Minus odds", sub["under_odds"] < 0),
-                ("Under: Plus odds",  sub["under_odds"] > 0),
-            ]:
-                s = sub[mask]
-                if len(s) < 3:
-                    continue
-                sn = len(s)
-                uh = int(s["under_bool"].sum())
-                ur_ = round(uh / sn * 100, 1)
-                avg_o = round(s["under_odds"].mean(), 0)
-                be  = american_to_be(avg_o)
-                edge = round(ur_ - be, 1)
-                fmt_o = f"+{int(avg_o)}" if avg_o >= 0 else str(int(avg_o))
-                score_x_line_rows.append({
-                    "tier":       "",
-                    "line":       f"  ↳ {odds_label}",
-                    "odds_split": fmt_o,
-                    "total":      sn,
-                    "over_hits":  "",
-                    "over_rate":  "",
-                    "under_hits": uh,
-                    "under_rate": f"{ur_}% | BE: {be}% | Edge: {'+' if edge>=0 else ''}{edge}%",
-                })
+    # Best ranges first: STRONG, then ok, then the rest; ties by edge desc
+    _ks_rank = {"🔥 STRONG": 0, "✓ ok": 1}
+    score_x_line_rows.sort(key=lambda r: (_ks_rank.get(r["rating"], 2), -r["edge"]))
 
     # ── Odds zone analysis ───────────────────────────────────────────────
     resolved["over_odds"]  = resolved["over_odds"].apply(safe_float) if "over_odds" in resolved.columns else 0.0
@@ -506,21 +476,15 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                    r["under_hits"], f"{r['under_rate']}%", r["avg_proj"], ""]
     )
 
-    # ── Score Tier × Line Cross-Tab ───────────────────────────────────────
+    # ── KS Bets — best ranges first ───────────────────────────────────────
     add_section(
         "📊  SCORE TIER × LINE",
-        ["Score Tier", "Line | Odds Split", "Avg Odds", "Total", "Over Hits", "Over %", "Under Hits", "Under % / Edge", "", "", ""],
+        ["Rating", "Tier", "Line", "Bet", "Odds", "N", "Hit %", "BE %", "Edge", "", ""],
         analysis["score_x_line"],
         lambda r: [
-            r["tier"],
-            r["line"],
-            r.get("odds_split", ""),
-            r["total"],
-            r["over_hits"],
-            f"{r['over_rate']}%" if r["over_rate"] != "" else "",
-            r["under_hits"],
-            r["under_rate"] if r["under_rate"] != "" else "",
-            "", "", ""
+            r["rating"], r["tier"], r["line"], r["bet"], r["odds"],
+            r["n"], f"{r['hit']}%", f"{r['be']}%",
+            f"{'+' if r['edge'] >= 0 else ''}{r['edge']}%", "", ""
         ]
     )
 
@@ -785,6 +749,26 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
                 "cell": {"userEnteredFormat": {"backgroundColor": bg}},
                 "fields": "userEnteredFormat(backgroundColor)",
             }})
+
+    # KS BETS — highlight Rating + Edge so the best ranges pop
+    _ks_start = section_starts.get("📊  SCORE TIER × LINE")
+    if _ks_start is not None:
+        for _i, _r in enumerate(analysis["score_x_line"]):
+            _row = _ks_start + 2 + _i
+            _rt = _r.get("rating", "")
+            if _rt.startswith("🔥"):    _fg, _bg = COLOR_GREEN, COLOR_GREEN_DIM
+            elif _rt.startswith("✓"):   _fg, _bg = COLOR_TEAL,  COLOR_TEAL_DIM
+            elif _r.get("edge", 0) < 0: _fg, _bg = COLOR_RED,   COLOR_RED_DIM
+            else:                       _fg, _bg = COLOR_GREY,  COLOR_BG
+            for _c0, _c1 in [(0, 1), (8, 9)]:
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": _row, "endRowIndex": _row + 1,
+                              "startColumnIndex": _c0, "endColumnIndex": _c1},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": _bg,
+                        "textFormat": {"foregroundColor": _fg, "bold": True},
+                        "horizontalAlignment": "CENTER"}},
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"}})
 
     col_widths = [160, 80, 60, 70, 70, 90, 75, 70, 70, 90, 75]
     for i, w in enumerate(col_widths):
