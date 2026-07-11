@@ -703,8 +703,11 @@ def build_rows(
             p for p in hr_value_plays
             if p.get("has_value") and float(p["score"]) >= 9.0
         ]
-        # Sort best edge first
-        hr_value_plays.sort(key=lambda x: x["edge_num"], reverse=True)
+        # Sort: STRONG plays first (proven odds band + real cushion), then by
+        # edge within each strength group — so what's actually worth betting
+        # rises to the top instead of thin/out-of-band picks.
+        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3}
+        hr_value_plays.sort(key=lambda x: (_rank.get(x.get("strength",""), 9), -x["edge_num"]))
 
         if not hr_value_plays:
             rows.append((pad(["—", "No edge plays today — no picks beat breakeven vs resolved rates", ""]), "no_plays"))
@@ -808,6 +811,13 @@ def build_rows(
                     (hr_score >= 13.0 and odds_val <= 300)
                 )
                 if not in_pool:
+                    continue
+
+                # Wind fade: exclude legs in strong wind-blowing-IN games.
+                # Analysis (n≈300): boost ≤ −1.5 → 8.7% HR rate, far below any
+                # pool breakeven, so these legs poison a parlay. Strong-OUT is a
+                # real tailwind too but left to the score (test before boosting).
+                if weather <= -1.5:
                     continue
 
                 # Selector — BLEND 1 (validated via test_parlay_blend.py):
@@ -1594,6 +1604,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     # Build today's rows from dashboard data
     today_rows = []
     current_model = ""
+    current_ticket = ""   # 2-leg ticket marker (#1/#2) so leg pairings survive
 
     for row_data, row_type in rows_data:
         # Track current model section
@@ -1603,6 +1614,7 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             # Two parlay sections share this type; tell them apart by header text
             htxt = str(row_data[0])
             current_model = "HR Parlay 2-leg" if "2-LEG" in htxt else "HR Parlay 3-leg"
+            current_ticket = ""
         elif row_type == "section_header_ks":
             current_model = "KS"
         elif row_type == "section_header_hrrbi":
@@ -1619,12 +1631,21 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
 
         # Parlay legs (3-leg and 2-leg both use data_parlay)
         elif row_type == "data_parlay":
+            tlabel = str(row_data[0]).strip()
+            if tlabel.startswith("#"):
+                current_ticket = tlabel          # start of a new 2-leg ticket
             name  = str(row_data[1]).strip()
             team  = str(row_data[2]).strip()
             score = str(row_data[3]).strip()
             odds  = str(row_data[4]).strip()
+            # Preserve which legs form a ticket: 2-leggers carry #1/#2 in the
+            # Model label; the 3-legger is a single ticket. The tracker groups
+            # by this label, so logged legs match exactly what was displayed.
+            model_out = current_model
+            if current_model == "HR Parlay 2-leg" and current_ticket:
+                model_out = f"HR Parlay 2-leg {current_ticket}"
             if name and name != "—":
-                today_rows.append([today_str, current_model, name, team, score, "HR", odds, "", "", "", ""])
+                today_rows.append([today_str, model_out, name, team, score, "HR", odds, "", "", "", ""])
 
         # KS value plays
         elif row_type in ("data_ks_over", "data_ks_under"):
