@@ -670,6 +670,12 @@ def build_rows(
                 else:
                     strength = "· thin"       # edge under 2% — vig likely eats it
 
+                # Wind fade (same as parlays): strong wind blowing IN (boost
+                # ≤ −1.5) → 8.7% HR rate, below any breakeven. Flag as skip and
+                # let the sort drop it to the bottom.
+                if safe_float(row.get("hr_weather_boost", 0)) <= -1.5:
+                    strength = "🌬️ wind-IN"
+
                 # Capture contact quality HERE, per-row, while `row` is correct
                 hr_value_plays.append({
                     "batter":    batter,
@@ -706,7 +712,7 @@ def build_rows(
         # Sort: STRONG plays first (proven odds band + real cushion), then by
         # edge within each strength group — so what's actually worth betting
         # rises to the top instead of thin/out-of-band picks.
-        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3}
+        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3, "🌬️ wind-IN": 4}
         hr_value_plays.sort(key=lambda x: (_rank.get(x.get("strength",""), 9), -x["edge_num"]))
 
         if not hr_value_plays:
