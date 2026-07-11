@@ -181,6 +181,15 @@ def build_analysis(df: pd.DataFrame) -> dict:
         if n < 15:                  return "· thin"
         return "· pass"
 
+    def _be_odds(rate):
+        # American odds this hit rate breaks even at. Compare to your LIVE price:
+        # get a better number than this and the bet is +EV.
+        if rate <= 0 or rate >= 100: return "—"
+        p = rate / 100.0
+        if abs(p - 0.5) < 1e-9:      return "+100"
+        return f"-{int(round(p/(1-p)*100))}" if p > 0.5 else f"+{int(round((1-p)/p*100))}"
+
+
     score_x_line_rows = []
     for tier_label, lo, hi in score_tier_defs:
         tier_sub = with_line[(with_line["ks_score"] >= lo) & (with_line["ks_score"] < hi)]
@@ -214,6 +223,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
                         "hit":    rate,
                         "be":     be,
                         "edge":   edge,
+                        "be_odds":_be_odds(rate),
                     })
 
     # Best ranges first: STRONG, then ok, then the rest; ties by edge desc
@@ -479,12 +489,11 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     # ── KS Bets — best ranges first ───────────────────────────────────────
     add_section(
         "📊  SCORE TIER × LINE",
-        ["Rating", "Tier", "Line", "Bet", "Odds", "N", "Hit %", "BE %", "Edge", "", ""],
+        ["Rating", "Tier", "Line", "Bet", "N", "Hit %", "Break-Even Odds", "", "", "", ""],
         analysis["score_x_line"],
         lambda r: [
-            r["rating"], r["tier"], r["line"], r["bet"], r["odds"],
-            r["n"], f"{r['hit']}%", f"{r['be']}%",
-            f"{'+' if r['edge'] >= 0 else ''}{r['edge']}%", "", ""
+            r["rating"], r["tier"], r["line"], r["bet"],
+            r["n"], f"{r['hit']}%", r["be_odds"], "", "", "", ""
         ]
     )
 
@@ -760,7 +769,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             elif _rt.startswith("✓"):   _fg, _bg = COLOR_TEAL,  COLOR_TEAL_DIM
             elif _r.get("edge", 0) < 0: _fg, _bg = COLOR_RED,   COLOR_RED_DIM
             else:                       _fg, _bg = COLOR_GREY,  COLOR_BG
-            for _c0, _c1 in [(0, 1), (8, 9)]:
+            for _c0, _c1 in [(0, 1)]:
                 reqs.append({"repeatCell": {
                     "range": {"sheetId": ws_id, "startRowIndex": _row, "endRowIndex": _row + 1,
                               "startColumnIndex": _c0, "endColumnIndex": _c1},
