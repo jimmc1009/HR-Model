@@ -29,6 +29,7 @@ on:
           - ks_feature_separation
           - ks_under_hypothesis
           - ks_lowk_lowform
+          - diagnose_hr_tier_granular
 
 
 jobs:
@@ -191,6 +192,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python ks_lowk_lowform.py
+
+      - name: Run diagnose_hr_tier_granular.py
+        if: inputs.script == 'diagnose_hr_tier_granular'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python diagnose_hr_tier_granular.py
+
 
 
 
