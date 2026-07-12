@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - validate_model
+          - ks_pool_separation
           - test_tier_expansion
           - measure_edge_picks
           - compare_singles_v1_v2
@@ -166,6 +167,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python ks_feature_separation.py
+
+      - name: Run ks_pool_separation.py
+        if: inputs.script == 'ks_pool_separation'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_pool_separation.py
+
 
 
 
