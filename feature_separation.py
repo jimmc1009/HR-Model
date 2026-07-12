@@ -182,8 +182,8 @@ def part2(res):
 
     # in-pool separators that AREN'T in blend1 (earned via diagnose_hr_tier_granular:
     # both stayed strong inside the 10+ pool). z on TRAIN, equal voice to power term.
-    pm_m,pm_s=zstats(train,"pitch_matchup_score")
-    hh_m,hh_s=zstats(train,"hard_hit_pct_season")
+    pm_m,pm_s=train["pitch_matchup_score"].mean(),(train["pitch_matchup_score"].std(ddof=0) or 1.0)
+    hh_m,hh_s=train["hard_hit_pct_season"].mean(),(train["hard_hit_pct_season"].std(ddof=0) or 1.0)
 
     selectors={
         "power only (hr_per_fb)": lambda r:r["hr_per_fb"],
