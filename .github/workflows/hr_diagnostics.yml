@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - validate_model
+          - hr_selector_bakeoff
           - ks_pool_separation
           - test_tier_expansion
           - measure_edge_picks
@@ -199,6 +200,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python diagnose_hr_tier_granular.py
+
+      - name: Run hr_selector_bakeoff.py
+        if: inputs.script == 'hr_selector_bakeoff'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hr_selector_bakeoff.py
+
 
 
 
