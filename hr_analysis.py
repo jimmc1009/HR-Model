@@ -381,19 +381,19 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("+700+",        700, 9999),
     ]
     if "odds_num" in scored.columns:
-        for tier_label, t_lo, t_hi in tier_defs:
-            tier_sub = scored[(scored["hr_score"] >= t_lo) & (scored["hr_score"] < t_hi)]
-            if tier_sub.empty:
+        for odds_label, o_lo, o_hi in odds_defs:
+            odds_sub = scored[(scored["odds_num"] >= o_lo) & (scored["odds_num"] < o_hi)]
+            if odds_sub.empty:
                 continue
-            for odds_label, o_lo, o_hi in odds_defs:
-                sub = tier_sub[(tier_sub["odds_num"] >= o_lo) & (tier_sub["odds_num"] < o_hi)]
+            for tier_label, t_lo, t_hi in tier_defs:
+                sub = odds_sub[(odds_sub["hr_score"] >= t_lo) & (odds_sub["hr_score"] < t_hi)]
                 if len(sub) < 3:
                     continue
                 n    = len(sub)
                 h    = int(sub["hit_bool"].sum())
                 rate = round(h / n * 100, 1)
                 tier_odds_rows.append({
-                    "label": f"{tier_label} | {odds_label}",
+                    "label": f"{odds_label} | {tier_label}",
                     "total": n, "hits": h, "rate": rate,
                 })
 
