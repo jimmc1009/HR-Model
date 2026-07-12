@@ -91,6 +91,65 @@ def zstats(train,col):
     m=train[col].mean(); s=train[col].std(ddof=0) or 1.0
     return m,s
 
+def run_variant(train, test, test_dates, label):
+    print("\n"+"#"*64); print(f"#  {label}"); print("#"*64)
+    cells=proven_cells(train)
+    if not cells:
+        print("  No proven cells for this side (train)."); return
+    print(f"  TRAIN {len(train)} legs / TEST {len(test)} legs")
+    print(f"  PROVEN CELLS (train edge >= {EDGE_MIN:.0f}%, n >= {MIN_CELL_N}):")
+    for (t,l,side,sign),rate in sorted(cells.items(),key=lambda x:-x[1]):
+        print(f"    {t:8s} O/U {l}  {side:5s} {sign:5s}  train hit {rate:.1f}%")
+    elig=test[test["cell"].isin(cells)].copy()
+    if elig.empty:
+        print("  No eligible test legs."); return
+    elig["cell_rate"]=elig["cell"].map(cells)
+    elig["value"]=elig["cell_rate"]-elig["be"]
+    elig=elig[elig["value"]>0].copy()
+    if elig.empty:
+        print("  No priced-+EV eligible test legs."); return
+    print(f"  Eligible TEST legs (proven + priced +EV): {len(elig)}  "
+          f"(hit {elig['win'].mean()*100:.1f}%)")
+    pe_m,pe_s=zstats(train,"proj_edge")
+    selectors={
+        "cell value":       lambda r: r["value"],
+        "proj_edge":        lambda r: r["proj_edge"],
+        "value + proj (z)": lambda r: (r["value"]-EDGE_MIN)/10 + (r["proj_edge"]-pe_m)/pe_s,
+        "k strength":       lambda r: r["kstr"],
+    }
+    def build(fn):
+        res={"3-leg":[0,0,0.0,0.0],"2-leg":[0,0,0.0,0.0]}
+        for d in test_dates:
+            day=elig[elig["date"]==d].copy()
+            if day.empty: continue
+            day["sel"]=day.apply(fn,axis=1)
+            day=day.sort_values("sel",ascending=False)
+            picked=[]; seen=set()
+            for _,r in day.iterrows():
+                if r["pitcher"] in seen: continue
+                seen.add(r["pitcher"]); picked.append(r)
+            def ticket(ls):
+                won=all(l["win"]==1 for l in ls)
+                ret=(math.prod(dec(l["odds"]) for l in ls)) if won else 0.0
+                return won,1.0,ret
+            if len(picked)>=3:
+                w,st,rt=ticket(picked[0:3]); res["3-leg"][0]+=1; res["3-leg"][1]+=w
+                res["3-leg"][2]+=st; res["3-leg"][3]+=rt
+            for i,j in [(3,4),(5,6)]:
+                if j<len(picked):
+                    w,st,rt=ticket([picked[i],picked[j]]); res["2-leg"][0]+=1; res["2-leg"][1]+=w
+                    res["2-leg"][2]+=st; res["2-leg"][3]+=rt
+        return res
+    print("  OUT-OF-SAMPLE BAKE-OFF (1u/ticket):")
+    print(f"    {'Selector':18s} | {'3-leg f/w  hit   ROI':22s} | {'2-leg f/w  hit   ROI'}")
+    print("    "+"-"*66)
+    for name,fn in selectors.items():
+        r=build(fn)
+        def fmt(x):
+            f,w,st,rt=x; roi=(rt-st)/st*100 if st else 0; hit=(w/f*100 if f else 0)
+            return f"{f:2d}/{w:<2d} {hit:4.0f}% {roi:+7.1f}%"
+        print(f"    {name:18s} | {fmt(r['3-leg']):22s} | {fmt(r['2-leg'])}")
+
 def main():
     gc=gcc(); legs=load_legs(gc,os.environ["GOOGLE_SHEET_ID"])
     if legs.empty:
@@ -102,72 +161,13 @@ def main():
     train_d,test_d=set(dates[:cut]),set(dates[cut:])
     train=legs[legs["date"].isin(train_d)].copy()
     test =legs[legs["date"].isin(test_d)].copy()
-
-    cells=proven_cells(train)
     print("="*64); print("KS PARLAY STUDY"); print("="*64)
-    print(f"TRAIN days={len(train_d)} ({len(train)} legs)  TEST days={len(test_d)} ({len(test)} legs)")
-    print(f"\nPROVEN CELLS (train edge >= {EDGE_MIN}%, n >= {MIN_CELL_N}):")
-    for (t,l,side,sign),rate in sorted(cells.items(),key=lambda x:-x[1]):
-        print(f"  {t:8s} O/U {l}  {side:5s} {sign:5s}  train hit {rate:.1f}%")
-    if not cells:
-        print("  none — not enough proven cells yet."); return
-
-    # eligible TEST legs: cell proven AND own price clears the cell hit rate
-    test=test[test["cell"].isin(cells)].copy()
-    test["cell_rate"]=test["cell"].map(cells)
-    test["value"]=test["cell_rate"]-test["be"]      # edge at the leg's REAL price
-    test=test[test["value"]>0].copy()
-    print(f"\nEligible TEST legs (proven cell + priced +EV): {len(test)}  "
-          f"(hit {test['win'].mean()*100:.1f}%)")
-
-    # z-scored composite inputs (train stats, no leakage)
-    pe_m,pe_s=zstats(train,"proj_edge")
-    selectors={
-        "cell value":       lambda r: r["value"],
-        "proj_edge":        lambda r: r["proj_edge"],
-        "value + proj (z)": lambda r: (r["value"]-EDGE_MIN)/10 + (r["proj_edge"]-pe_m)/pe_s,
-        "k strength":       lambda r: r["kstr"],
-    }
-
-    def build(fn):
-        res={"3-leg":[0,0,0.0,0.0],"2-leg":[0,0,0.0,0.0]}  # formed,won,stake,ret
-        for d in test_d:
-            day=test[test["date"]==d].copy()
-            if day.empty: continue
-            day["sel"]=day.apply(fn,axis=1)
-            day=day.sort_values("sel",ascending=False)
-            picked=[]; seen=set()
-            for _,r in day.iterrows():
-                if r["pitcher"] in seen: continue
-                seen.add(r["pitcher"]); picked.append(r)
-            def ticket(legs_):
-                stake=1.0; won=all(l["win"]==1 for l in legs_)
-                ret=(math.prod(dec(l["odds"]) for l in legs_)) if won else 0.0
-                return won,stake,ret
-            if len(picked)>=3:
-                w,s,rt=ticket(picked[0:3]); res["3-leg"][0]+=1; res["3-leg"][1]+=w
-                res["3-leg"][2]+=s; res["3-leg"][3]+=rt
-            for i,j in [(3,4),(5,6)]:
-                if j<len(picked):
-                    w,s,rt=ticket([picked[i],picked[j]]); res["2-leg"][0]+=1; res["2-leg"][1]+=w
-                    res["2-leg"][2]+=s; res["2-leg"][3]+=rt
-        return res
-
-    print("\n"+"="*64)
-    print("OUT-OF-SAMPLE PARLAY BAKE-OFF (1u/ticket)")
-    print("="*64)
-    print(f"  {'Selector':18s} | {'3-leg formed/won  ROI':26s} | {'2-leg formed/won  ROI'}")
-    print("  "+"-"*74)
-    for name,fn in selectors.items():
-        r=build(fn)
-        def fmt(x):
-            f,w,st,rt=x; roi=(rt-st)/st*100 if st else 0
-            hit=(w/f*100 if f else 0)
-            return f"{f:2d}/{w:<2d} {hit:4.0f}%  {roi:+6.1f}%"
-        print(f"  {name:18s} | {fmt(r['3-leg']):26s} | {fmt(r['2-leg'])}")
-    print("\n  Small TEST set — treat as directional. Best selector = highest 2-leg")
-    print("  ROI with a decent hit rate. That becomes the live KS parlay selector.")
-    print("Done.")
+    print(f"TRAIN days={len(train_d)}  TEST days={len(test_d)} (held out)")
+    for label,side in [("COMBINED (both sides)",None),("OVERS ONLY","Over"),("UNDERS ONLY","Under")]:
+        tr = train if side is None else train[train["side"]==side]
+        te = test  if side is None else test[test["side"]==side]
+        run_variant(tr, te, test_d, label)
+    print("\nDone.")
 
 if __name__=="__main__":
     main()
