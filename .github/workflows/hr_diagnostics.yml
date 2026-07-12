@@ -24,6 +24,7 @@ on:
           - test_battracking
           - test_scoring_systems
           - feature_separation
+          - ks_parlay_study
 
 jobs:
   diagnostic:
@@ -150,3 +151,16 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python feature_separation.py
+
+      - name: Run ks_parlay_study.py
+        if: inputs.script == 'ks_parlay_study'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_parlay_study.py
+
+
+
+
+
+
