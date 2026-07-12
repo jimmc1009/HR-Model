@@ -27,6 +27,8 @@ on:
           - feature_separation
           - ks_parlay_study
           - ks_feature_separation
+          - ks_under_hypothesis
+
 
 jobs:
   diagnostic:
@@ -174,6 +176,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python ks_pool_separation.py
+
+      - name: Run ks_under_hypothesis.py
+        if: inputs.script == 'ks_under_hypothesis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_under_hypothesis.py
+
 
 
 
