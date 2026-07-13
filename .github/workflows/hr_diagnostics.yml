@@ -31,6 +31,7 @@ on:
           - ks_under_hypothesis
           - ks_lowk_lowform
           - diagnose_hr_tier_granular
+          - test_odds_curve
 
 
 jobs:
@@ -207,6 +208,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python hr_selector_bakeoff.py
+
+      - name: Run test_odds_curve.py
+        if: inputs.script == 'test_odds_curve'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_odds_curve.py
+
 
 
 
