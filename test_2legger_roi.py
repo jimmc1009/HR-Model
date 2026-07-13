@@ -57,11 +57,13 @@ def tier(s):
     if s>=9:return "9-10"
     if s>=8.5:return "8.5-9"
     return "<8.5"
-def in_pool(s,o):
+def in_pool(s,o,olo=301,ohi=400):
+    """Parlay pool. Plus-odds legs must fall in [olo,ohi]; 13+ ≤+300 always in.
+    olo/ohi let us A/B different odds bands (e.g. +301-400 vs +200-320)."""
     if o<=0:return False
-    if 9.0<=s<10.0 and 301<=o<=400:return True
-    if 12.0<=s<13.0 and 301<=o<=400:return True
-    if s>=13.0 and 301<=o<=400:return True
+    if 9.0<=s<10.0 and olo<=o<=ohi:return True
+    if 12.0<=s<13.0 and olo<=o<=ohi:return True
+    if s>=13.0 and olo<=o<=ohi:return True
     if s>=13.0 and o<=300:return True
     return False
 
@@ -91,8 +93,8 @@ def main():
         return (z-be(row["odds"]))*100 if z is not None else -99
     def selector(row): return row["hr_per_fb"]/8 + edge(row)*0.8
 
-    def ranked_pool(day):
-        pool=day[day.apply(lambda x:in_pool(x["score"],x["odds"]),axis=1)].copy()
+    def ranked_pool(day, olo, ohi):
+        pool=day[day.apply(lambda x:in_pool(x["score"],x["odds"],olo,ohi),axis=1)].copy()
         if pool.empty:return []
         pool["sel"]=pool.apply(selector,axis=1)
         pool=pool.sort_values("sel",ascending=False)
@@ -108,47 +110,60 @@ def main():
     print(f"  {len(r)} resolved rows, {len(days)} days\n")
 
     slots=[("top4+5",3,4),("top6+7",5,6),("top8+9",7,8)]
-    overall={"n":0,"w":0,"staked":0.0,"returned":0.0}
-    per_slot={s[0]:{"n":0,"w":0,"ret":0.0} for s in slots}
 
-    for d in days:
-        ranked=ranked_pool(r[r["date"]==d])
+    def run_band(olo, ohi):
+        overall={"n":0,"w":0,"staked":0.0,"returned":0.0}
+        per_slot={s[0]:{"n":0,"w":0,"ret":0.0} for s in slots}
+        for d in days:
+            ranked=ranked_pool(r[r["date"]==d], olo, ohi)
+            for name,i,j in slots:
+                if j<len(ranked):
+                    a,b=ranked[i],ranked[j]
+                    combined=dec(a["odds"])*dec(b["odds"])
+                    overall["n"]+=1; overall["staked"]+=1.0
+                    per_slot[name]["n"]+=1
+                    if a["hit"] and b["hit"]:
+                        overall["w"]+=1; overall["returned"]+=combined
+                        per_slot[name]["w"]+=1; per_slot[name]["ret"]+=combined
+        return overall, per_slot
+
+    def report(label, olo, ohi):
+        overall, per_slot = run_band(olo, ohi)
+        n=overall["n"]; w=overall["w"]
+        staked=overall["staked"]; returned=overall["returned"]
+        net=returned-staked; roi=net/staked*100 if staked else 0
+        hitrate=w/n*100 if n else 0
+        print("="*58)
+        print(f"  {label}  (plus-odds legs {olo}-{ohi})")
+        print("="*58)
+        print(f"    Tickets: {n}   Wins: {w} ({hitrate:.1f}%)   Staked: {staked:.0f}u")
+        print(f"    Returned: {returned:.2f}u   Net: {net:+.2f}u   ROI: {roi:+.1f}%   "
+              f"{'PROFITABLE ✅' if net>0 else 'UNPROFITABLE ❌'}")
+        print(f"    {'slot':<8} {'n':>4} {'wins':>5} {'hit%':>7} {'net':>8} {'roi%':>8}")
         for name,i,j in slots:
-            if j<len(ranked):
-                a,b=ranked[i],ranked[j]
-                combined=dec(a["odds"])*dec(b["odds"])
-                overall["n"]+=1; overall["staked"]+=1.0
-                per_slot[name]["n"]+=1
-                if a["hit"] and b["hit"]:
-                    overall["w"]+=1; overall["returned"]+=combined
-                    per_slot[name]["w"]+=1; per_slot[name]["ret"]+=combined
+            ps=per_slot[name]; pn=ps["n"]; pw=ps["w"]; pr=ps["ret"]
+            pnet=pr-pn; proi=pnet/pn*100 if pn else 0
+            phr=pw/pn*100 if pn else 0
+            print(f"    {name:<8} {pn:>4} {pw:>5} {phr:>6.1f}% {pnet:>+7.2f}u {proi:>+7.1f}%")
+        print()
+        return net, roi
 
-    n=overall["n"]; w=overall["w"]
-    staked=overall["staked"]; returned=overall["returned"]
-    net=returned-staked
-    roi=net/staked*100 if staked else 0
-    hitrate=w/n*100 if n else 0
+    # A/B the current pool vs the discovered sweet spot
+    print("Comparing parlay pools: CURRENT +301-400 vs SWEET-SPOT +200-320\n")
+    net_cur, roi_cur = report("CURRENT (+301-400)", 301, 400)
+    net_ss,  roi_ss  = report("SWEET SPOT (+200-320)", 200, 320)
+    # also a wider blend that covers most of the positive curve
+    net_wide,roi_wide= report("WIDE (+200-400)", 200, 400)
 
-    print("="*58); print("  2-LEGGER PROFITABILITY (flat 1u/ticket, NO-OVERLAP)"); print("="*58)
-    print(f"    Tickets:        {n}")
-    print(f"    Wins:           {w}  ({hitrate:.1f}%)")
-    print(f"    Staked:         {staked:.0f}u")
-    print(f"    Returned:       {returned:.2f}u")
-    print(f"    Net:            {net:+.2f}u")
-    print(f"    ROI:            {roi:+.1f}%")
-    print(f"    {'PROFITABLE ✅' if net>0 else 'UNPROFITABLE ❌'}")
-
-    print("\n  By pair slot:")
-    print(f"    {'slot':<8} {'n':>4} {'wins':>5} {'hit%':>7} {'ret':>8} {'net':>8} {'roi%':>8}")
-    for name,i,j in slots:
-        ps=per_slot[name]; pn=ps["n"]; pw=ps["w"]; pr=ps["ret"]
-        pnet=pr-pn; proi=pnet/pn*100 if pn else 0
-        phr=pw/pn*100 if pn else 0
-        print(f"    {name:<8} {pn:>4} {pw:>5} {phr:>6.1f}% {pr:>7.2f}u {pnet:>+7.2f}u {proi:>+7.1f}%")
-
-    print("\n  Note: small sample (few wins) -> ROI is high-variance. One extra")
-    print("  win or miss swings it a lot. Treat as directional. Positive net")
-    print("  across ~75 tickets is encouraging; strongly negative is a red flag.")
+    print("="*58); print("  VERDICT"); print("="*58)
+    best=max([("+301-400",net_cur,roi_cur),("+200-320",net_ss,roi_ss),
+              ("+200-400",net_wide,roi_wide)], key=lambda x:x[1])
+    print(f"  Highest net: {best[0]}  (net {best[1]:+.2f}u, ROI {best[2]:+.1f}%)")
+    print("  NOTE: lower-odds legs hit more but pay less per parlay; higher-odds")
+    print("  pay more but hit less. This shows which trade-off wins for 2-leggers")
+    print("  on YOUR selector-picked legs. Small sample — treat as directional,")
+    print("  and prefer the band that's positive across more pair-slots, not just")
+    print("  highest net (which one lucky ticket can inflate).")
     print("\nDone.")
 
 if __name__=="__main__":
