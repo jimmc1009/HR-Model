@@ -670,12 +670,6 @@ def build_rows(
                 else:
                     strength = "· thin"       # edge under 2% — vig likely eats it
 
-                # Wind fade (same as parlays): strong wind blowing IN (boost
-                # ≤ −1.5) → 8.7% HR rate, below any breakeven. Flag as skip and
-                # let the sort drop it to the bottom.
-                if safe_float(row.get("hr_weather_boost", 0)) <= -1.5:
-                    strength = "🌬️ wind-IN"
-
                 # Capture contact quality HERE, per-row, while `row` is correct
                 hr_value_plays.append({
                     "batter":    batter,
@@ -712,7 +706,7 @@ def build_rows(
         # Sort: STRONG plays first (proven odds band + real cushion), then by
         # edge within each strength group — so what's actually worth betting
         # rises to the top instead of thin/out-of-band picks.
-        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3, "🌬️ wind-IN": 4}
+        _rank = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠️ odds": 3}
         hr_value_plays.sort(key=lambda x: (_rank.get(x.get("strength",""), 9), -x["edge_num"]))
 
         if not hr_value_plays:
@@ -776,7 +770,7 @@ def build_rows(
     #   13+   | up to +499 — 27.6% at ≤+300, 26.9% at +301-499
     # Leg selector: combined score of platoon + season barrel + HR/FB + weather
     # All confirmed positive separators from feature analysis
-    rows.append((pad(["🎰  3-LEG HR PARLAY — Best Legs by Combined Selector"]), "section_header_parlay"))
+    rows.append((pad(["🎰  3-LEG HR PARLAY — Jackpot band (+351-500), Best Legs"]), "section_header_parlay"))
     rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Selector", "Contact Quality", ""]), "col_header_parlay"))
 
     if hr_source.empty:
@@ -802,28 +796,22 @@ def build_rows(
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                # Pool — confirmed zones from latest HR_Analysis cross-tab that
-                # clear TRUE breakeven, narrowed to the +301-400 odds SWEET SPOT
-                # (test_odds_sweetspot.py: +301-400 legs give +0.21u/ticket parlay
-                # EV; +401-499 legs hit too rarely and drag EV negative).
-                #   9-10  | +301-400 — 25.0% zone (n=156, anchor)
-                #   12-13 | +301-400 — 26.9%
-                #   13+   | +301-400 — 21.7%
-                #   13+   | ≤+300    — 32.9% (highest rate; kept for leg quality)
-                in_pool = (
-                    (9.0 <= hr_score < 10.0 and 301 <= odds_val <= 400) or
-                    (12.0 <= hr_score < 13.0 and 301 <= odds_val <= 400) or
-                    (hr_score >= 13.0 and 301 <= odds_val <= 400) or
-                    (hr_score >= 13.0 and odds_val <= 300)
+                # Pool — TWO bands, because 2-leggers and 3-leggers want
+                # different odds (validated: test_2legger_roi + test_3legger_ev):
+                #   2-LEGGERS → +301-400 (payout-balanced, +84%/+135% real ROI)
+                #   3-LEGGER  → +351-500 (jackpot chase, +1.10u EV vs +0.77u —
+                #               bigger payout outweighs lower P(all 3))
+                # We admit +301-500 here, tag each leg's band, and let the
+                # 3-leg vs 2-leg selection pull from the right band below.
+                # 13+ | ≤+300 stays eligible for both (highest-rate leg quality).
+                in_2leg_band = (301 <= odds_val <= 400) or (odds_val <= 300 and hr_score >= 13.0)
+                in_3leg_band = (351 <= odds_val <= 500) or (odds_val <= 300 and hr_score >= 13.0)
+                score_ok = (
+                    (9.0 <= hr_score < 10.0) or
+                    (12.0 <= hr_score < 13.0) or
+                    (hr_score >= 13.0)
                 )
-                if not in_pool:
-                    continue
-
-                # Wind fade: exclude legs in strong wind-blowing-IN games.
-                # Analysis (n≈300): boost ≤ −1.5 → 8.7% HR rate, far below any
-                # pool breakeven, so these legs poison a parlay. Strong-OUT is a
-                # real tailwind too but left to the score (test before boosting).
-                if weather <= -1.5:
+                if not (score_ok and (in_2leg_band or in_3leg_band)):
                     continue
 
                 # Selector — BLEND 1 (validated via test_parlay_blend.py):
@@ -850,6 +838,8 @@ def build_rows(
                     "platoon":  platoon,
                     "selector": selector,
                     "odds":     odds_val,
+                    "in_2leg":  in_2leg_band,
+                    "in_3leg":  in_3leg_band,
                     "barrel_7d":     row.get("barrel_pct_7d", ""),
                     "barrel_season": row.get("season_barrel_pct", ""),
                     "ev_7d":         row.get("avg_ev_7d", ""),
@@ -863,10 +853,14 @@ def build_rows(
         # Rank by combined selector score
         parlay_candidates.sort(key=lambda x: -x["selector"])
 
+        # 3-LEGGER pulls from the +351-500 jackpot band (test_3legger_ev:
+        # +1.10u EV vs +0.77u — higher odds win for the lottery ticket).
+        three_leg_pool = [c for c in parlay_candidates if c.get("in_3leg")]
+
         # Pick top 3, diversified by opposing pitcher (different games)
         selected   = []
         used_games = set()
-        for c in parlay_candidates:
+        for c in three_leg_pool:
             if len(selected) >= 3:
                 break
             if c["opp_pit"] and c["opp_pit"] in used_games:
@@ -877,7 +871,7 @@ def build_rows(
 
         # Fill remaining slots if diversification left us short
         if len(selected) < 3:
-            for c in parlay_candidates:
+            for c in three_leg_pool:
                 if len(selected) >= 3:
                     break
                 if c not in selected:
@@ -929,19 +923,22 @@ def build_rows(
     if hr_source.empty or not parlay_candidates:
         rows.append((pad(["—", "No 2-leg candidates today", ""]), "no_plays"))
     else:
-        # Build a pitcher-diversified ranked list (reuse parlay_candidates,
-        # already sorted by selector desc), then pair into non-overlapping 2s.
+        # Build a pitcher-diversified ranked list from the +301-400 2-leg band
+        # (test_2legger_roi: +301-400 wins for 2-leggers — payout-balanced,
+        # +84%/+135% real ROI; both active slots positive). Distinct from the
+        # 3-legger's +351-500 jackpot band.
+        two_leg_pool = [c for c in parlay_candidates if c.get("in_2leg")]
         diversified = []
         used_g = set()
-        for c in parlay_candidates:
+        for c in two_leg_pool:
             if c["opp_pit"] and c["opp_pit"] in used_g:
                 continue
             diversified.append(c)
             if c["opp_pit"]:
                 used_g.add(c["opp_pit"])
-        # fill if diversification left too few for 3 tickets (need 6 legs)
+        # fill if diversification left too few (need enough for slots)
         if len(diversified) < 6:
-            for c in parlay_candidates:
+            for c in two_leg_pool:
                 if len(diversified) >= 6:
                     break
                 if c not in diversified:
@@ -958,10 +955,15 @@ def build_rows(
 
         # NO-OVERLAP + proven slots (test_2legger_roi.py on +301-400 pool):
         #   top4+5 (idx 3,4): +169% ROI, 16% hit — the moneymaker
-        #   top6+7 (idx 5,6): ~breakeven, kept as a second ticket
-        #   top8+9 dropped — went 0/11, dead money.
-        # The 3-legger above uses top1-3 (idx 0,1,2); these use distinct
-        # players below it so no name repeats across tickets.
+        # 2-leggers use the VALIDATED top4+5 / top6+7 slots (test_2legger_roi
+        # +135% both slots positive; test_2leg_slots reconfirmed — top1+2 is a
+        # consistent LOSER, and the flashier top1+3/top2+4 is small-sample
+        # overfit with no mechanism). These are within the +301-400 band, which
+        # is now independent of the 3-legger's +351-500 band. A player can
+        # qualify for both bands, so the index-based skip no longer guarantees
+        # no-overlap — but overlap between a +301-400 leg and a +351-500 leg is
+        # fine (they're genuinely different tickets/prices); we keep the proven
+        # slot indices within the 2-leg band.
         slot_pairs = [(3, 4), (5, 6)]
         pairs = []
         for i, j in slot_pairs:
@@ -1610,7 +1612,6 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
     # Build today's rows from dashboard data
     today_rows = []
     current_model = ""
-    current_ticket = ""   # 2-leg ticket marker (#1/#2) so leg pairings survive
 
     for row_data, row_type in rows_data:
         # Track current model section
@@ -1620,7 +1621,6 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
             # Two parlay sections share this type; tell them apart by header text
             htxt = str(row_data[0])
             current_model = "HR Parlay 2-leg" if "2-LEG" in htxt else "HR Parlay 3-leg"
-            current_ticket = ""
         elif row_type == "section_header_ks":
             current_model = "KS"
         elif row_type == "section_header_hrrbi":
@@ -1637,21 +1637,12 @@ def write_scorecard(gc: gspread.Client, sheet_id: str, rows_data: list, today_st
 
         # Parlay legs (3-leg and 2-leg both use data_parlay)
         elif row_type == "data_parlay":
-            tlabel = str(row_data[0]).strip()
-            if tlabel.startswith("#"):
-                current_ticket = tlabel          # start of a new 2-leg ticket
             name  = str(row_data[1]).strip()
             team  = str(row_data[2]).strip()
             score = str(row_data[3]).strip()
             odds  = str(row_data[4]).strip()
-            # Preserve which legs form a ticket: 2-leggers carry #1/#2 in the
-            # Model label; the 3-legger is a single ticket. The tracker groups
-            # by this label, so logged legs match exactly what was displayed.
-            model_out = current_model
-            if current_model == "HR Parlay 2-leg" and current_ticket:
-                model_out = f"HR Parlay 2-leg {current_ticket}"
             if name and name != "—":
-                today_rows.append([today_str, model_out, name, team, score, "HR", odds, "", "", "", ""])
+                today_rows.append([today_str, current_model, name, team, score, "HR", odds, "", "", "", ""])
 
         # KS value plays
         elif row_type in ("data_ks_over", "data_ks_under"):
