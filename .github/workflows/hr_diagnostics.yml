@@ -32,7 +32,7 @@ on:
           - ks_lowk_lowform
           - diagnose_hr_tier_granular
           - test_odds_curve
-
+          - test_2leg_slots
 
 jobs:
   diagnostic:
@@ -215,6 +215,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_odds_curve.py
+
+      - name: Run test_2leg_slots.py
+        if: inputs.script == 'test_2leg_slots'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_2leg_slots.py
+
 
 
 
