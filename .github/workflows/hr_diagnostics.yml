@@ -33,6 +33,7 @@ on:
           - diagnose_hr_tier_granular
           - test_odds_curve
           - test_2leg_slots
+          - test_blend1_decompose
 
 jobs:
   diagnostic:
@@ -222,6 +223,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_2leg_slots.py
+
+      - name: Run test_blend1_decompose.py
+        if: inputs.script == 'test_blend1_decompose'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_blend1_decompose.py
 
 
 
