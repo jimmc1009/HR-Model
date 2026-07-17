@@ -34,6 +34,7 @@ on:
           - test_odds_curve
           - test_2leg_slots
           - test_blend1_decompose
+          - test_xstats_probe
 
 jobs:
   diagnostic:
@@ -230,6 +231,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_blend1_decompose.py
+
+      - name: Run test_xstats_probe.py
+        if: inputs.script == 'test_xstats_probe'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_xstats_probe.py
 
 
 
