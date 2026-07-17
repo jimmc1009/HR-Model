@@ -36,6 +36,7 @@ on:
           - test_blend1_decompose
           - test_xstats_probe
           - test_battracking_separators
+          - test_good_hitter_separators
 
 jobs:
   diagnostic:
@@ -247,7 +248,15 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_battracking_separators.py
 
+      - name: Run test_good_hitter_separators.py
+        if: inputs.script == 'test_good_hitter_separators'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_good_hitter_separators.py  
 
+
+  
 
 
 
