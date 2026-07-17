@@ -35,6 +35,7 @@ on:
           - test_2leg_slots
           - test_blend1_decompose
           - test_xstats_probe
+          - test_battracking_separators
 
 jobs:
   diagnostic:
@@ -238,6 +239,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_xstats_probe.py
+
+      - name: Run test_battracking_separators.py
+        if: inputs.script == 'test_battracking_separators'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_battracking_separators.py
 
 
 
