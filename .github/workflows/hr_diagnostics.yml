@@ -253,7 +253,9 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python test_good_hitter_separators.py  
+          SCORE_MIN: "8.5"
+          HR_MIN: "6"
+        run: python test_good_hitter_separators.py
 
 
   
