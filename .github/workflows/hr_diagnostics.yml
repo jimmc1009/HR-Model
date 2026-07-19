@@ -38,7 +38,7 @@ on:
           - test_pitcher_vulnerability
           - test_battracking_separators
           - test_good_hitter_separators
-
+          - test_calibration_and_random
 
 jobs:
   diagnostic:
