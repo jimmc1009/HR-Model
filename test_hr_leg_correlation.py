@@ -164,6 +164,90 @@ def build_pairs(df, axis):
     return pairs
 
 
+def _park_bucket(pf):
+    if pf >= 108:  return "hi"
+    if pf <= 92:   return "lo"
+    return "mid"
+
+
+def run_wind_park_controlled(df):
+    """
+    Is the wind-out correlation real physics, or just park correlation wearing a
+    wind label? Compare within the SAME park bucket:
+        wind-out same-game pairs   vs   non-wind same-game pairs
+    Both share the park's own baseline co-movement, so any REMAINING gap is
+    wind-specific. If the wind lift survives here, it isn't a park artifact.
+    """
+    print("\n" + "-" * 60)
+    print("  E) WIND-OUT, PARK-CONTROLLED (wind lift net of park's own")
+    print("     baseline correlation — the real physics check)")
+    q = df[df["qualified"] == 1].copy()
+    q["pk"] = q["park_hr_factor"].apply(_park_bucket)
+    q["is_wind"] = q["wind"].str.contains("out", na=False)
+
+    wind_pairs, base_pairs = [], []
+    for (_, _, _), g in q.groupby(["day", "game_key", "pk"]):
+        hits = g["hit"].tolist()
+        if len(hits) < 2:
+            continue
+        combos = list(itertools.combinations(hits, 2))
+        # a game is a wind-out game if its legs are flagged wind-out
+        if bool(g["is_wind"].iloc[0]):
+            wind_pairs += combos
+        else:
+            base_pairs += combos
+
+    if len(wind_pairs) < MIN_PAIR_N or len(base_pairs) < MIN_PAIR_N:
+        print(f"    too few pairs (wind {len(wind_pairs)}, base {len(base_pairs)}; "
+              f"need {MIN_PAIR_N} each). skip.")
+        return None
+
+    def excess(pairs):
+        n = len(pairs)
+        obs = sum(a and b for a, b in pairs) / n
+        h1 = np.mean([a for a, _ in pairs]); h2 = np.mean([b for _, b in pairs])
+        return n, obs, h1 * h2, (obs - h1 * h2)   # excess over independence
+
+    nw, ow, iw, ew = excess(wind_pairs)
+    nb, ob, ib, eb = excess(base_pairs)
+    # difference-in-excess: wind excess minus non-wind excess, both within park strata
+    did = (ew - eb) * 100
+
+    # permutation: shuffle the wind/non-wind label across games, recompute DiD
+    rng = random.Random(11)
+    allg = [(list(itertools.combinations(g["hit"].tolist(), 2)), bool(g["is_wind"].iloc[0]))
+            for (_, _, _), g in q.groupby(["day", "game_key", "pk"])
+            if len(g) >= 2]
+    labels = [w for _, w in allg]
+    ge = 0
+    for _ in range(N_PERM):
+        rng.shuffle(labels)
+        wp, bp = [], []
+        for (combos, _), lab in zip(allg, labels):
+            (wp if lab else bp).extend(combos)
+        if not wp or not bp:
+            continue
+        _, ow2, iw2, ew2 = excess(wp)
+        _, ob2, ib2, eb2 = excess(bp)
+        if (ew2 - eb2) >= (ew - eb):
+            ge += 1
+    p = ge / N_PERM
+
+    print(f"    wind-out pairs: {nw} | excess over indep {ew*100:+.2f} pts")
+    print(f"    non-wind pairs: {nb} | excess over indep {eb*100:+.2f} pts (same park strata)")
+    print(f"    wind-specific lift (DiD): {did:+.2f} pts   (p={p:.3f})")
+    if p <= 0.05 and did > 0:
+        print("    READ: wind lift SURVIVES park control — it's real physics, not a park\n"
+              "          artifact. Wind-out stacking is a legitimate correlation edge.")
+    elif did > 0:
+        print("    READ: wind lift shrinks once park is controlled and is no longer\n"
+              "          significant — likely mostly park correlation. Treat with caution.")
+    else:
+        print("    READ: no wind-specific lift after park control — the earlier wind\n"
+              "          signal was park correlation mislabeled. Do NOT build a wind rule.")
+    return {"axis": "wind_park_controlled", "n": nw, "lift": did, "p": p}
+
+
 def run_axis(df, axis, label):
     pairs = build_pairs(df, axis)
     print("\n" + "-" * 60)
@@ -212,6 +296,12 @@ def main():
         r = run_axis(df, axis, label)
         if r:
             results.append(r)
+
+    # Park-controlled wind check — only meaningful if raw wind looked positive,
+    # but run it regardless so the answer is on record.
+    wpc = run_wind_park_controlled(df)
+    if wpc:
+        results.append(wpc)
 
     print("\n" + "=" * 60)
     print("  BOTTOM LINE")
