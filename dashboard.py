@@ -1,16 +1,18 @@
 """
 dashboard.py — HR-only build of "Today's Top Picks".
 
-Changes in this version:
-  • KS and HR+RBI sections REMOVED (not being bet right now). All HR
-    hit-rate / edge logic is unchanged.
-  • Every HR pick (singles + 2-leg + 3-leg legs) now shows a readable
-    "Why" column — the actual drivers behind the selection (zone edge,
-    power, barrel, form, platoon, park, weather) instead of a raw
-    selector float. Selection logic itself is untouched; this is display
-    only, so the Why explains a pick without changing which picks appear.
-  • Layout cleaned: fixed, content-fit column widths, wrapped Why cell so
-    nothing clips, consistent 8-column grid.
+This is a clean rewrite:
+  • Timestamp is now the FIRST row, written and formatted in a single pass
+    (previously it was inserted after formatting, which shifted every row
+    down by one and corrupted the first data row + header).
+  • Every run starts with a full unmerge + format reset so leftover cells
+    from the old KS/HRRBI layout can't bleed into the new one.
+  • KS and HR+RBI sections are gone (not being bet right now).
+  • Score tier lookup splits 13+ into 13-14 / 14-15 / 15+ so each leg is
+    credited with its own observed hit rate (15+ underperforms).
+  • "Why" shows baseball reasons only — power, barrel, form, platoon,
+    park, weather. It no longer repeats the Edge column.
+  • Both parlays show individual leg odds AND the combined parlay price.
 """
 import os
 import json
@@ -34,13 +36,14 @@ COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
 COLOR_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
 COLOR_GOLD      = {"red": 1.000, "green": 0.843, "blue": 0.000}
 COLOR_GREEN     = {"red": 0.180, "green": 0.800, "blue": 0.443}
-COLOR_GREEN_DIM = {"red": 0.039, "green": 0.180, "blue": 0.098}
 COLOR_PURPLE    = {"red": 0.541, "green": 0.165, "blue": 0.557}
 COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT   = {"red": 0.600, "green": 0.600, "blue": 0.600}
 COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
 
 N_COLS = 8
+RESET_ROWS = 400
+RESET_COLS = 26
 
 
 # ── Sheets plumbing ─────────────────────────────────────────────────────────
@@ -81,8 +84,7 @@ def read_sheet(gc, sheet_id, name) -> pd.DataFrame:
         headers = all_values[start]
         rows = all_values[start + 1:]
         df = pd.DataFrame(rows, columns=headers)
-        df = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
-        return df
+        return df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
         return pd.DataFrame()
@@ -98,11 +100,8 @@ def read_sheet_raw(gc, sheet_id, name) -> pd.DataFrame:
         all_values = with_retry(lambda: ws.get_all_values())
         if not all_values or len(all_values) < 2:
             return pd.DataFrame()
-        headers = all_values[0]
-        rows = all_values[1:]
-        df = pd.DataFrame(rows, columns=headers)
-        df = df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
-        return df
+        df = pd.DataFrame(all_values[1:], columns=all_values[0])
+        return df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
     except Exception:
         return pd.DataFrame()
 
@@ -129,7 +128,15 @@ def implied_to_american(prob: float) -> str:
     return f"+{int(round(((1 - prob) / prob) * 100))}"
 
 
-# ── HR hit-rate lookup (unchanged logic) ────────────────────────────────────
+def combined_american(odds_list) -> str:
+    """Multiply decimal odds of the legs, return the parlay price in American."""
+    dec = 1.0
+    for o in odds_list:
+        dec *= (1 + o / 100.0)  # legs are positive American here
+    return f"+{int(round((dec - 1) * 100))}"
+
+
+# ── HR hit-rate lookup ──────────────────────────────────────────────────────
 def _hr_odds_zone_key(odds: float) -> str:
     if odds <= 300:
         return "le300"
@@ -161,8 +168,11 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
     resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
     resolved["odds_num"] = resolved["consensus_odds"].apply(safe_float)
 
+    # 13+ split into 13-14 / 14-15 / 15+ so each leg is credited with its own
+    # observed rate (15+ underperforms the tiers beneath it).
     tier_defs = [
-        ("13+", 13, 999), ("12-13", 12, 13), ("11-12", 11, 12),
+        ("15+", 15, 999), ("14-15", 14, 15), ("13-14", 13, 14),
+        ("12-13", 12, 13), ("11-12", 11, 12),
         ("10-11", 10, 11), ("9-10", 9, 10), ("8.5-9", 8.5, 9),
     ]
     zone_keys = ["le300", "301-499", "500-699", "700plus"]
@@ -179,7 +189,9 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
 
 
 def get_hr_score_tier(score: float) -> str:
-    if score >= 13:  return "13+"
+    if score >= 15:  return "15+"
+    if score >= 14:  return "14-15"
+    if score >= 13:  return "13-14"
     if score >= 12:  return "12-13"
     if score >= 11:  return "11-12"
     if score >= 10:  return "10-11"
@@ -201,37 +213,32 @@ def calc_hr_value(score: float, odds: float, hit_rates: dict) -> tuple:
     return round(hit_rate * 100, 1), implied_to_american(hit_rate), edge > 0, edge_str
 
 
-# ── Why builder — the readable rationale for a pick ─────────────────────────
-def build_why(row, edge_str: str = None) -> str:
+# ── Why — baseball reasons only ─────────────────────────────────────────────
+def build_why(row) -> str:
     """
-    Compact, human-readable reasons a pick was selected, ordered to foreground
-    the two halves of the Blend-1 selector (zone edge + power), then supporting
-    signals. Reads the same fields that feed the score, so it explains a pick
-    rather than independently validating it.
+    Baseball reasons a pick stands out — power, barrel, form, platoon, park,
+    weather. Deliberately does NOT include zone edge (that's the Edge column).
     """
     bits = []
 
-    # Zone edge — the stronger half of the selector
-    if edge_str and edge_str not in ("", "—", "No zone data"):
-        bits.append(f"zone edge {edge_str}")
-
-    # Power — HR/FB is the other half of the selector
     hr_fb = safe_float(row.get("hr_per_fb", 0))
     if hr_fb >= 18:
-        bits.append(f"elite power {hr_fb:.0f}% HR/FB")
+        bits.append(f"elite power ({hr_fb:.0f}% HR/FB)")
     elif hr_fb >= 13:
-        bits.append(f"strong power {hr_fb:.0f}% HR/FB")
+        bits.append(f"strong power ({hr_fb:.0f}% HR/FB)")
     elif hr_fb >= 9:
-        bits.append(f"avg power {hr_fb:.0f}% HR/FB")
+        bits.append(f"avg power ({hr_fb:.0f}% HR/FB)")
 
-    # Season barrel%
     sb = safe_float(row.get("season_barrel_pct", 0))
     if sb >= 12:
-        bits.append(f"elite barrel {sb:.0f}%")
+        bits.append(f"elite barrel ({sb:.0f}%)")
     elif sb >= 9:
-        bits.append(f"good barrel {sb:.0f}%")
+        bits.append(f"good barrel ({sb:.0f}%)")
 
-    # Recent form (from momentum convergence signal)
+    b7 = safe_float(row.get("barrel_pct_7d", 0))
+    if b7 >= 18:
+        bits.append(f"hot barrel 7d ({b7:.0f}%)")
+
     mom = str(row.get("momentum_desc", "")).lower()
     if "surging" in mom:
         bits.append("surging form")
@@ -240,37 +247,38 @@ def build_why(row, edge_str: str = None) -> str:
     elif "cold" in mom or "trending down" in mom:
         bits.append("cold streak")
 
-    # Platoon
     plat = safe_float(row.get("platoon_score", 0))
     if plat >= 1.0:
         bits.append("platoon edge")
     elif plat <= -1.0:
         bits.append("platoon down")
 
-    # Park
     pf = safe_float(row.get("park_hr_factor", 100))
     if pf >= 110:
-        bits.append(f"HR park {pf:.0f}")
+        bits.append(f"HR park ({pf:.0f})")
     elif 0 < pf <= 90:
-        bits.append(f"tough park {pf:.0f}")
+        bits.append(f"tough park ({pf:.0f})")
 
-    # Weather
     wb = safe_float(row.get("hr_weather_boost", 0))
     if wb >= 1.5:
         bits.append("wind out")
     elif wb <= -1.0:
         bits.append("wind in")
 
-    return "   ·   ".join(bits[:4]) if bits else "power profile"
+    if not bits:
+        return f"avg power ({hr_fb:.0f}% HR/FB)" if hr_fb > 0 else "value on odds only"
+    return "   ·   ".join(bits[:4])
 
 
 # ── Row builder (HR only) ───────────────────────────────────────────────────
-def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame = None):
+def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
     def pad(row):
         return list(row) + [""] * (N_COLS - len(row))
 
     E = pad([])
     rows = []
+
+    rows.append((pad([f"⏱  Last Updated: {timestamp_str}"]), "timestamp"))
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
 
@@ -297,8 +305,6 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
                     continue
 
                 hit_rate, _be, has_value, edge_str = calc_hr_value(hr_score, odds_val, hr_hit_rates)
-
-                # Strength tag (proven +251..+600 band, edge cushion)
                 try:
                     edge_num = float(edge_str.replace("%", "").replace("+", ""))
                 except (ValueError, AttributeError):
@@ -317,7 +323,7 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
                     "batter": batter, "team": team, "score": round(hr_score, 1),
                     "odds": f"+{int(odds_val)}", "hit_rate": hit_rate,
                     "edge": edge_str, "edge_num": edge_num, "strength": strength,
-                    "has_value": has_value, "why": build_why(row, edge_str),
+                    "has_value": has_value, "why": build_why(row),
                 })
             except Exception:
                 continue
@@ -341,7 +347,7 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
 
     rows.append((E[:], "spacer"))
 
-    # ── Build the shared parlay candidate pool ───────────────────────────
+    # ── Shared parlay candidate pool ─────────────────────────────────────
     parlay_candidates = []
     if not hr_source.empty:
         for _, row in hr_source.iterrows():
@@ -362,7 +368,7 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
                     continue
 
                 hr_per_fb = safe_float(row.get("hr_per_fb", 0))
-                _hit, _be, _hv, leg_edge_str = calc_hr_value(hr_score, odds_val, hr_hit_rates)
+                hit, _be, _hv, leg_edge_str = calc_hr_value(hr_score, odds_val, hr_hit_rates)
                 try:
                     leg_edge = float(leg_edge_str.replace("%", "").replace("+", ""))
                 except (ValueError, AttributeError):
@@ -374,8 +380,8 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
                     "team": str(row.get("team", "")).strip(),
                     "opp_pit": str(row.get("pitcher_name", "")).strip(),
                     "score": hr_score, "odds": odds_val, "selector": selector,
-                    "in_2leg": in_2leg, "in_3leg": in_3leg,
-                    "why": build_why(row, leg_edge_str),
+                    "hit": hit, "in_2leg": in_2leg, "in_3leg": in_3leg,
+                    "why": build_why(row),
                 })
             except Exception:
                 continue
@@ -384,7 +390,7 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
     # ── 3-LEG PARLAY ─────────────────────────────────────────────────────
     rows.append((pad(["🎰  3-LEG HR PARLAY — Jackpot band (+351-500), best legs"]),
                  "section_header_parlay"))
-    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Hit%", "", "Why"]),
+    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Why"]),
                  "col_header_parlay"))
 
     three_pool = [c for c in parlay_candidates if c.get("in_3leg")]
@@ -407,11 +413,12 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
     if not selected:
         rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
     else:
+        payout3 = combined_american([c["odds"] for c in selected]) if len(selected) == 3 else ""
         for i, c in enumerate(selected):
-            hit, _be, _hv, _es = calc_hr_value(c["score"], c["odds"], hr_hit_rates)
             rows.append((pad([
                 str(i + 1), c["batter"], c["team"], f"{c['score']:.1f}",
-                f"+{int(c['odds'])}", f"{hit:.0f}%" if hit else "—", "", c["why"],
+                f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
+                payout3 if i == 0 else "", c["why"],
             ]), "data_parlay"))
 
     rows.append((E[:], "spacer"))
@@ -419,7 +426,7 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
     # ── 2-LEG PARLAYS (x2 tickets) ───────────────────────────────────────
     rows.append((pad(["🎟️  2-LEG HR PARLAYS — 2 tickets (proven +EV slots, +301-400 band)"]),
                  "section_header_parlay"))
-    rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Payout", "", "Why"]),
+    rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Why"]),
                  "col_header_parlay"))
 
     two_pool = [c for c in parlay_candidates if c.get("in_2leg")]
@@ -443,14 +450,13 @@ def build_rows(hr_df: pd.DataFrame, hr_hit_rates: dict, hr_today: pd.DataFrame =
         rows.append((pad(["—", "Not enough candidates for a 2-legger today", ""]), "no_plays"))
     else:
         for t_idx, (a, b) in enumerate(pairs, start=1):
-            dec = (1 + a["odds"] / 100) * (1 + b["odds"] / 100)
-            combined_american = f"+{int(round((dec - 1) * 100))}"
+            payout2 = combined_american([a["odds"], b["odds"]])
             for leg_idx, leg in enumerate((a, b)):
-                label = f"#{t_idx}" if leg_idx == 0 else ""
-                payout_col = combined_american if leg_idx == 0 else ""
                 rows.append((pad([
-                    label, leg["batter"], leg["team"], f"{leg['score']:.1f}",
-                    f"+{int(leg['odds'])}", payout_col, "", leg["why"],
+                    f"#{t_idx}" if leg_idx == 0 else "", leg["batter"], leg["team"],
+                    f"{leg['score']:.1f}", f"+{int(leg['odds'])}",
+                    f"{leg['hit']:.0f}%" if leg["hit"] else "—",
+                    payout2 if leg_idx == 0 else "", leg["why"],
                 ]), "data_parlay"))
             if t_idx < len(pairs):
                 rows.append((E[:], "spacer"))
@@ -464,37 +470,55 @@ def write_dashboard(gc, sheet_id, rows) -> None:
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
         ws = sh.worksheet(DASHBOARD_SHEET)
-        with_retry(lambda: ws.clear())
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=200, cols=N_COLS)
-
+        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=max(RESET_ROWS, len(rows) + 10), cols=RESET_COLS)
     ws_id = ws.id
+
+    # Full reset: unmerge everything + blanket default format so no stale
+    # cell (old KS/HRRBI colors, merges, wraps) survives into the new layout.
+    reset_reqs = [
+        {"unmergeCells": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": RESET_ROWS,
+                                    "startColumnIndex": 0, "endColumnIndex": RESET_COLS}}},
+        {"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": RESET_ROWS,
+                      "startColumnIndex": 0, "endColumnIndex": RESET_COLS},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": COLOR_BG,
+                "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
+                "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "CLIP",
+            }},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
+        }},
+    ]
     try:
-        with_retry(lambda: sh.batch_update({"requests": [{"unmergeCells": {
-            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 200,
-                      "startColumnIndex": 0, "endColumnIndex": N_COLS}}}]}))
+        with_retry(lambda: sh.batch_update({"requests": reset_reqs}))
     except Exception:
         pass
 
+    with_retry(lambda: ws.clear())
     data = [row_data for row_data, _ in rows]
     with_retry(lambda: ws.update(data, value_input_option="RAW"))
 
     reqs = []
-    # Base style — WRAP everywhere so nothing clips
-    reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(rows) + 2,
-                  "startColumnIndex": 0, "endColumnIndex": N_COLS},
-        "cell": {"userEnteredFormat": {
-            "backgroundColor": COLOR_BG,
-            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
-            "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "WRAP",
-        }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
-    }})
-
     data_counts = {}
     for r, (row_data, rtype) in enumerate(rows):
-        if rtype.startswith("section_header"):
+        if rtype == "timestamp":
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_HEADER_BG,
+                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "italic": True,
+                                   "fontFamily": "Roboto", "fontSize": 11},
+                    "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+            }})
+            reqs.append({"mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "mergeType": "MERGE_ALL"}})
+
+        elif rtype.startswith("section_header"):
             color = COLOR_PURPLE if "parlay" in rtype else COLOR_GOLD
             text_color = COLOR_WHITE if "parlay" in rtype else COLOR_BLACK
             reqs.append({"repeatCell": {
@@ -504,8 +528,7 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                     "backgroundColor": color,
                     "textFormat": {"foregroundColor": text_color, "bold": True,
                                    "fontFamily": "Roboto", "fontSize": 12},
-                    "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
-                }},
+                    "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
             reqs.append({"mergeCells": {
@@ -521,8 +544,7 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                     "backgroundColor": COLOR_HEADER_BG,
                     "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": True,
                                    "fontFamily": "Roboto", "fontSize": 9},
-                    "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP",
-                }},
+                    "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
@@ -531,13 +553,17 @@ def write_dashboard(gc, sheet_id, rows) -> None:
             c = data_counts.get(key, 0)
             data_counts[key] = c + 1
             bg = COLOR_BG if c % 2 == 0 else COLOR_BG_ALT
+            # whole row: bg + WRAP (so Why can wrap without clipping)
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": N_COLS},
-                "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-                "fields": "userEnteredFormat(backgroundColor)",
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": bg,
+                    "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
+                    "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "WRAP"}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
             }})
-            # Rank / Leg / Ticket column — centered, dim
+            # col 0 (Rank/Leg/Ticket) centered dim
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
@@ -547,7 +573,7 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                     "horizontalAlignment": "CENTER"}},
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
             }})
-            # Score column (idx 3) — green 13+, gold 12-13
+            # col 3 (Score) colored by tier
             score_color = COLOR_GREEN if "strong" in rtype else (
                 COLOR_GOLD if ("moderate" in rtype or rtype == "data_parlay") else COLOR_WHITE)
             reqs.append({"repeatCell": {
@@ -559,27 +585,15 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                     "horizontalAlignment": "CENTER"}},
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
             }})
-            # Edge column (idx 6) green for singles
-            if rtype.startswith("data_hr"):
-                reqs.append({"repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                              "startColumnIndex": 6, "endColumnIndex": 7},
-                    "cell": {"userEnteredFormat": {
-                        "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
-                                       "fontFamily": "Roboto", "fontSize": 11}}},
-                    "fields": "userEnteredFormat(textFormat)",
-                }})
-            # Payout column (idx 5) green for parlays
-            if rtype == "data_parlay":
-                reqs.append({"repeatCell": {
-                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                              "startColumnIndex": 5, "endColumnIndex": 6},
-                    "cell": {"userEnteredFormat": {
-                        "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
-                                       "fontFamily": "Roboto", "fontSize": 11},
-                        "horizontalAlignment": "CENTER"}},
-                    "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-                }})
+            # col 6 = Edge (singles) / Payout (parlays) — green accent
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 6, "endColumnIndex": 7},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 11}}},
+                "fields": "userEnteredFormat(textFormat)",
+            }})
 
         elif rtype == "no_plays":
             reqs.append({"repeatCell": {
@@ -592,8 +606,8 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat)",
             }})
 
-    # Column widths — sized to fit content; Why wraps
-    col_widths = [54, 158, 52, 62, 66, 80, 118, 300]
+    # Column widths (fit content; Why wraps)
+    col_widths = [56, 158, 52, 62, 66, 66, 120, 300]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
@@ -602,14 +616,16 @@ def write_dashboard(gc, sheet_id, rows) -> None:
 
     # Row heights
     for r, (_, rtype) in enumerate(rows):
-        if rtype.startswith("section_header"):
+        if rtype == "timestamp":
+            h = 30
+        elif rtype.startswith("section_header"):
             h = 38
         elif rtype == "spacer":
             h = 12
         elif rtype.startswith("col_header"):
             h = 24
         else:
-            h = 44  # tall enough for a wrapped Why line
+            h = 44
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": r, "endIndex": r + 1},
             "properties": {"pixelSize": h}, "fields": "pixelSize",
@@ -626,37 +642,6 @@ def write_dashboard(gc, sheet_id, rows) -> None:
         print("Dashboard formatting applied.")
     except APIError as e:
         print(f"Dashboard formatting failed: {e}")
-
-
-# ── Timestamp ───────────────────────────────────────────────────────────────
-def write_timestamp(gc, sheet_id) -> None:
-    et = pytz.timezone("America/New_York")
-    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
-    sh = with_retry(lambda: gc.open_by_key(sheet_id))
-    try:
-        ws = sh.worksheet(DASHBOARD_SHEET)
-        ws_id = ws.id
-        with_retry(lambda: ws.insert_row([f"⏱ Last Updated: {now_et}"] + [""] * (N_COLS - 1), index=1))
-        with_retry(lambda: sh.batch_update({"requests": [
-            {"repeatCell": {
-                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
-                "cell": {"userEnteredFormat": {
-                    "backgroundColor": COLOR_HEADER_BG,
-                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "italic": True,
-                                   "fontFamily": "Roboto", "fontSize": 11}}},
-                "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
-            {"mergeCells": {
-                "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
-                "mergeType": "MERGE_ALL"}},
-            {"updateDimensionProperties": {
-                "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
-                "properties": {"pixelSize": 30}, "fields": "pixelSize"}},
-        ]}))
-    except Exception as e:
-        print(f"Dashboard timestamp failed: {e}")
-    print(f"Dashboard timestamp written: {now_et}")
 
 
 # ── Scorecard (HR only) ─────────────────────────────────────────────────────
@@ -681,8 +666,7 @@ def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
         if rtype == "section_header_hr":
             current_model = "HR Single"
         elif rtype == "section_header_parlay":
-            htxt = str(row_data[0])
-            current_model = "HR Parlay 2-leg" if "2-LEG" in htxt else "HR Parlay 3-leg"
+            current_model = "HR Parlay 2-leg" if "2-LEG" in str(row_data[0]) else "HR Parlay 3-leg"
 
         if rtype in ("data_hr_strong", "data_hr_moderate", "data_hr_light"):
             name = str(row_data[1]).strip()
@@ -747,7 +731,6 @@ def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
                     "textFormat": {"foregroundColor": color, "bold": True},
                     "horizontalAlignment": "CENTER"}},
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
-    # Editable columns highlight: Your Odds(7), Stake(8), Result(9)
     for ci in (7, 8, 9):
         reqs.append({"repeatCell": {
             "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total,
@@ -795,12 +778,13 @@ def main() -> None:
         hr_today = pd.DataFrame()
     print(f"HR today's scores: {len(hr_today)} players")
 
-    rows = build_rows(hr_df, hr_hit_rates, hr_today)
+    et = pytz.timezone("America/New_York")
+    ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+
+    rows = build_rows(hr_df, hr_hit_rates, hr_today, ts)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
     write_scorecard(gc, sheet_id, rows, today_str)
-    time.sleep(2)
-    write_timestamp(gc, sheet_id)
     print("Dashboard written to 'Today's Top Picks'")
 
 
