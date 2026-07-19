@@ -35,8 +35,10 @@ on:
           - test_2leg_slots
           - test_blend1_decompose
           - test_xstats_probe
+          - test_pitcher_vulnerability
           - test_battracking_separators
           - test_good_hitter_separators
+
 
 jobs:
   diagnostic:
@@ -256,6 +258,10 @@ jobs:
           SCORE_MIN: "8.5"
           HR_MIN: "6"
         run: python test_good_hitter_separators.py
+
+
+
+
 
 
   
