@@ -168,6 +168,20 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
     resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
     resolved["odds_num"] = resolved["consensus_odds"].apply(safe_float)
 
+    # Global base HR rate — the anchor we shrink small/extreme cells toward.
+    base_rate = resolved["hit_bool"].mean()
+    # Shrinkage strength: a cell needs ~SHRINK_K samples to earn half its
+    # distance from base. Calibration (out-of-sample) showed the high-confidence
+    # cells (32%+ predicted) hit ~18% — overrated because a thin, hot cell was
+    # trusted at face value. Shrinking pulls those back toward reality without
+    # hand-picking which tiers to punish; big stable cells barely move.
+    SHRINK_K = 40.0
+
+    def shrunk_rate(sub):
+        n = len(sub)
+        raw = sub["hit_bool"].mean()
+        return (n * raw + SHRINK_K * base_rate) / (n + SHRINK_K)
+
     # 13+ split into 13-14 / 14-15 / 15+ so each leg is credited with its own
     # observed rate (15+ underperforms the tiers beneath it).
     tier_defs = [
@@ -179,12 +193,13 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
     for tier_label, lo, hi in tier_defs:
         tier_sub = resolved[(resolved["hr_score"] >= lo) & (resolved["hr_score"] < hi)]
         if len(tier_sub) >= 5:
-            hit_rates[tier_label] = tier_sub["hit_bool"].mean()
+            hit_rates[tier_label] = shrunk_rate(tier_sub)
         for zk in zone_keys:
             zsub = tier_sub[tier_sub["odds_num"].apply(_hr_odds_zone_key) == zk]
             if len(zsub) >= 15:
-                hit_rates[(tier_label, zk)] = zsub["hit_bool"].mean()
-    print(f"  HR hit rate lookup: {len(hit_rates)} entries from {len(resolved)} resolved picks")
+                hit_rates[(tier_label, zk)] = shrunk_rate(zsub)
+    print(f"  HR hit rate lookup: {len(hit_rates)} entries from {len(resolved)} resolved picks "
+          f"(base {base_rate*100:.1f}%, shrink k={SHRINK_K:.0f})")
     return hit_rates
 
 
