@@ -107,7 +107,13 @@ def get_today_probable_pitchers() -> Dict[str, dict]:
                     pitcher_id = probable.get("id")
                     pitcher_name = probable.get("fullName", "")
                     if abbr and pitcher_id:
-                        pitchers[str(abbr).strip()] = {
+                        # Key by pitcher ID, not team: on a doubleheader a team
+                        # has TWO probable starters, and a team-keyed dict would
+                        # overwrite the first with the second (dropping a whole
+                        # game). Pitcher ID is unique per starter, so both
+                        # survive. Downstream consumers read .values()/v["id"],
+                        # so they don't care about the key — verified safe.
+                        pitchers[str(int(pitcher_id))] = {
                             "name": pitcher_name,
                             "id": int(pitcher_id),
                             "team": str(abbr).strip(),
