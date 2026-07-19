@@ -842,12 +842,18 @@ def prepare_combined(
         combined["total_penalty"]
     ).round(3)
 
-    # ── Deduplicate — keep highest score per player ───────────────────────
-    # Prevents duplicate rows when pitcher sheet has multiple entries per team
-    # (e.g. starter + reliever both listed for same opposing team)
+    # ── Deduplicate — keep highest score per player PER GAME ──────────────
+    # Key on player + opposing pitcher, not player alone. On a normal day a
+    # hitter faces one pitcher, so this is identical to deduping on player.
+    # On a DOUBLEHEADER the hitter has two rows (two different opposing
+    # starters from the team-merge fan-out); keying on the pitcher keeps BOTH
+    # games instead of deleting one. Still collapses true duplicates (starter
+    # + reliever listed for the same game share the same opp_pitcher_name...
+    # note: if that ever occurs, the higher score is kept, as before).
     before = len(combined)
     combined = combined.sort_values("score", ascending=False)
-    combined = combined.drop_duplicates(subset=["player_name"], keep="first")
+    _dedup_keys = ["player_name", "opp_pitcher_name"] if "opp_pitcher_name" in combined.columns else ["player_name"]
+    combined = combined.drop_duplicates(subset=_dedup_keys, keep="first")
     combined = combined.reset_index(drop=True)
     dupes = before - len(combined)
     if dupes > 0:
