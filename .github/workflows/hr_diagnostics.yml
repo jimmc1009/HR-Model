@@ -40,6 +40,7 @@ on:
           - test_good_hitter_separators
           - test_calibration_and_random
           - test_hr_leg_correlation
+          - test_hr_parlay_bands
 
 jobs:
   diagnostic:
@@ -280,6 +281,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_hr_leg_correlation.py
+
+      - name: Parlay band sweep
+        if: ${{ github.event.inputs.script == 'test_hr_parlay_bands' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_hr_parlay_bands.py
+
 
 
 
