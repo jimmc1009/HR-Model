@@ -41,6 +41,7 @@ on:
           - test_calibration_and_random
           - test_hr_leg_correlation
           - test_hr_parlay_bands
+          - test_hr_hitrate_2leg
 
 jobs:
   diagnostic:
@@ -288,6 +289,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_hr_parlay_bands.py
+
+      - name: Hit-rate 2-leg sweep
+        if: ${{ github.event.inputs.script == 'test_hr_hitrate_2leg' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_hr_hitrate_2leg.py
+
 
 
 
