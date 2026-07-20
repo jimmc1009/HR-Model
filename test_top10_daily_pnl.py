@@ -128,6 +128,30 @@ def main():
     print("\n  NOTE: graded at consensus odds as logged. Your shopped price would")
     print("  differ. One month is a small sample — treat P/L as directional.")
 
+    # ── RESTRICTED VIEW: only the tiers that actually win (13-14 + 14-15) ──
+    # Every test this session converges on these two tiers; 15+ underperforms
+    # and 12-13 is a drag. This is the P/L of what you'd actually bet.
+    print("\n" + "=" * 60)
+    print(f"  RESTRICTED — 13-14 & 14-15 ONLY (1u each, last {DAYS_BACK} days)")
+    print("=" * 60)
+    good = picks[picks["tier"].isin(["13-14", "14-15"])].copy()
+    if good.empty:
+        print("  No 13-15 legs in window.")
+    else:
+        gn = len(good); gh = int(good["hit"].sum()); gp = good["pnl"].sum()
+        print(f"  bets:        {gn}")
+        print(f"  hits:        {gh}  ({gh/gn*100:.1f}% hit rate)")
+        print(f"  total P/L:   {gp:+.2f} units")
+        print(f"  ROI:         {gp/gn*100:+.1f}% per bet")
+        print(f"  avg odds:    {good['odds'].mean():+.0f}")
+        print("\n  By week (still watch for one-week streakiness):")
+        for wk, g in good.groupby("week"):
+            print(f"    week {wk}: {len(g)} bets, {int(g['hit'].sum())} hits, {g['pnl'].sum():+.2f}u")
+        # also show it capped at the daily top-N within these tiers, in case
+        # "top 10 including junk tiers" vs "all good-tier legs" differ in volume
+        print(f"\n  (for reference: {gn} good-tier bets came out of {n} total top-{TOP_N} bets)")
+        print("  Bumped by removing 15+ and 12-13, which lost money as logged.")
+
 
 if __name__ == "__main__":
     main()
