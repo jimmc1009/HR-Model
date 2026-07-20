@@ -152,6 +152,25 @@ def main():
         print(f"\n  (for reference: {gn} good-tier bets came out of {n} total top-{TOP_N} bets)")
         print("  Bumped by removing 15+ and 12-13, which lost money as logged.")
 
+        # ── ROBUSTNESS: drop the single best week, and drop best two weeks ──
+        # If the edge only exists because of one or two hot stretches, that's
+        # variance, not signal. A result that survives removing its best week
+        # is far more believable.
+        print("\n  Robustness (how much rides on the hot weeks?):")
+        wk_pnl = good.groupby("week")["pnl"].sum().sort_values(ascending=False)
+        best1 = wk_pnl.index[0]
+        best2 = list(wk_pnl.index[:2])
+        drop1 = good[good["week"] != best1]
+        drop2 = good[~good["week"].isin(best2)]
+        for label, sub in [("all weeks        ", good),
+                           (f"drop best wk ({best1})", drop1),
+                           (f"drop best 2 wks   ", drop2)]:
+            if len(sub):
+                print(f"    {label}: {len(sub):3d} bets, "
+                      f"{sub['pnl'].sum():+7.2f}u, {sub['pnl'].sum()/len(sub)*100:+6.1f}% ROI")
+        print("    READ: if 'drop best 2 wks' is still clearly positive, the edge")
+        print("    isn't just a hot streak. If it goes negative, it mostly was.")
+
 
 if __name__ == "__main__":
     main()
