@@ -402,6 +402,102 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 continue
         parlay_candidates.sort(key=lambda x: -x["selector"])
 
+    # ── PURE HIT-RATE 2-LEG PARLAYS (x2) — edge-blind, cash-rate first ────
+    # Data (walk-forward sweep): tier-strict short odds cashes most. Winner
+    # was <=+300 & tiers 13-15 (~46% leg hit, ~23% cash). Fallback ladder
+    # relaxes only as far as needed to fill two legs, never below 12+ (going
+    # to 9-11 halves the leg hit rate and defeats the product's purpose).
+    rows.append((pad(["🎯  PURE HIT-RATE 2-LEG PARLAYS — 2 tickets (cashes most, edge-ignored)"]),
+                 "section_header_parlay"))
+    rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Filter"]),
+                 "col_header_parlay"))
+
+    # build a hit-rate pool straight from hr_source (not limited to the +301-400 bands)
+    hit_pool = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            try:
+                b = str(row.get("player_name", "")).strip()
+                if not b or b == "nan":
+                    continue
+                s = safe_float(row.get("hr_score", 0))
+                oraw = str(row.get("consensus_odds", "")).strip()
+                o = safe_float(oraw.replace("+", "")) if oraw not in ("", "nan") else 0
+                if o <= 0 or s <= 0:
+                    continue
+                hit, _b, _h, _e = calc_hr_value(s, o, hr_hit_rates)
+                hit_pool.append({
+                    "batter": b, "team": str(row.get("team", "")).strip(),
+                    "opp_pit": str(row.get("pitcher_name", "")).strip(),
+                    "score": s, "odds": o, "hit": hit, "why": build_why(row),
+                })
+            except Exception:
+                continue
+
+    # fallback ladder: (odds ceiling, score floor, label)
+    HR_LADDER = [
+        (300, 13.0, "≤+300·13-15"),
+        (350, 13.0, "≤+350·13-15"),
+        (300, 12.0, "≤+300·12+"),
+        (350, 12.0, "≤+350·12+"),
+    ]
+
+    def pick_hitrate_pair(exclude_names, exclude_pitchers):
+        """Return (leg_a, leg_b, label) from the best rung that can fill two
+        pitcher-diversified legs, or None."""
+        for ceil, floor, label in HR_LADDER:
+            cand = [c for c in hit_pool
+                    if c["odds"] <= ceil and c["score"] >= floor
+                    and c["batter"] not in exclude_names]
+            # 13-15 rungs exclude the weak 15+ tier explicitly
+            if floor >= 13.0:
+                cand = [c for c in cand if c["score"] < 15.0]
+            # rank by hit rate (edge-blind)
+            cand.sort(key=lambda x: -x["hit"])
+            picked, used = [], set(exclude_pitchers)
+            for c in cand:
+                if len(picked) >= 2:
+                    break
+                if c["opp_pit"] and c["opp_pit"] in used:
+                    continue
+                picked.append(c)
+                if c["opp_pit"]:
+                    used.add(c["opp_pit"])
+            if len(picked) == 2:
+                return picked[0], picked[1], label
+        return None
+
+    hr_names, hr_pitchers = set(), set()
+    hr_tickets = []
+    for _ in range(2):
+        res = pick_hitrate_pair(hr_names, hr_pitchers)
+        if not res:
+            break
+        a, b, label = res
+        hr_tickets.append((a, b, label))
+        for leg in (a, b):
+            hr_names.add(leg["batter"])
+            if leg["opp_pit"]:
+                hr_pitchers.add(leg["opp_pit"])
+
+    if not hr_tickets:
+        rows.append((pad(["—", "No hit-rate legs today (need two ≤+350 / 12+ legs)", ""]), "no_plays"))
+    else:
+        for t_idx, (a, b, label) in enumerate(hr_tickets, start=1):
+            payout = combined_american([a["odds"], b["odds"]])
+            for leg_idx, leg in enumerate((a, b)):
+                rows.append((pad([
+                    f"#{t_idx}" if leg_idx == 0 else "", leg["batter"], leg["team"],
+                    f"{leg['score']:.1f}", f"+{int(leg['odds'])}",
+                    f"{leg['hit']:.0f}%" if leg["hit"] else "—",
+                    payout if leg_idx == 0 else "",
+                    label if leg_idx == 0 else "",
+                ]), "data_parlay"))
+            if t_idx < len(hr_tickets):
+                rows.append((E[:], "spacer"))
+
+    rows.append((E[:], "spacer"))
+
     # ── 3-LEG PARLAY ─────────────────────────────────────────────────────
     rows.append((pad(["🎰  3-LEG HR PARLAY — Jackpot band (+351-500), best legs"]),
                  "section_header_parlay"))
@@ -778,9 +874,15 @@ def main() -> None:
     gc = get_gspread_client()
 
     print("Reading HR picks + scores for dashboard...")
-    hr_df = read_sheet(gc, sheet_id, "Top_HR_Picks")
+    # Tab names default to MAIN's tabs. To test in dev against v1/v2 tabs, set
+    # HR_SCORES_TAB / HR_PICKS_TAB env vars in the dev workflow — main runs with
+    # neither set and reads the regular tabs, so merging can't break main.
+    scores_tab = os.environ.get("HR_SCORES_TAB", "HR_All_Scores")
+    picks_tab  = os.environ.get("HR_PICKS_TAB", "Top_HR_Picks")
+    print(f"Reading picks from '{picks_tab}', scores from '{scores_tab}'")
+    hr_df = read_sheet(gc, sheet_id, picks_tab)
     time.sleep(2)
-    hr_all_scores = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
+    hr_all_scores = read_sheet_raw(gc, sheet_id, scores_tab)
     time.sleep(2)
 
     print(f"HR picks: {len(hr_df)} rows | HR All Scores: {len(hr_all_scores)} rows")
