@@ -42,6 +42,7 @@ on:
           - test_hr_leg_correlation
           - test_hr_parlay_bands
           - test_hr_hitrate_2leg
+          - test_top10_daily_pnl
 
 jobs:
   diagnostic:
@@ -296,6 +297,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_hr_hitrate_2leg.py
+
+      - name: Top 10 daily P/L
+        if: ${{ github.event.inputs.script == 'test_top10_daily_pnl' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_top10_daily_pnl.py
+
 
 
 
