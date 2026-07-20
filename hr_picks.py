@@ -384,29 +384,15 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         iso_vs_opp  = iso_vs_rhp
         label       = f"{batter_hand}HH vs LHP"
         start_rate  = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
     elif p_throws == "R":
         iso_vs_this = iso_vs_rhp
         iso_vs_opp  = iso_vs_lhp
         label       = f"{batter_hand}HH vs RHP"
         start_rate  = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
-    else:
-        return 0.0, ""
-
-    # Pitcher barrel% ALLOWED is a property of the BATTER's handedness, not the
-    # pitcher's: pitcher_vs_lhh_barrel_pct = barrels this pitcher gives up to
-    # left-handed hitters. So key it on batter_hand. (Previously keyed on
-    # p_throws, which flipped the number for opposite-handed matchups — e.g. a
-    # LHH vs RHP got shown the pitcher's vs-RHH barrel rate.)
-    # Switch hitters bat opposite the pitcher's hand — resolve to that side.
-    effective_bat = batter_hand
-    if batter_hand == "S":
-        effective_bat = "L" if p_throws == "R" else "R"
-    if effective_bat == "L":
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
-    elif effective_bat == "R":
         pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
     else:
-        pitcher_barrel_vs_hand = 0.0
+        return 0.0, ""
 
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
@@ -856,12 +842,18 @@ def prepare_combined(
         combined["total_penalty"]
     ).round(3)
 
-    # ── Deduplicate — keep highest score per player ───────────────────────
-    # Prevents duplicate rows when pitcher sheet has multiple entries per team
-    # (e.g. starter + reliever both listed for same opposing team)
+    # ── Deduplicate — keep highest score per player PER GAME ──────────────
+    # Key on player + opposing pitcher, not player alone. On a normal day a
+    # hitter faces one pitcher, so this is identical to deduping on player.
+    # On a DOUBLEHEADER the hitter has two rows (two different opposing
+    # starters from the team-merge fan-out); keying on the pitcher keeps BOTH
+    # games instead of deleting one. Still collapses true duplicates (starter
+    # + reliever listed for the same game share the same opp_pitcher_name...
+    # note: if that ever occurs, the higher score is kept, as before).
     before = len(combined)
     combined = combined.sort_values("score", ascending=False)
-    combined = combined.drop_duplicates(subset=["player_name"], keep="first")
+    _dedup_keys = ["player_name", "opp_pitcher_name"] if "opp_pitcher_name" in combined.columns else ["player_name"]
+    combined = combined.drop_duplicates(subset=_dedup_keys, keep="first")
     combined = combined.reset_index(drop=True)
     dupes = before - len(combined)
     if dupes > 0:
@@ -1708,12 +1700,6 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "pull_rate":              str(row.get("pull_rate", "")),
             "platoon_matchup":        str(row.get("platoon_desc", "")),
             "platoon_score":          str(row.get("platoon_score", "")),
-            # Going forward the live model is already fixed, so the corrected
-            # columns simply mirror the (already-correct) values. This keeps
-            # *_corrected as the single clean source of truth across old
-            # (rescored) and new rows. Analysis + dashboard read *_corrected.
-            "platoon_score_corrected": str(row.get("platoon_score", "")),
-            "hr_score_corrected":      str(row.get("score", "")),
             "pitch_matchup":          str(row.get("pitch_matchup_desc", "")),
             "pitcher_barrel_pct":     str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":      str(row.get("pitcher_hr_per_fb", "")),
