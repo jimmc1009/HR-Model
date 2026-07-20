@@ -19,7 +19,6 @@ on:
           - weather
           - odds
           - hr_picks
-          - hr_picks_v1
           - hr_picks_v2
           - hrrbi_statcast
           - hrrbi_picks
@@ -143,13 +142,6 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks.py
-
-      - name: Run hr_picks_v1.py (frozen old model -> HR_All_Scores_v1)
-        if: inputs.script == 'hr_picks_v1'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python hr_picks_v1.py
 
       - name: Run hr_picks_v2.py (shadow -> HR_All_Scores_v2)
         if: inputs.script == 'hr_picks_v2'
