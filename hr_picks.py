@@ -1453,10 +1453,10 @@ def clean_for_sheets(df: pd.DataFrame) -> pd.DataFrame:
 def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> int:
     sh = gc.open_by_key(sheet_id)
     try:
-        ws = sh.worksheet("Top_HR_Picks_v1")
+        ws = sh.worksheet("Top_HR_Picks")
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Top_HR_Picks_v1", rows=100, cols=55)
+        ws = sh.add_worksheet(title="Top_HR_Picks", rows=100, cols=55)
 
     if picks.empty:
         ws.update([[f"No qualifying picks today — score ≥{MIN_SCORE_FLOOR}, odds ≤+{MAX_ODDS}"]])
@@ -1477,7 +1477,7 @@ def write_last_run_timestamp(gc: gspread.Client, sheet_id: str) -> None:
     now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
     sh     = gc.open_by_key(sheet_id)
     try:
-        ws = sh.worksheet("Top_HR_Picks_v1")
+        ws = sh.worksheet("Top_HR_Picks")
     except gspread.WorksheetNotFound:
         return
     ws.insert_row([f"⏱  Last Run: {now_et}"], index=1)
@@ -1490,7 +1490,7 @@ def format_picks_sheet(gc: gspread.Client, sheet_id: str, row_count: int) -> Non
 
     print("Applying formatting...")
     sh    = gc.open_by_key(sheet_id)
-    ws    = sh.worksheet("Top_HR_Picks_v1")
+    ws    = sh.worksheet("Top_HR_Picks")
     ws_id = ws.id
 
     main_cols  = 45
@@ -1654,10 +1654,10 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
     sh        = with_retry(lambda: gc.open_by_key(sheet_id))
 
     try:
-        ws       = sh.worksheet("HR_All_Scores_v1")
+        ws       = sh.worksheet("HR_All_Scores")
         existing = pd.DataFrame(ws.get_all_records())
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="HR_All_Scores_v1", rows=10000, cols=40)
+        ws       = sh.add_worksheet(title="HR_All_Scores", rows=10000, cols=40)
         existing = pd.DataFrame()
 
     if not existing.empty and "date" in existing.columns:
