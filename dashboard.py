@@ -498,6 +498,52 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
 
     rows.append((E[:], "spacer"))
 
+    # ── ROUND ROBIN — top 5 of the 13-15 pool (bet as 10 two-leg pairs) ───
+    # Just the 5 legs; you build the 10 pairs on the book. Same pool/ladder as
+    # the hit-rate section: prefer ≤+300 & 13-15, relax only to fill 5.
+    rows.append((pad(["🔁  ROUND ROBIN — top 5 legs (bet as 10 two-leg pairs, ~$0.50 each)"]),
+                 "section_header_parlay"))
+    rows.append((pad(["#", "Batter", "Team", "Score", "Odds", "Hit%", "", "Filter"]),
+                 "col_header_parlay"))
+
+    rr_legs, rr_label = [], ""
+    for ceil, floor, label in HR_LADDER:
+        cand = [c for c in hit_pool if c["odds"] <= ceil and c["score"] >= floor]
+        if floor >= 13.0:
+            cand = [c for c in cand if c["score"] < 15.0]   # exclude weak 15+
+        cand.sort(key=lambda x: -x["hit"])
+        # pitcher-diversify
+        picked, used = [], set()
+        for c in cand:
+            if len(picked) >= 5:
+                break
+            if c["opp_pit"] and c["opp_pit"] in used:
+                continue
+            picked.append(c)
+            if c["opp_pit"]:
+                used.add(c["opp_pit"])
+        if len(picked) >= 5:
+            rr_legs, rr_label = picked[:5], label
+            break
+        # keep the best partial fill seen (in case no rung reaches 5)
+        if len(picked) > len(rr_legs):
+            rr_legs, rr_label = picked, label
+
+    if len(rr_legs) < 2:
+        rows.append((pad(["—", "Not enough 13-15 legs for a round robin today", ""]), "no_plays"))
+    else:
+        for i, c in enumerate(rr_legs, start=1):
+            rows.append((pad([
+                str(i), c["batter"], c["team"], f"{c['score']:.1f}",
+                f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
+                "", rr_label if i == 1 else "",
+            ]), "data_parlay"))
+        if len(rr_legs) < 5:
+            rows.append((pad(["", f"only {len(rr_legs)} qualified — "
+                              f"{len(rr_legs)*(len(rr_legs)-1)//2} pairs today", ""]), "no_plays"))
+
+    rows.append((E[:], "spacer"))
+
     # ── 3-LEG PARLAY ─────────────────────────────────────────────────────
     rows.append((pad(["🎰  3-LEG HR PARLAY — Jackpot band (+351-500), best legs"]),
                  "section_header_parlay"))
