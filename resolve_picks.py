@@ -224,8 +224,14 @@ def get_batter_appeared_for_game(game_pk: int) -> tuple:
                     continue
                 if pa >= 2:
                     appeared.add(normalize_name(full_name))
-                if home_runs > 0:
-                    hr_hitters.add(normalize_name(full_name))
+                    # HR must sit INSIDE the PA gate. Previously this was a
+                    # separate ungated check, so a 1-PA player was classified
+                    # by outcome: a 1-PA home run scored "Yes", while a 1-PA
+                    # non-home-run fell through to "Void" and was dropped from
+                    # the denominator. That inflated every hit rate, including
+                    # the SCORE_TIER_HIT_RATES constants feeding calc_edge.
+                    if home_runs > 0:
+                        hr_hitters.add(normalize_name(full_name))
     except Exception as e:
         print(f"  WARNING: Could not fetch batter data for game {game_pk}: {e}")
     return hr_hitters, appeared

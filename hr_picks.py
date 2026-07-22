@@ -1242,12 +1242,12 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
     hr_events = hr_events.copy()
     hr_events["player_name"] = hr_events["batter"].map(lambda x: name_map.get(int(x), "") if pd.notna(x) else "")
     hr_events["date_str"]    = hr_events["game_date"].dt.strftime("%Y-%m-%d")
-    hr_lookup = set(zip(hr_events["date_str"], hr_events["player_name"].str.lower().str.strip()))
+    hr_lookup = set(zip(hr_events["date_str"], hr_events["player_name"].apply(normalize_name)))
 
     appeared_df = appeared_df.copy()
     appeared_df["player_name"] = appeared_df["batter"].map(lambda x: name_map.get(int(x), "") if pd.notna(x) else "")
     appeared_df["date_str"]    = appeared_df["game_date"].dt.strftime("%Y-%m-%d")
-    appeared_lookup = set(zip(appeared_df["date_str"], appeared_df["player_name"].str.lower().str.strip()))
+    appeared_lookup = set(zip(appeared_df["date_str"], appeared_df["player_name"].apply(normalize_name)))
 
     resolved_count = 0
     voided_count   = 0
@@ -1255,7 +1255,7 @@ def resolve_pending_picks(gc: gspread.Client, sheet_id: str) -> None:
         if row["hit_hr"] != "Pending" or row["date"] == today_str:
             continue
         pick_date = str(row["date"]).strip()
-        pick_name = str(row["player_name"]).lower().strip()
+        pick_name = normalize_name(str(row["player_name"]))
         if not pick_date or not pick_name:
             existing.at[idx, "hit_hr"] = "No"
         elif (pick_date, pick_name) in hr_lookup:
