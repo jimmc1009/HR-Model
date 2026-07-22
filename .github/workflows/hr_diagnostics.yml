@@ -43,6 +43,7 @@ on:
           - test_hr_parlay_bands
           - test_hr_hitrate_2leg
           - test_top10_daily_pnl
+          - test_platoon_fix_powergate.py
 
 jobs:
   diagnostic:
@@ -304,6 +305,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_top10_daily_pnl.py
+
+      - name: Platoon fix power gate
+        if: github.event.inputs.script == 'test_platoon_fix_powergate.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_platoon_fix_powergate.py HR_All_Scores.csv
 
 
 
