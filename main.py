@@ -352,6 +352,36 @@ def lookup_player_names(player_ids: List[int]) -> Dict[int, str]:
     return out
 
 
+def lookup_bat_sides(player_ids: List[int]) -> Dict[int, str]:
+    """id -> 'L' / 'R' / 'S' from MLB StatsAPI batSide.code.
+
+    Statcast's `stand` column records the side a batter hit from in a given
+    plate appearance, so it can never emit "S" — a switch hitter's value
+    depends on which pitchers he happened to face. batSide is the roster
+    attribute and is the only source of the switch-hitter flag, which the
+    platoon score needs to flip a switch hitter to the correct side of the
+    matchup.
+    """
+    out       = {}
+    clean_ids = sorted({int(pid) for pid in player_ids if pd.notna(pid)})
+    if not clean_ids:
+        return out
+    for i in range(0, len(clean_ids), 50):
+        chunk = clean_ids[i:i + 50]
+        url   = f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(map(str, chunk))}"
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            for person in resp.json().get("people", []):
+                pid  = person.get("id")
+                code = (person.get("batSide") or {}).get("code", "")
+                if pid and code:
+                    out[int(pid)] = code.strip().upper()[:1]
+        except Exception:
+            pass
+    return out
+
+
 def add_flags(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -905,6 +935,21 @@ def build_batter_features(df: pd.DataFrame, today_teams: Set[str]) -> pd.DataFra
             .reset_index()
             .rename(columns={"stand": "batter_hand"})
         )
+
+        # `stand` is per-plate-appearance, so .first() picks an arbitrary side
+        # for switch hitters. Override with the roster attribute so switch
+        # hitters come through as "S" rather than a coin flip.
+        bat_sides = lookup_bat_sides(stand_map["batter"].tolist())
+        if bat_sides:
+            stand_map["batter_hand"] = [
+                bat_sides.get(int(b), h)
+                for b, h in zip(stand_map["batter"], stand_map["batter_hand"])
+            ]
+            n_switch = int((stand_map["batter_hand"] == "S").sum())
+            print(f"batter_hand: {len(bat_sides)} resolved from StatsAPI "
+                  f"({n_switch} switch hitters)")
+        else:
+            print("batter_hand: StatsAPI unavailable — falling back to Statcast stand")
 
         for hand, label in [("L", "vs_lhp"), ("R", "vs_rhp")]:
             sub = bbe[bbe["p_throws"] == hand].copy()
