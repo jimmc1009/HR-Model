@@ -440,15 +440,35 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         iso_vs_opp  = iso_vs_rhp
         label       = f"{batter_hand}HH vs LHP"
         start_rate  = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
+        bbe_vs_this = safe_float(row.get("vs_lhp_bbe", 0))
+        bbe_vs_opp  = safe_float(row.get("vs_rhp_bbe", 0))
     elif p_throws == "R":
         iso_vs_this = iso_vs_rhp
         iso_vs_opp  = iso_vs_lhp
         label       = f"{batter_hand}HH vs RHP"
         start_rate  = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
+        bbe_vs_this = safe_float(row.get("vs_rhp_bbe", 0))
+        bbe_vs_opp  = safe_float(row.get("vs_lhp_bbe", 0))
     else:
         return 0.0, ""
+
+    # ── FIX: pitcher barrel% allowed must be keyed on the BATTER's effective
+    # hand, not the pitcher's throwing hand. Switch hitters bat opposite the
+    # pitcher, so their effective hand flips with p_throws; everyone else's
+    # effective hand is just their bat side. (Previously this was keyed on
+    # p_throws, fetching the wrong split for every opposite-hand matchup —
+    # i.e. exactly the platoon-advantage cases the feature exists to reward.)
+    if batter_hand == "S":
+        effective_hand = "R" if p_throws == "L" else "L"
+    else:
+        effective_hand = batter_hand
+
+    if effective_hand == "L":
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
+    elif effective_hand == "R":
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
+    else:
+        pitcher_barrel_vs_hand = 0.0
 
     # ── FIX 1: require BOTH splits. Previously `or` let a missing split
     # (iso == 0) be read as a true zero, so a batter with no data vs this
