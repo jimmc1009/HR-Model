@@ -72,6 +72,17 @@ def get_mlb_events(api_key: str) -> List[dict]:
             seen.add(e["id"])
             unique.append(e)
     print(f"Found {len(unique)} unique MLB events (from {len(events)} total)")
+    # ── DOUBLEHEADER DETECTION ────────────────────────────────────────
+    # Two events sharing the same home+away are a doubleheader (G1/G2).
+    pair_counts: Dict[tuple, int] = {}
+    for e in unique:
+        key = (e.get("home_team", ""), e.get("away_team", ""))
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+    dh = [k for k, c in pair_counts.items() if c > 1]
+    if dh:
+        for home, away in dh:
+            print(f"  DOUBLEHEADER: {away} @ {home} — {pair_counts[(home, away)]} games, "
+                  f"props will be tagged by commence_time")
     return unique
 
 
@@ -121,6 +132,7 @@ def build_game_totals(events: List[dict], api_key: str) -> pd.DataFrame:
     for game in games:
         home_team  = game.get("home_team", "")
         away_team  = game.get("away_team", "")
+        commence   = game.get("commence_time", "")
         bookmakers = game.get("bookmakers", [])
 
         over_lines = []
@@ -144,6 +156,7 @@ def build_game_totals(events: List[dict], api_key: str) -> pd.DataFrame:
             all_rows.append({
                 "home_team":       home_team,
                 "away_team":       away_team,
+                "commence_time":   commence,
                 "game_total":      consensus_total,
                 "num_books":       len(over_lines),
             })
@@ -161,15 +174,24 @@ def build_game_totals(events: List[dict], api_key: str) -> pd.DataFrame:
 def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     print(f"\nFetching HR prop odds for {len(events)} games...")
 
-    player_book_odds: Dict[str, Dict[str, int]] = {}
-    player_display_names: Dict[str, str] = {}
-    player_home_teams: Dict[str, str] = {}
-    player_away_teams: Dict[str, str] = {}
+    # ── GAME-AWARE KEYING ─────────────────────────────────────────────
+    # Key on (normalized player, event_id) instead of player alone, so a
+    # doubleheader hitter keeps a SEPARATE entry per game with that game's
+    # real price. commence_time is carried through as the bridge the
+    # downstream scripts use to attach each odds row to the right game
+    # (and therefore the right opposing pitcher).
+    # key = (norm_name, event_id)
+    player_book_odds:    Dict[tuple, Dict[str, int]] = {}
+    player_display_names: Dict[tuple, str] = {}
+    player_home_teams:    Dict[tuple, str] = {}
+    player_away_teams:    Dict[tuple, str] = {}
+    player_commence:      Dict[tuple, str] = {}
 
     for event in events:
         event_id  = event["id"]
         home_team = event.get("home_team", "")
         away_team = event.get("away_team", "")
+        commence  = event.get("commence_time", "")
         label     = f"{away_team} @ {home_team}"
 
         bookmakers = fetch_props_for_event(api_key, event_id, label, "batter_home_runs")
@@ -224,13 +246,15 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                             if price_int > 0:
                                 price_int = min(price_int, 1000)
                                 norm = normalize_name(player)
-                                if norm not in player_book_odds:
-                                    player_book_odds[norm]     = {}
-                                    player_display_names[norm] = player
-                                    player_home_teams[norm]    = home_team
-                                    player_away_teams[norm]    = away_team
-                                if book["key"] not in player_book_odds[norm]:
-                                    player_book_odds[norm][book["key"]] = price_int
+                                key  = (norm, event_id)          # game-aware key
+                                if key not in player_book_odds:
+                                    player_book_odds[key]     = {}
+                                    player_display_names[key] = player
+                                    player_home_teams[key]    = home_team
+                                    player_away_teams[key]    = away_team
+                                    player_commence[key]      = commence
+                                if book["key"] not in player_book_odds[key]:
+                                    player_book_odds[key][book["key"]] = price_int
                                 found_players.add(norm)
                         except (ValueError, TypeError):
                             pass
@@ -244,7 +268,8 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     all_rows = []
-    for norm, book_odds in player_book_odds.items():
+    for key, book_odds in player_book_odds.items():
+        norm, event_id = key
         book_odds = filter_outlier_odds(book_odds)
         odds_list = list(book_odds.values())
         if not odds_list:
@@ -252,10 +277,12 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         consensus = int(np.median(odds_list))
         implied   = round(100 / (consensus + 100) * 100, 2)
         all_rows.append({
-            "player_name":      player_display_names[norm],
+            "player_name":      player_display_names[key],
             "player_name_norm": norm,
-            "home_team":        player_home_teams[norm],
-            "away_team":        player_away_teams[norm],
+            "event_id":         event_id,
+            "commence_time":    player_commence[key],
+            "home_team":        player_home_teams[key],
+            "away_team":        player_away_teams[key],
             "consensus_odds":   consensus,
             "implied_prob_pct": implied,
             "num_books":        len(odds_list),
@@ -265,7 +292,19 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     df = pd.DataFrame(all_rows)
     df = df.sort_values("implied_prob_pct", ascending=False).reset_index(drop=True)
 
-    print(f"\nBuilt HR odds table: {len(df)} players across {df['num_books'].max() if not df.empty else 0} bookmakers")
+    # Doubleheader visibility: report any player with >1 game row.
+    dupes = df["player_name_norm"].value_counts()
+    multi = dupes[dupes > 1]
+    if len(multi):
+        print(f"\n  {len(multi)} player(s) with multiple games today (doubleheader):")
+        for norm in multi.index:
+            sub = df[df["player_name_norm"] == norm]
+            games = ", ".join(f"{r.consensus_odds:+d}@{str(r.commence_time)[11:16]}"
+                              for r in sub.itertuples())
+            print(f"    {sub.iloc[0]['player_name']}: {games}")
+
+    print(f"\nBuilt HR odds table: {len(df)} player-game rows "
+          f"across {df['num_books'].max() if not df.empty else 0} bookmakers")
     top20 = df.head(20)[["player_name", "consensus_odds", "implied_prob_pct", "num_books"]]
     print(f"\nTop 20 by implied probability:\n{top20.to_string(index=False)}\n")
     return df
@@ -279,6 +318,7 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         event_id  = event["id"]
         home_team = event.get("home_team", "")
         away_team = event.get("away_team", "")
+        commence  = event.get("commence_time", "")
         label     = f"{away_team} @ {home_team}"
 
         bookmakers = fetch_props_for_event(api_key, event_id, label, "pitcher_strikeouts")
@@ -341,6 +381,8 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                 all_rows.append({
                     "pitcher_name":      data["pitcher"],
                     "pitcher_name_norm": normalize_name(data["pitcher"]),
+                    "event_id":          event_id,
+                    "commence_time":     commence,
                     "home_team":         home_team,
                     "away_team":         away_team,
                     "k_line":            data["line"],
@@ -356,14 +398,15 @@ def build_ks_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
+    # Game-aware dedup: keep best-sampled row per (pitcher, game).
     df = (
         df.sort_values("num_books", ascending=False)
-        .drop_duplicates(subset=["pitcher_name_norm"], keep="first")
+        .drop_duplicates(subset=["pitcher_name_norm", "event_id"], keep="first")
         .sort_values("implied_prob_over", ascending=False)
         .reset_index(drop=True)
     )
 
-    print(f"\nBuilt KS odds table: {len(df)} pitchers")
+    print(f"\nBuilt KS odds table: {len(df)} pitcher-game rows")
     print(df[["pitcher_name", "k_line", "over_odds", "under_odds", "num_books"]].head(15).to_string(index=False))
     return df
 
@@ -377,6 +420,7 @@ def build_hrrbi_odds(events: List[dict], api_key: str) -> pd.DataFrame:
         event_id  = event["id"]
         home_team = event.get("home_team", "")
         away_team = event.get("away_team", "")
+        commence  = event.get("commence_time", "")
         label     = f"{away_team} @ {home_team}"
 
         bookmakers = fetch_props_for_event(
@@ -436,6 +480,8 @@ def build_hrrbi_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                 all_rows.append({
                     "player_name":       data["player"],
                     "player_name_norm":  normalize_name(data["player"]),
+                    "event_id":          event_id,
+                    "commence_time":     commence,
                     "home_team":         home_team,
                     "away_team":         away_team,
                     "hrrbi_line":        data["line"],
@@ -452,12 +498,12 @@ def build_hrrbi_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     df = pd.DataFrame(all_rows)
     df = (
         df.sort_values("num_books", ascending=False)
-        .drop_duplicates(subset=["player_name_norm"], keep="first")
+        .drop_duplicates(subset=["player_name_norm", "event_id"], keep="first")
         .sort_values("implied_prob_over", ascending=False)
         .reset_index(drop=True)
     )
 
-    print(f"\nBuilt H+R+RBI odds table: {len(df)} players")
+    print(f"\nBuilt H+R+RBI odds table: {len(df)} player-game rows")
     return df
 
 
