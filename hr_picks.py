@@ -294,7 +294,9 @@ def score_momentum_delta(
     if abs(final_score) < 0.1:
         return 0.0, ""
 
-    direction = "surging 🔥" if final_score >= 0.5 else                 "trending up 📈" if final_score > 0 else                 "cold ❄️" if final_score <= -0.5 else "cooling 📉"
+    direction = "surging 🔥" if final_score >= 0.5 else \
+                "trending up 📈" if final_score > 0 else \
+                "cold ❄️" if final_score <= -0.5 else "cooling 📉"
 
     desc = f"Contact quality {direction} ({', '.join(details)})" if details else ""
 
@@ -384,15 +386,31 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         iso_vs_opp  = iso_vs_rhp
         label       = f"{batter_hand}HH vs LHP"
         start_rate  = safe_float(row.get("lhp_start_rate", 1.0), 1.0)
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
     elif p_throws == "R":
         iso_vs_this = iso_vs_rhp
         iso_vs_opp  = iso_vs_lhp
         label       = f"{batter_hand}HH vs RHP"
         start_rate  = safe_float(row.get("rhp_start_rate", 1.0), 1.0)
-        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
     else:
         return 0.0, ""
+
+    # ── FIX: pitcher barrel% allowed must be keyed on the BATTER's effective
+    # hand, not the pitcher's throwing hand. Switch hitters bat opposite the
+    # pitcher, so their effective hand flips with p_throws; everyone else's
+    # effective hand is just their bat side. (Previously this was keyed on
+    # p_throws, fetching the wrong split for every opposite-hand matchup —
+    # i.e. exactly the platoon-advantage cases the feature exists to reward.)
+    if batter_hand == "S":
+        effective_hand = "R" if p_throws == "L" else "L"
+    else:
+        effective_hand = batter_hand
+
+    if effective_hand == "L":
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_lhh_barrel_pct", 0))
+    elif effective_hand == "R":
+        pitcher_barrel_vs_hand = safe_float(row.get("pitcher_vs_rhh_barrel_pct", 0))
+    else:
+        pitcher_barrel_vs_hand = 0.0
 
     has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
 
@@ -420,15 +438,15 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     if pitcher_barrel_vs_hand > 0:
         if pitcher_barrel_vs_hand >= 14:
             score += 0.8
-            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {batter_hand}HH")
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH")
         elif pitcher_barrel_vs_hand >= 11:
             score += 0.4
-            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {batter_hand}HH")
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH")
         elif pitcher_barrel_vs_hand >= 9:
             score += 0.2
         elif pitcher_barrel_vs_hand <= 4:
             score -= 0.6
-            parts.append(f"⚠️ Pitcher elite vs {batter_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed")
+            parts.append(f"⚠️ Pitcher elite vs {effective_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed")
         elif pitcher_barrel_vs_hand <= 6:
             score -= 0.3
 
