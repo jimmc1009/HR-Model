@@ -60,11 +60,11 @@ def tier(s):
     if s>=9:return "9-10"
     if s>=8.5:return "8.5-9"
     return "<8.5"
-def in_pool(s,o):
+def in_pool(s,o,olo=301,ohi=400):
     if o<=0:return False
-    if 9.0<=s<10.0 and 301<=o<=400:return True
-    if 12.0<=s<13.0 and 301<=o<=400:return True
-    if s>=13.0 and 301<=o<=400:return True
+    if 9.0<=s<10.0 and olo<=o<=ohi:return True
+    if 12.0<=s<13.0 and olo<=o<=ohi:return True
+    if s>=13.0 and olo<=o<=ohi:return True
     if s>=13.0 and o<=300:return True
     return False
 
@@ -96,8 +96,8 @@ def main():
         p=phit(row); return (p-be(row["odds"]))*100 if p is not None else -99
     def selector(row): return row["hr_per_fb"]/8 + edge(row)*0.8
 
-    def build3(day):
-        pool=day[day.apply(lambda x:in_pool(x["score"],x["odds"]),axis=1)].copy()
+    def build3(day, olo, ohi):
+        pool=day[day.apply(lambda x:in_pool(x["score"],x["odds"],olo,ohi),axis=1)].copy()
         if pool.empty:return []
         pool["sel"]=pool.apply(selector,axis=1)
         pool=pool.sort_values("sel",ascending=False)
@@ -111,46 +111,53 @@ def main():
         return chosen
 
     days=sorted(r["date"].unique())
-    ev_sum=0.0; n=0; realized_w=0
-    p_all_sum=0.0; payout_sum=0.0
-    ev_list=[]
-    for d in days:
-        legs=build3(r[r["date"]==d])
-        if len(legs)<3:continue
-        # need all three legs to have a known zone P(hit)
-        ps=[phit(l) for l in legs]
-        if any(p is None for p in ps):continue
-        n+=1
-        p_all=ps[0]*ps[1]*ps[2]
-        payout=1.0
-        for l in legs: payout*=dec(l["odds"])
-        ev=p_all*(payout-1)-(1-p_all)
-        ev_sum+=ev; ev_list.append(ev)
-        p_all_sum+=p_all; payout_sum+=payout
-        if all(l["hit"] for l in legs): realized_w+=1
 
-    if n==0:
-        print("No qualifying 3-leg days."); return
-    avg_ev=ev_sum/n
-    avg_pall=p_all_sum/n
-    avg_payout=payout_sum/n
+    def run_band(olo, ohi):
+        ev_sum=0.0; n=0; realized_w=0; p_all_sum=0.0; payout_sum=0.0; ev_list=[]
+        for d in days:
+            legs=build3(r[r["date"]==d], olo, ohi)
+            if len(legs)<3:continue
+            ps=[phit(l) for l in legs]
+            if any(p is None for p in ps):continue
+            n+=1
+            p_all=ps[0]*ps[1]*ps[2]
+            payout=1.0
+            for l in legs: payout*=dec(l["odds"])
+            ev=p_all*(payout-1)-(1-p_all)
+            ev_sum+=ev; ev_list.append(ev)
+            p_all_sum+=p_all; payout_sum+=payout
+            if all(l["hit"] for l in legs): realized_w+=1
+        return dict(n=n, ev=(ev_sum/n if n else 0), pall=(p_all_sum/n if n else 0),
+                    payout=(payout_sum/n if n else 0), rw=realized_w,
+                    days_pos=sum(1 for e in ev_list if e>0))
 
-    print(f"\n  {n} qualifying 3-leg days\n")
-    print("="*60); print("  3-LEGGER THEORETICAL EV (from zone hit rates)"); print("="*60)
-    print(f"    Avg P(all 3 hit):     {avg_pall*100:.2f}%   (~1 in {int(1/avg_pall) if avg_pall>0 else 0})")
-    print(f"    Avg combined payout:  {(avg_payout-1)*100:+.0f}  ({avg_payout:.1f}x)")
-    print(f"    Avg EV per 1u:        {avg_ev:+.3f}u")
-    print(f"    {'+EV ✅ — smart lottery ticket' if avg_ev>0 else '-EV ❌ — pays less than the risk long-run'}")
-    print(f"\n    Realized wins (sanity): {realized_w}/{n}  "
-          f"(expected ~{avg_pall*n:.1f})")
-    print(f"    Best-day EV: {max(ev_list):+.3f}u | Worst-day EV: {min(ev_list):+.3f}u")
-    print(f"    Days +EV: {sum(1 for e in ev_list if e>0)}/{n}")
+    print(f"\nComparing 3-legger EV across odds bands\n")
+    bands=[("CURRENT +301-400",301,400),
+           ("SWEET SPOT +200-320",200,320),
+           ("WIDE +200-400",200,400),
+           ("HIGH-ODDS +351-500",351,500)]
+    results=[]
+    print("="*66)
+    print(f"  {'band':<22} {'days':>4} {'P(all3)':>8} {'payout':>9} {'EV/1u':>8}")
+    print("="*66)
+    for label,olo,ohi in bands:
+        z=run_band(olo,ohi)
+        if z["n"]==0:
+            print(f"  {label:<22}  (no qualifying days)"); continue
+        results.append((label,z))
+        one_in=int(1/z["pall"]) if z["pall"]>0 else 0
+        print(f"  {label:<22} {z['n']:>4} {z['pall']*100:>7.2f}% {(z['payout']-1)*100:>+8.0f} {z['ev']:>+7.3f}u")
+        print(f"  {'':<22} ~1 in {one_in}, realized {z['rw']}/{z['n']}, +EV days {z['days_pos']}/{z['n']}")
 
-    print("\n  Read: EV uses each leg's real historical hit rate, so it works")
-    print("  even with ~0 actual wins. Positive avg EV = the rare cash pays")
-    print("  enough to make the 3-legger worth it long-run. The realized-wins")
-    print("  line just confirms the theoretical P(all hit) is in the right")
-    print("  ballpark vs what actually happened.")
+    if results:
+        best=max(results,key=lambda x:x[1]["ev"])
+        print("\n"+"="*66); print("  VERDICT"); print("="*66)
+        print(f"  Best 3-legger EV band: {best[0]}  (EV {best[1]['ev']:+.3f}u/bet)")
+        print("  For a LOTTERY 3-legger, higher-odds bands can win even at a lower")
+        print("  P(all 3) because the payout when it lands is so large. Compare to")
+        print("  the 2-legger verdict — they may prefer DIFFERENT bands (2-leg wants")
+        print("  more frequent cashes, 3-leg wants the jackpot).")
+        print("  Small sample + near-zero actual wins → EV is theoretical/directional.")
     print("\nDone.")
 
 if __name__=="__main__":

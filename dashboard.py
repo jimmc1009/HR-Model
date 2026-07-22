@@ -874,9 +874,15 @@ def main() -> None:
     gc = get_gspread_client()
 
     print("Reading HR picks + scores for dashboard...")
-    hr_df = read_sheet(gc, sheet_id, "Top_HR_Picks")
+    # Tab names default to MAIN's tabs. To test in dev against v1/v2 tabs, set
+    # HR_SCORES_TAB / HR_PICKS_TAB env vars in the dev workflow — main runs with
+    # neither set and reads the regular tabs, so merging can't break main.
+    scores_tab = os.environ.get("HR_SCORES_TAB", "HR_All_Scores")
+    picks_tab  = os.environ.get("HR_PICKS_TAB", "Top_HR_Picks")
+    print(f"Reading picks from '{picks_tab}', scores from '{scores_tab}'")
+    hr_df = read_sheet(gc, sheet_id, picks_tab)
     time.sleep(2)
-    hr_all_scores = read_sheet_raw(gc, sheet_id, "HR_All_Scores")
+    hr_all_scores = read_sheet_raw(gc, sheet_id, scores_tab)
     time.sleep(2)
 
     print(f"HR picks: {len(hr_df)} rows | HR All Scores: {len(hr_all_scores)} rows")

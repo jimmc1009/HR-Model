@@ -180,6 +180,11 @@ def part2(res):
         if not pv_feats: return 0.0
         return sum((r[f]-pst[f][0])/pst[f][1] for f in pv_feats)/len(pv_feats)
 
+    # in-pool separators that AREN'T in blend1 (earned via diagnose_hr_tier_granular:
+    # both stayed strong inside the 10+ pool). z on TRAIN, equal voice to power term.
+    pm_m,pm_s=train["pitch_matchup_score"].mean(),(train["pitch_matchup_score"].std(ddof=0) or 1.0)
+    hh_m,hh_s=train["hard_hit_pct_season"].mean(),(train["hard_hit_pct_season"].std(ddof=0) or 1.0)
+
     selectors={
         "power only (hr_per_fb)": lambda r:r["hr_per_fb"],
         "iso only":               lambda r:r["iso"],
@@ -187,6 +192,8 @@ def part2(res):
         "blend1  (CURRENT)":      lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8,
         "blend: barrel + edge":   lambda r:r["season_barrel_pct"]*kb + _edge(r["score"],r["odds"],zr)*0.8,
         "blend: hr_per_pa + edge":lambda r:r["hr_per_pa"]*kp + _edge(r["score"],r["odds"],zr)*0.8,
+        "blend1 + pitchMatch(z)": lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + (r["pitch_matchup_score"]-pm_m)/pm_s*base_pow_std,
+        "blend1 + hardHit(z)":    lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + (r["hard_hit_pct_season"]-hh_m)/hh_s*base_pow_std,
         "blend1 + pitchHR(z)":    lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + pvuln(r)*base_pow_std,
         "power composite (z)":    zpower,
         "blend1 + platoon*0.8":   lambda r:r["hr_per_fb"]/8 + _edge(r["score"],r["odds"],zr)*0.8 + r["platoon_score"]*0.8,

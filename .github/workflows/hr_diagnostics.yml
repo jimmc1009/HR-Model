@@ -9,6 +9,8 @@ on:
         type: choice
         options:
           - validate_model
+          - hr_selector_bakeoff
+          - ks_pool_separation
           - test_tier_expansion
           - measure_edge_picks
           - compare_singles_v1_v2
@@ -24,6 +26,24 @@ on:
           - test_battracking
           - test_scoring_systems
           - feature_separation
+          - ks_parlay_study
+          - ks_feature_separation
+          - ks_under_hypothesis
+          - ks_lowk_lowform
+          - diagnose_hr_tier_granular
+          - test_odds_curve
+          - test_2leg_slots
+          - test_blend1_decompose
+          - test_xstats_probe
+          - test_pitcher_vulnerability
+          - test_battracking_separators
+          - test_good_hitter_separators
+          - test_calibration_and_random
+          - test_hr_leg_correlation
+          - test_hr_parlay_bands
+          - test_hr_hitrate_2leg
+          - test_top10_daily_pnl
+          - test_platoon_fix_powergate.py
 
 jobs:
   diagnostic:
@@ -150,3 +170,170 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python feature_separation.py
+
+      - name: Run ks_parlay_study.py
+        if: inputs.script == 'ks_parlay_study'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_parlay_study.py
+
+      - name: Run ks_feature_separation.py
+        if: inputs.script == 'ks_feature_separation'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_feature_separation.py
+
+      - name: Run ks_pool_separation.py
+        if: inputs.script == 'ks_pool_separation'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_pool_separation.py
+
+      - name: Run ks_under_hypothesis.py
+        if: inputs.script == 'ks_under_hypothesis'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_under_hypothesis.py
+
+      - name: Run ks_lowk_lowform.py
+        if: inputs.script == 'ks_lowk_lowform'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_lowk_lowform.py
+
+      - name: Run diagnose_hr_tier_granular.py
+        if: inputs.script == 'diagnose_hr_tier_granular'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python diagnose_hr_tier_granular.py
+
+      - name: Run hr_selector_bakeoff.py
+        if: inputs.script == 'hr_selector_bakeoff'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hr_selector_bakeoff.py
+
+      - name: Run test_odds_curve.py
+        if: inputs.script == 'test_odds_curve'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_odds_curve.py
+
+      - name: Run test_2leg_slots.py
+        if: inputs.script == 'test_2leg_slots'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_2leg_slots.py
+
+      - name: Run test_blend1_decompose.py
+        if: inputs.script == 'test_blend1_decompose'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_blend1_decompose.py
+
+      - name: Run test_xstats_probe.py
+        if: inputs.script == 'test_xstats_probe'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_xstats_probe.py
+
+      - name: Run test_battracking_separators.py
+        if: inputs.script == 'test_battracking_separators'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_battracking_separators.py
+
+      - name: Run test_good_hitter_separators.py
+        if: inputs.script == 'test_good_hitter_separators'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          SCORE_MIN: "8.5"
+          HR_MIN: "6"
+        run: python test_good_hitter_separators.py
+
+      - name: Run test_pitcher_vulnerability.py
+        if: inputs.script == 'test_pitcher_vulnerability'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_pitcher_vulnerability.py
+
+      - name: Calibration + beat-random
+        if: ${{ github.event.inputs.script == 'test_calibration_and_random' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_hr_calibration_and_random.py
+
+      - name: Leg correlation
+        if: ${{ github.event.inputs.script == 'test_hr_leg_correlation' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_hr_leg_correlation.py
+
+      - name: Parlay band sweep
+        if: ${{ github.event.inputs.script == 'test_hr_parlay_bands' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_hr_parlay_bands.py
+
+      - name: Hit-rate 2-leg sweep
+        if: ${{ github.event.inputs.script == 'test_hr_hitrate_2leg' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_hr_hitrate_2leg.py
+
+      - name: Top 10 daily P/L
+        if: ${{ github.event.inputs.script == 'test_top10_daily_pnl' }}
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_top10_daily_pnl.py
+
+      - name: Platoon fix power gate
+        if: github.event.inputs.script == 'test_platoon_fix_powergate.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_platoon_fix_powergate.py HR_All_Scores.csv
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+

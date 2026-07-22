@@ -23,7 +23,7 @@ from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 # Import the REAL v2 scoring function so the backtest uses the live formula
-import hr_picks
+import hr_picks_v2
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -106,7 +106,7 @@ def main():
 
     # v2 score = recompute with the REAL live function on each row
     def recompute_v2(row):
-        score, _pn, _bd = hr_picks.compute_score_v2(row)
+        score, _pn, _bd = hr_picks_v2.compute_score_v2(row)
         return score
     df["v2_score"] = df.apply(recompute_v2, axis=1)
 

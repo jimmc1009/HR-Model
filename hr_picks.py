@@ -117,6 +117,52 @@ def normalize_name(name: str) -> str:
     return name.lower().strip()
 
 
+def backfill_batter_hand(batters: pd.DataFrame) -> pd.DataFrame:
+    """Safety net: fill batter_hand from StatsAPI only where it is missing.
+
+    main.py is the authoritative source — it resolves batSide.code (L/R/S)
+    when building Batter_Statcast_2026. This exists so a gap in that sheet
+    does not silently disable the platoon score's pitcher-barrel-vs-hand
+    term, which returns 0.0 on an unknown hand. If the sheet is fully
+    populated this makes no API calls at all.
+    """
+    id_col = "batter_id" if "batter_id" in batters.columns else "batter"
+    if id_col not in batters.columns:
+        print("WARNING: no batter id column — cannot backfill batter_hand")
+        return batters
+
+    mask = ~batters["batter_hand"].isin(["L", "R", "S"])
+    if not mask.any():
+        return batters
+
+    ids = sorted({str(int(safe_float(x))) for x in batters.loc[mask, id_col]
+                  if safe_float(x) > 0})
+    if not ids:
+        return batters
+
+    hand_map = {}
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        try:
+            r = requests.get(
+                f"https://statsapi.mlb.com/api/v1/people?personIds={','.join(chunk)}",
+                timeout=30)
+            r.raise_for_status()
+            for p in r.json().get("people", []):
+                code = (p.get("batSide") or {}).get("code", "")
+                if p.get("id") and code:
+                    hand_map[str(p["id"])] = code.strip().upper()[:1]
+        except Exception as e:
+            print(f"batter_hand backfill failed ({e}) — leaving blanks")
+            return batters
+
+    if hand_map:
+        batters.loc[mask, "batter_hand"] = batters.loc[mask, id_col].apply(
+            lambda x: hand_map.get(str(int(safe_float(x))), ""))
+        print(f"batter_hand backfilled for {mask.sum()} rows missing a hand")
+    return batters
+
+
 def regress(value: float, league_avg: float, sample: float, full_sample: float) -> float:
     weight = min(sample / full_sample, 1.0)
     return (value * weight) + (league_avg * (1 - weight))
@@ -294,7 +340,9 @@ def score_momentum_delta(
     if abs(final_score) < 0.1:
         return 0.0, ""
 
-    direction = "surging 🔥" if final_score >= 0.5 else                 "trending up 📈" if final_score > 0 else                 "cold ❄️" if final_score <= -0.5 else "cooling 📉"
+    direction = "surging 🔥" if final_score >= 0.5 else \
+                "trending up 📈" if final_score > 0 else \
+                "cold ❄️" if final_score <= -0.5 else "cooling 📉"
 
     desc = f"Contact quality {direction} ({', '.join(details)})" if details else ""
 
@@ -369,6 +417,14 @@ def score_pitcher_quality_penalty(
 # ── Platoon score — two-way ────────────────────────────────────────────────
 PLATOON_WEIGHT = 1.2  # reduced from 1.8 — diagnose_score shows 1.8 breaks monotonicity at 10-11
 
+# Platoon splits are the noisiest split in baseball. Everything else in this
+# file regresses by sample size; these now do too.
+MIN_BBE_VS_HAND  = 15   # below this vs a hand, the split is noise — skip Piece 1
+BBE_VS_HAND_FULL = 90   # full weight at this many BBE vs that hand (~150 PA,
+                        # mirroring MIN_PA_FULL used for season ISO)
+CLAMP_RAW        = 2.0                          # cap on the raw (pre-weight) sum
+PLATOON_CAP      = CLAMP_RAW * PLATOON_WEIGHT   # 2.4 — final contribution cap
+
 def compute_platoon_score(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
     p_throws    = str(row.get("pitcher_hand", "")).strip().upper()
@@ -394,10 +450,21 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     else:
         return 0.0, ""
 
-    has_iso_data = (iso_vs_this > 0 or iso_vs_opp > 0)
+    # ── FIX 1: require BOTH splits. Previously `or` let a missing split
+    # (iso == 0) be read as a true zero, so a batter with no data vs this
+    # hand scored gap = -0.220 -> "Severe platoon weakness" (-2.0) on
+    # absent data rather than on evidence.
+    # ── FIX 2: regress both sides toward league ISO by PA vs that hand
+    # before differencing, and skip entirely below MIN_PA_VS_HAND. An
+    # unregressed 30-PA split of .400 vs .150 previously scored a full +1.5
+    # on noise.
+    has_iso_data = (iso_vs_this > 0 and iso_vs_opp > 0
+                    and min(bbe_vs_this, bbe_vs_opp) >= MIN_BBE_VS_HAND)
 
     if has_iso_data:
-        iso_gap = iso_vs_this - iso_vs_opp
+        iso_this_reg = regress(iso_vs_this, LEAGUE_AVG_ISO, bbe_vs_this, BBE_VS_HAND_FULL)
+        iso_opp_reg  = regress(iso_vs_opp,  LEAGUE_AVG_ISO, bbe_vs_opp,  BBE_VS_HAND_FULL)
+        iso_gap = iso_this_reg - iso_opp_reg
 
         if iso_gap >= 0.080:
             score += 1.5
@@ -420,15 +487,15 @@ def compute_platoon_score(row: pd.Series) -> tuple:
     if pitcher_barrel_vs_hand > 0:
         if pitcher_barrel_vs_hand >= 14:
             score += 0.8
-            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {batter_hand}HH")
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH")
         elif pitcher_barrel_vs_hand >= 11:
             score += 0.4
-            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {batter_hand}HH")
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH")
         elif pitcher_barrel_vs_hand >= 9:
             score += 0.2
         elif pitcher_barrel_vs_hand <= 4:
             score -= 0.6
-            parts.append(f"⚠️ Pitcher elite vs {batter_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed")
+            parts.append(f"⚠️ Pitcher elite vs {effective_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed")
         elif pitcher_barrel_vs_hand <= 6:
             score -= 0.3
 
@@ -437,7 +504,11 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         score        -= start_penalty
         parts.append(f"⚠️ Rarely starts vs this hand ({start_rate:.0%})")
 
-    score = max(-2.0, min(2.0, score))
+    # ── FIX 3: clamp ONCE, after the weight. Previously the raw sum was
+    # clipped to +/-2.0, multiplied by 1.2, then clipped to +/-2.0 again by
+    # `platoon_capped`. That saturated at raw 1.667 while max raw is 2.3,
+    # leaving the strongest 28% of the positive range undifferentiated.
+    score = max(-CLAMP_RAW, min(CLAMP_RAW, score))
     return round(score * PLATOON_WEIGHT, 3), " | ".join(parts)
 
 
@@ -638,6 +709,18 @@ def prepare_combined(
     batters.columns = [c.strip() for c in batters.columns]
     batters = batters.rename(columns={"team": "batter_team"})
 
+    # ── batter_hand: accept source variants, normalise ────────────────────
+    if "batter_hand" not in batters.columns:
+        for alt in ("stand", "bat_side", "bats", "batSide", "bat_hand", "b_hand"):
+            if alt in batters.columns:
+                batters = batters.rename(columns={alt: "batter_hand"})
+                print(f"batter_hand: mapped from '{alt}'")
+                break
+    if "batter_hand" not in batters.columns:
+        batters["batter_hand"] = ""
+    batters["batter_hand"] = (batters["batter_hand"].astype(str)
+                              .str.strip().str.upper().str[:1])
+
     # ── IL filter ──────────────────────────────────────────────────────────
     if active_roster is not None and not active_roster.empty and "player_id" in active_roster.columns:
         active_ids    = set(active_roster["player_id"].astype(str).str.strip())
@@ -667,6 +750,10 @@ def prepare_combined(
             print(f"Lineup filter: {before - len(batters)} removed, {len(batters)} remaining")
     else:
         print("No confirmed lineups — lineup filter skipped.")
+
+    # ── Resolve handedness from StatsAPI (after filters — fewer requests) ──
+    batters = backfill_batter_hand(batters)
+    print("batter_hand counts:", batters["batter_hand"].value_counts().to_dict())
 
     dynamic_pitch_cols = [
         c for c in pitchers.columns
@@ -752,6 +839,7 @@ def prepare_combined(
         "bbe_5d", "bbe_7d", "bbe_10d",
         "vs_lhp_iso", "vs_rhp_iso", "vs_lhp_barrel_pct", "vs_rhp_barrel_pct",
         "vs_lhp_hr_rate", "vs_rhp_hr_rate",
+        "vs_lhp_bbe", "vs_rhp_bbe",
         "lhp_start_rate", "rhp_start_rate",
         "pitcher_barrel_pct", "pitcher_hr_per_fb", "pitcher_hard_hit_pct",
         "pitcher_bbe_allowed", "pitcher_bf",
@@ -812,7 +900,7 @@ def prepare_combined(
     combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.0)
     combined["bvp_capped"]           = combined["bvp_score"].clip(-0.5, 1.0)
     combined["momentum_capped"]      = combined["momentum_score"].clip(-1.5, 1.5)
-    combined["platoon_capped"]       = combined["platoon_score"].clip(-2.0, 2.0)
+    combined["platoon_capped"]       = combined["platoon_score"].clip(-PLATOON_CAP, PLATOON_CAP)
     combined["total_penalty"]        = combined["pitch_penalty"].clip(0, 2.0)
 
     # ── Final score ────────────────────────────────────────────────────────
