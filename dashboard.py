@@ -298,7 +298,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
 
     # ── HR EDGE PLAYS (singles) ──────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN EDGE PLAYS — beats breakeven vs resolved hit rates"]),
+    rows.append((pad(["🏠  HOME RUN EDGE PLAYS — bet as a block (score 13+, ≤+499)"]),
                  "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Hit%", "Edge", "Why"]),
                  "col_header_hr"))
@@ -343,7 +343,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
             except Exception:
                 continue
 
-        plays = [p for p in plays if p["has_value"] and p["score"] >= 9.0]
+        # Pooled break-even sample: the singles P/L test showed that betting
+        # score >= 13 at odds <= +499 nets positive AS A GROUP (+17.2% ROI,
+        # in-sample). Looser floors (9-12) and the +500-699 zone drag the
+        # pooled result toward zero, so they are excluded here even though a
+        # few individual picks in them clear their own breakeven. This is the
+        # set to bet as a block, not a per-bet filter.
+        SINGLES_SCORE_MIN = 13.0
+        SINGLES_ODDS_MAX  = 499
+        plays = [p for p in plays
+                 if p["score"] >= SINGLES_SCORE_MIN
+                 and int(str(p["odds"]).replace("+", "")) <= SINGLES_ODDS_MAX]
         rank_order = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠ odds": 3}
         plays.sort(key=lambda x: (rank_order.get(x["strength"], 9), -x["edge_num"]))
 
@@ -495,6 +505,52 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 ]), "data_parlay"))
             if t_idx < len(hr_tickets):
                 rows.append((E[:], "spacer"))
+
+    rows.append((E[:], "spacer"))
+
+    # ── ROUND ROBIN — top 5 of the 13-15 pool (bet as 10 two-leg pairs) ───
+    # Just the 5 legs; you build the 10 pairs on the book. Same pool/ladder as
+    # the hit-rate section: prefer ≤+300 & 13-15, relax only to fill 5.
+    rows.append((pad(["🔁  ROUND ROBIN — top 5 legs (bet as 10 two-leg pairs, ~$0.50 each)"]),
+                 "section_header_parlay"))
+    rows.append((pad(["#", "Batter", "Team", "Score", "Odds", "Hit%", "", "Filter"]),
+                 "col_header_parlay"))
+
+    rr_legs, rr_label = [], ""
+    for ceil, floor, label in HR_LADDER:
+        cand = [c for c in hit_pool if c["odds"] <= ceil and c["score"] >= floor]
+        if floor >= 13.0:
+            cand = [c for c in cand if c["score"] < 15.0]   # exclude weak 15+
+        cand.sort(key=lambda x: -x["hit"])
+        # pitcher-diversify
+        picked, used = [], set()
+        for c in cand:
+            if len(picked) >= 5:
+                break
+            if c["opp_pit"] and c["opp_pit"] in used:
+                continue
+            picked.append(c)
+            if c["opp_pit"]:
+                used.add(c["opp_pit"])
+        if len(picked) >= 5:
+            rr_legs, rr_label = picked[:5], label
+            break
+        # keep the best partial fill seen (in case no rung reaches 5)
+        if len(picked) > len(rr_legs):
+            rr_legs, rr_label = picked, label
+
+    if len(rr_legs) < 2:
+        rows.append((pad(["—", "Not enough 13-15 legs for a round robin today", ""]), "no_plays"))
+    else:
+        for i, c in enumerate(rr_legs, start=1):
+            rows.append((pad([
+                str(i), c["batter"], c["team"], f"{c['score']:.1f}",
+                f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
+                "", rr_label if i == 1 else "",
+            ]), "data_parlay"))
+        if len(rr_legs) < 5:
+            rows.append((pad(["", f"only {len(rr_legs)} qualified — "
+                              f"{len(rr_legs)*(len(rr_legs)-1)//2} pairs today", ""]), "no_plays"))
 
     rows.append((E[:], "spacer"))
 
