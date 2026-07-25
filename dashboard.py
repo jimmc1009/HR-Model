@@ -298,7 +298,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
 
     # ── HR EDGE PLAYS (singles) ──────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN EDGE PLAYS — beats breakeven vs resolved hit rates"]),
+    rows.append((pad(["🏠  HOME RUN EDGE PLAYS — bet as a block (score 13+, ≤+499)"]),
                  "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Hit%", "Edge", "Why"]),
                  "col_header_hr"))
@@ -343,7 +343,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
             except Exception:
                 continue
 
-        plays = [p for p in plays if p["has_value"] and p["score"] >= 9.0]
+        # Pooled break-even sample: the singles P/L test showed that betting
+        # score >= 13 at odds <= +499 nets positive AS A GROUP (+17.2% ROI,
+        # in-sample). Looser floors (9-12) and the +500-699 zone drag the
+        # pooled result toward zero, so they are excluded here even though a
+        # few individual picks in them clear their own breakeven. This is the
+        # set to bet as a block, not a per-bet filter.
+        SINGLES_SCORE_MIN = 13.0
+        SINGLES_ODDS_MAX  = 499
+        plays = [p for p in plays
+                 if p["score"] >= SINGLES_SCORE_MIN
+                 and int(str(p["odds"]).replace("+", "")) <= SINGLES_ODDS_MAX]
         rank_order = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠ odds": 3}
         plays.sort(key=lambda x: (rank_order.get(x["strength"], 9), -x["edge_num"]))
 
