@@ -397,6 +397,50 @@ def build_analysis(df: pd.DataFrame) -> dict:
                     "total": n, "hits": h, "rate": rate,
                 })
 
+    # ── Pooled decision rules (Wilson CI vs breakeven) ────────────────────
+    # Individual tier×odds cells are too small to trust; pooling into the
+    # actual rule you'd bet tightens the CI. A rule is flagged "+EV" only if
+    # the LOWER bound of its 95% Wilson interval clears the odds-zone
+    # breakeven. Still in-sample — this sharpens history, it does not prove
+    # the rule forward.
+    def _wilson(h, n, z=1.96):
+        if n == 0:
+            return (0.0, 0.0)
+        p = h / n
+        d = 1 + z * z / n
+        c = (p + z * z / (2 * n)) / d
+        m = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+        return (max(0.0, c - m), min(1.0, c + m))
+
+    def _pool(o_lo, o_hi, s_lo, s_hi, be):
+        sub = scored[(scored["odds_num"] >= o_lo) & (scored["odds_num"] < o_hi) &
+                     (scored["hr_score"] >= s_lo) & (scored["hr_score"] < s_hi)]
+        n = len(sub)
+        h = int(sub["hit_bool"].sum())
+        if n == 0:
+            return None
+        lo, hi = _wilson(h, n)
+        return {
+            "total": n, "hits": h, "rate": round(h / n * 100, 1),
+            "be": round(be * 100),
+            "ci": f"[{round(lo * 100, 1)}, {round(hi * 100, 1)}]",
+            "verdict": "✅ +EV" if lo > be else "— unproven",
+        }
+
+    pooled_rules = []
+    for label, o_lo, o_hi, s_lo, s_hi, be in [
+        ("13-15 @ ≤+300",        0, 301, 13.0,  16.0,  0.250),
+        ("14-15 @ ≤+300",        0, 301, 14.0,  16.0,  0.250),
+        ("13-15 @ ≤+499",        0, 500, 13.0,  16.0,  0.225),
+        ("14-15 @ ≤+499",        0, 500, 14.0,  16.0,  0.225),
+        ("13+ @ ≤+300",          0, 301, 13.0, 999.0,  0.250),
+        ("Under 13 @ ≤+300",     0, 301, 0.0,   13.0,  0.250),
+    ]:
+        row = _pool(o_lo, o_hi, s_lo, s_hi, be)
+        if row:
+            row["label"] = label
+            pooled_rules.append(row)
+
     return {
         "days_of_data":       days_of_data,
         "total":              total,
@@ -410,6 +454,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "roll_rows":          roll_rows,
         "platoon_rows":       platoon_rows,
         "tier_odds_rows":     tier_odds_rows,
+        "pooled_rules":       pooled_rules,
     }
 
 
@@ -500,6 +545,16 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
             analysis["tier_odds_rows"],
             lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+        )
+
+    # ── Pooled Decision Rules ─────────────────────────────────────────────
+    if analysis.get("pooled_rules"):
+        add_section(
+            "🎰  POOLED DECISION RULES (95% CI vs breakeven)",
+            ["Rule", "Total Players", "Hit HR", "Hit Rate %", "Breakeven", "95% CI", "Verdict", ""],
+            analysis["pooled_rules"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%",
+                       f"{r['be']}%", r["ci"], r["verdict"], ""]
         )
 
     # ── Rolling Trends ────────────────────────────────────────────────────
@@ -593,6 +648,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "💨  BY WIND STRENGTH (Boost Value)": (COLOR_TEAL, COLOR_TEAL_DIM),
         "🔄  BY PLATOON MATCHUP":   (COLOR_BLUE,      COLOR_BLUE_DIM),
         "💰  SCORE TIER × ODDS ZONE": (COLOR_GOLD,      COLOR_GOLD_DIM),
+        "🎰  POOLED DECISION RULES (95% CI vs breakeven)": (COLOR_GREEN, COLOR_GREEN_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,     COLOR_GREEN_DIM),
         "features":                  (COLOR_PURPLE,    COLOR_PURPLE_DIM),
     }
@@ -677,7 +733,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     for row_idx, row in enumerate(all_values):
         if row_idx < 3:
             continue
-        is_section    = any(str(row[0]).startswith(e) for e in ["🎯", "💰", "🌬", "🔄", "📈", "🔬"])
+        is_section    = any(str(row[0]).startswith(e) for e in ["🎯", "💰", "🌬", "🔄", "📈", "🔬", "🎰", "💨"])
         is_header_row = row_idx in [s + 1 for s in section_starts.values()]
         is_empty      = not any(str(v).strip() for v in row)
         if not is_section and not is_header_row and not is_empty:
