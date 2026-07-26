@@ -122,7 +122,7 @@ def main(src):
     # ── parlay the +edge legs ─────────────────────────────────────────
     if winners:
         print("\n" + "=" * 86)
-        print("2-LEG PARLAYS FROM +EDGE LEGS ONLY  (same day, different games)")
+        print("2 & 3-LEG PARLAYS FROM +EDGE LEGS ONLY  (same day, different games)")
         print("=" * 86)
         # tag every row's cell; keep legs whose cell had +edge
         win_cells = {(r["score"], r["odds"]) for r in winners}
@@ -136,25 +136,32 @@ def main(src):
         legs = df[df["cell"].isin(win_cells)]
         print(f"  eligible +edge legs: {len(legs)} across {legs['date'].nunique()} days")
 
-        tickets = []
-        for _, day in legs.groupby("date"):
-            recs = day.to_dict("records")
-            for a, b in itertools.combinations(recs, 2):
-                if a["game"] and a["game"] == b["game"]:
-                    continue
-                cash = int(a["hit"] and b["hit"])
-                cdec = dec(a["odds"]) * dec(b["odds"])
-                cimp = implied(a["odds"]) * implied(b["odds"])
-                tickets.append((cash, cdec, cimp))
-        if len(tickets) >= 10:
-            n = len(tickets)
-            cash = sum(t[0] for t in tickets) / n
-            be = np.mean([t[2] for t in tickets])
-            roi = np.mean([(cd - 1) if c else -1 for c, cd, _ in tickets]) * 100
-            print(f"  tickets: {n}   cash {cash*100:.1f}%   BE {be*100:.1f}%   "
-                  f"edge {(cash-be)*100:+.1f}pp   ROI {roi:+.1f}%")
-        else:
-            print(f"  only {len(tickets)} pairs — too few to summarize.")
+        def roll(legs_df, k):
+            tickets = []
+            for _, day in legs_df.groupby("date"):
+                recs = day.to_dict("records")
+                for combo in itertools.combinations(recs, k):
+                    games = [c["game"] for c in combo if c["game"]]
+                    if len(games) != len(set(games)):   # any shared game
+                        continue
+                    cash = int(all(c["hit"] for c in combo))
+                    cdec = 1.0; cimp = 1.0
+                    for c in combo:
+                        cdec *= dec(c["odds"]); cimp *= implied(c["odds"])
+                    tickets.append((cash, cdec, cimp))
+            return tickets
+
+        for k in (2, 3):
+            tickets = roll(legs, k)
+            if len(tickets) >= 10:
+                n = len(tickets)
+                cash = sum(t[0] for t in tickets) / n
+                be = np.mean([t[2] for t in tickets])
+                roi = np.mean([(cd - 1) if c else -1 for c, cd, _ in tickets]) * 100
+                print(f"  {k}-leg: tickets {n:>5}   cash {cash*100:5.1f}%   "
+                      f"BE {be*100:5.1f}%   edge {(cash-be)*100:+5.1f}pp   ROI {roi:+.1f}%")
+            else:
+                print(f"  {k}-leg: only {len(tickets)} combos — too few to summarize.")
 
     print("\n" + "=" * 86)
     print("READ")
