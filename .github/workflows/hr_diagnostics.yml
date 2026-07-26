@@ -13,7 +13,7 @@ on:
           - test_progressive_squeeze.py
           - compare_tabs.py
           - test_parlay_bands.py
-
+          - test_edge_bands.py
 
 jobs:
   diagnostic:
@@ -63,6 +63,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_parlay_bands.py
+
+      - name: Edge bands (resolved hit% vs implied breakeven)
+        if: github.event.inputs.script == 'test_edge_bands.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_edge_bands.py
 
     
 
