@@ -82,26 +82,47 @@ def znorm(s):
     return (s - mu) / sd
 
 
+def _col(df, name):
+    """Return a column as a Series if present, else an all-empty Series of the
+    right length (df.get returns a bare str for missing cols, which crashes
+    .astype/.str — this avoids that)."""
+    if name in df.columns:
+        return df[name]
+    return pd.Series([""] * len(df), index=df.index)
+
+
 def load(src):
     df = src if isinstance(src, pd.DataFrame) else pd.read_csv(src, dtype=str)
     df = df.fillna("")
     df.columns = [c.strip() for c in df.columns]
-    df["score"] = pd.to_numeric(df.get("hr_score", df.get("score", "")), errors="coerce")
+    df["score"] = pd.to_numeric(_col(df, "hr_score") if "hr_score" in df.columns else _col(df, "score"), errors="coerce")
     df["odds"] = pd.to_numeric(
-        df.get("consensus_odds", "").astype(str).str.replace("+", "", regex=False).str.strip(),
+        _col(df, "consensus_odds").astype(str).str.replace("+", "", regex=False).str.strip(),
         errors="coerce")
-    df["res"] = df.get("hit_hr", "").astype(str).str.strip().str.lower()
-    df["date"] = df.get("date", "").astype(str).str.strip()
+    df["res"] = _col(df, "hit_hr").astype(str).str.strip().str.lower()
+    df["date"] = _col(df, "date").astype(str).str.strip()
     df = df[df["res"].isin(["yes", "no"])].copy()
     df["hit"] = (df["res"] == "yes").astype(int)
-    # edge proxy: resolved-ish — use provided edge if numeric, else hit-vs-implied
-    e = pd.to_numeric(df.get("edge", "").astype(str).str.replace("%","",regex=False)
-                      .str.replace("+","",regex=False), errors="coerce")
-    df["edge_val"] = e.fillna(0.0)
     df["implied"] = df["odds"].apply(lambda o: _implied(o) if pd.notna(o) else np.nan)
+    # edge: use an 'edge' column if present, else proxy = (tier×odds resolved
+    # hit rate) − implied. HR_All_Scores has no edge column, so we build the
+    # proxy from each row's own score×odds cell resolved rate.
+    edge_col = pd.to_numeric(
+        _col(df, "edge").astype(str).str.replace("%", "", regex=False)
+        .str.replace("+", "", regex=False), errors="coerce")
+    if edge_col.notna().sum() > 50:
+        df["edge_val"] = edge_col.fillna(0.0)
+    else:
+        # proxy: resolved hit rate of the row's score-bucket × odds-bucket,
+        # minus the row's implied breakeven
+        sb = pd.cut(df["score"], [-1, 10, 11, 12, 13, 14, 15, 99])
+        ob = pd.cut(df["odds"], [0, 250, 300, 350, 400, 450, 500, 600, 9999])
+        cell_rate = df.groupby([sb, ob], observed=True)["hit"].transform("mean")
+        df["edge_val"] = (cell_rate - df["implied"]) * 100
+        df["edge_val"] = df["edge_val"].fillna(0.0)
     # near-miss proxy: barrelled or hard-hit but no HR
-    bar = pd.to_numeric(df.get("barrel_pct_7d", ""), errors="coerce")
-    hh = pd.to_numeric(df.get("hard_hit_pct_7d", ""), errors="coerce")
+    bar = pd.to_numeric(_col(df, "barrel_pct_7d"), errors="coerce")
+    hh = pd.to_numeric(_col(df, "hard_hit_pct_7d"), errors="coerce")
     df["near"] = (((bar > 10) | (hh > 40)) & (df["hit"] == 0)).astype(int)
     df = df.dropna(subset=["score", "odds"])
     return df[df["odds"] > 0]
