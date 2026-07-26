@@ -286,7 +286,65 @@ def build_why(row) -> str:
 
 
 # ── Row builder (HR only) ───────────────────────────────────────────────────
-def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
+def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
+    """Compute score×odds bands whose RESOLVED hit rate beats implied
+    breakeven, live from HR_All_Scores. Returns a ranked list (best edge
+    first) of dicts: {band, s_lo, s_hi, o_lo, o_hi, edge_pp, n, hit}.
+
+    Replaces the old hardcoded band table so the slate reflects current
+    resolved data every run instead of a frozen snapshot. Same math as
+    test_edge_bands.py. Only bands with n>=min_n AND positive edge qualify.
+    """
+    if hr_all_scores.empty:
+        return []
+    MODEL_START_DATE = "2026-06-09"
+    df = hr_all_scores.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)]
+    df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    if df.empty:
+        return []
+    df["score"] = df.apply(
+        lambda r: safe_float(r.get("hr_score_corrected"))
+        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
+        else safe_float(r.get("hr_score")), axis=1)
+    df["odds"] = df["consensus_odds"].apply(safe_float)
+    df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
+    df = df[(df["odds"] > 0) & (df["score"] > 0)]
+
+    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
+                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
+                   (8.5, 10, "8.5-10")]
+    odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
+                  (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
+                  (501, 600, "+501-600"), (601, 9999, "+601+")]
+
+    def implied(o):
+        return 100/(o+100) if o >= 0 else abs(o)/(abs(o)+100)
+
+    bands = []
+    for slo, shi, slab in score_bands:
+        for olo, ohi, olab in odds_bands:
+            sub = df[(df["score"] >= slo) & (df["score"] < shi) &
+                     (df["odds"] >= olo) & (df["odds"] <= ohi)]
+            n = len(sub)
+            if n < min_n:
+                continue
+            hit = sub["hit"].mean()
+            be = sub["odds"].apply(implied).mean()
+            edge = hit - be
+            if edge > 0:
+                bands.append({
+                    "band": f"{slab} @ {olab}", "s_lo": slo, "s_hi": shi,
+                    "o_lo": olo, "o_hi": ohi, "edge_pp": edge * 100,
+                    "n": n, "hit": hit * 100,
+                })
+    bands.sort(key=lambda b: -b["edge_pp"])
+    return bands
+
+
+def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
+    staging = []   # collected slate legs/tickets for the Bet_Staging tab
     def pad(row):
         return list(row) + [""] * (N_COLS - len(row))
 
@@ -298,7 +356,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
 
     # ── HR EDGE PLAYS (singles) ──────────────────────────────────────────
-    rows.append((pad(["🏠  HOME RUN EDGE PLAYS — bet as a block (score 13+, ≤+499)"]),
+    rows.append((pad(["🏠  HOME RUN EDGE PLAYS — bet as a block (score 13-15, ≤+499)"]),
                  "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Score", "Odds", "Hit%", "Edge", "Why"]),
                  "col_header_hr"))
@@ -349,10 +407,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
         # pooled result toward zero, so they are excluded here even though a
         # few individual picks in them clear their own breakeven. This is the
         # set to bet as a block, not a per-bet filter.
+        # Balanced rule from the pooled analysis: score 13-15 (14-15 is the
+        # strongest cell, 13-14 solid), odds <=+499. Excludes two proven
+        # leaks: everything under 13 (dead weight, ~14% and unproven) and the
+        # 15+ tier, which UNDERPERFORMS 14-15 (~24% vs 36%) — score saturates
+        # and the obvious plays are already priced. Parlays are left as-is and
+        # evaluated separately once forward leg data accumulates.
         SINGLES_SCORE_MIN = 13.0
+        SINGLES_SCORE_MAX = 15.0   # exclusive upper bound — drops 15+
         SINGLES_ODDS_MAX  = 499
         plays = [p for p in plays
-                 if p["score"] >= SINGLES_SCORE_MIN
+                 if SINGLES_SCORE_MIN <= p["score"] < SINGLES_SCORE_MAX
                  and int(str(p["odds"]).replace("+", "")) <= SINGLES_ODDS_MAX]
         rank_order = {"🔥 STRONG": 0, "✓ ok": 1, "· thin": 2, "⚠ odds": 3}
         plays.sort(key=lambda x: (rank_order.get(x["strength"], 9), -x["edge_num"]))
@@ -360,6 +425,15 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
         if not plays:
             rows.append((pad(["—", "No edge plays today — nothing beats breakeven", ""]), "no_plays"))
         else:
+            # capture singles for the Bet_Staging tab (one row per leg)
+            for p in plays:
+                staging.append({
+                    "ticket_type": "single", "ticket_id": f"S{len(staging)+1}",
+                    "player": p["batter"], "team": p["team"],
+                    "score": p["score"], "consensus_at_bet": p["odds"],
+                    "combined_consensus": "", "breakeven_pct": "",
+                    "band": "singles 13-15 ≤+499",
+                })
             for i, p in enumerate(plays):
                 rtype = ("data_hr_strong" if p["score"] >= 13
                          else "data_hr_moderate" if p["score"] >= 12
@@ -386,10 +460,19 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                in_2leg = (301 <= odds_val <= 400) or (odds_val <= 300 and hr_score >= 13)
-                in_3leg = (351 <= odds_val <= 500) or (odds_val <= 300 and hr_score >= 13)
-                score_ok = (9.0 <= hr_score < 10.0) or (12.0 <= hr_score < 13.0) or (hr_score >= 13.0)
-                if not (score_ok and (in_2leg or in_3leg)):
+                # Parlay legs now use the SAME rule as singles: score 13-15,
+                # odds <=+499, no 15+. Parlays multiply the legs, so stacking
+                # a below-breakeven leg (the old 9-score and 12-score rungs,
+                # ~15-22% hit) compounds the loss — exactly what sank the
+                # 3-leggers. Only legs that clear their own breakeven belong
+                # in a parlay. If too few qualify, the section shows nothing,
+                # which is correct: no +EV legs means no +EV parlay.
+                LEG_SCORE_MIN, LEG_SCORE_MAX, LEG_ODDS_MAX = 13.0, 15.0, 499
+                if not (LEG_SCORE_MIN <= hr_score < LEG_SCORE_MAX and odds_val <= LEG_ODDS_MAX):
+                    continue
+                in_2leg = (301 <= odds_val <= 400) or (odds_val <= 300)
+                in_3leg = (351 <= odds_val <= 499) or (odds_val <= 300)
+                if not (in_2leg or in_3leg):
                     continue
 
                 hr_per_fb = safe_float(row.get("hr_per_fb", 0))
@@ -412,16 +495,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 continue
         parlay_candidates.sort(key=lambda x: -x["selector"])
 
-    # ── PURE HIT-RATE 2-LEG PARLAYS (x2) — edge-blind, cash-rate first ────
-    # Data (walk-forward sweep): tier-strict short odds cashes most. Winner
-    # was <=+300 & tiers 13-15 (~46% leg hit, ~23% cash). Fallback ladder
-    # relaxes only as far as needed to fill two legs, never below 12+ (going
-    # to 9-11 halves the leg hit rate and defeats the product's purpose).
-    rows.append((pad(["🎯  PURE HIT-RATE 2-LEG PARLAYS — 2 tickets (cashes most, edge-ignored)"]),
-                 "section_header_parlay"))
-    rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Filter"]),
-                 "col_header_parlay"))
-
+    # ── Shared leg pool (feeds the edge-band slate below) ────────────────
     # build a hit-rate pool straight from hr_source (not limited to the +301-400 bands)
     hit_pool = []
     if not hr_source.empty:
@@ -444,192 +518,114 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
             except Exception:
                 continue
 
-    # fallback ladder: (odds ceiling, score floor, label)
-    HR_LADDER = [
-        (300, 13.0, "≤+300·13-15"),
-        (350, 13.0, "≤+350·13-15"),
-        (300, 12.0, "≤+300·12+"),
-        (350, 12.0, "≤+350·12+"),
-    ]
+    # ── EDGE-BAND DAILY SLATE ─────────────────────────────────────────────
+    # Fixed structure: 5-leg round robin + 2x 3-leg + 3x 2-leg.
+    # Bands are computed LIVE from HR_All_Scores each run (build_edge_bands),
+    # so the edges reflect currently-resolved data, not a frozen snapshot.
+    # Legs are pulled in EDGE ORDER: highest-edge band first, walking DOWN the
+    # ranked list as more legs are needed. No junk padding — a leg outside all
+    # +edge bands is ineligible, and empty slots are left blank.
+    # Each leg may appear on at most MAX_LEG_USES tickets (light reuse so thin
+    # slates still fill without stacking one play on every ticket).
+    MAX_LEG_USES = 2
 
-    def pick_hitrate_pair(exclude_names, exclude_pitchers):
-        """Return (leg_a, leg_b, label) from the best rung that can fill two
-        pitcher-diversified legs, or None."""
-        for ceil, floor, label in HR_LADDER:
-            cand = [c for c in hit_pool
-                    if c["odds"] <= ceil and c["score"] >= floor
-                    and c["batter"] not in exclude_names]
-            # 13-15 rungs exclude the weak 15+ tier explicitly
-            if floor >= 13.0:
-                cand = [c for c in cand if c["score"] < 15.0]
-            # rank by hit rate (edge-blind)
-            cand.sort(key=lambda x: -x["hit"])
-            picked, used = [], set(exclude_pitchers)
-            for c in cand:
-                if len(picked) >= 2:
-                    break
-                if c["opp_pit"] and c["opp_pit"] in used:
-                    continue
-                picked.append(c)
-                if c["opp_pit"]:
-                    used.add(c["opp_pit"])
-            if len(picked) == 2:
-                return picked[0], picked[1], label
-        return None
+    def band_rank(score, odds):
+        for idx, b in enumerate(edge_bands or []):
+            if b["s_lo"] <= score < b["s_hi"] and b["o_lo"] <= odds <= b["o_hi"]:
+                return idx, b["band"], b["edge_pp"]
+        return 99, None, -99.0
 
-    hr_names, hr_pitchers = set(), set()
-    hr_tickets = []
-    for _ in range(2):
-        res = pick_hitrate_pair(hr_names, hr_pitchers)
-        if not res:
-            break
-        a, b, label = res
-        hr_tickets.append((a, b, label))
-        for leg in (a, b):
-            hr_names.add(leg["batter"])
-            if leg["opp_pit"]:
-                hr_pitchers.add(leg["opp_pit"])
+    ranked_legs = []
+    for c in hit_pool:
+        idx, bid, epp = band_rank(c["score"], c["odds"])
+        if bid is None:
+            continue
+        ranked_legs.append(dict(c, band=bid, edge_pp=epp, rank=idx))
+    ranked_legs.sort(key=lambda x: (x["rank"], -x["hit"]))
 
-    if not hr_tickets:
-        rows.append((pad(["—", "No hit-rate legs today (need two ≤+350 / 12+ legs)", ""]), "no_plays"))
-    else:
-        for t_idx, (a, b, label) in enumerate(hr_tickets, start=1):
-            payout = combined_american([a["odds"], b["odds"]])
-            for leg_idx, leg in enumerate((a, b)):
-                rows.append((pad([
-                    f"#{t_idx}" if leg_idx == 0 else "", leg["batter"], leg["team"],
-                    f"{leg['score']:.1f}", f"+{int(leg['odds'])}",
-                    f"{leg['hit']:.0f}%" if leg["hit"] else "—",
-                    payout if leg_idx == 0 else "",
-                    label if leg_idx == 0 else "",
-                ]), "data_parlay"))
-            if t_idx < len(hr_tickets):
-                rows.append((E[:], "spacer"))
+    leg_uses = {}  # (batter, odds) -> times used across the slate
 
-    rows.append((E[:], "spacer"))
-
-    # ── ROUND ROBIN — top 5 of the 13-15 pool (bet as 10 two-leg pairs) ───
-    # Just the 5 legs; you build the 10 pairs on the book. Same pool/ladder as
-    # the hit-rate section: prefer ≤+300 & 13-15, relax only to fill 5.
-    rows.append((pad(["🔁  ROUND ROBIN — top 5 legs (bet as 10 two-leg pairs, ~$0.50 each)"]),
-                 "section_header_parlay"))
-    rows.append((pad(["#", "Batter", "Team", "Score", "Odds", "Hit%", "", "Filter"]),
-                 "col_header_parlay"))
-
-    rr_legs, rr_label = [], ""
-    for ceil, floor, label in HR_LADDER:
-        cand = [c for c in hit_pool if c["odds"] <= ceil and c["score"] >= floor]
-        if floor >= 13.0:
-            cand = [c for c in cand if c["score"] < 15.0]   # exclude weak 15+
-        cand.sort(key=lambda x: -x["hit"])
-        # pitcher-diversify
-        picked, used = [], set()
-        for c in cand:
-            if len(picked) >= 5:
+    def take_diverse(k, used_pit_ticket):
+        """Pull up to k legs for ONE ticket: edge order, unique pitcher within
+        the ticket, and respecting the global MAX_LEG_USES reuse cap."""
+        out = []
+        for c in ranked_legs:
+            if len(out) >= k:
                 break
-            if c["opp_pit"] and c["opp_pit"] in used:
+            cid = (c["batter"], c["odds"])
+            if leg_uses.get(cid, 0) >= MAX_LEG_USES:
                 continue
-            picked.append(c)
-            if c["opp_pit"]:
-                used.add(c["opp_pit"])
-        if len(picked) >= 5:
-            rr_legs, rr_label = picked[:5], label
-            break
-        # keep the best partial fill seen (in case no rung reaches 5)
-        if len(picked) > len(rr_legs):
-            rr_legs, rr_label = picked, label
+            if c["opp_pit"] and c["opp_pit"] in used_pit_ticket:
+                continue
+            out.append(c)
+            used_pit_ticket.add(c["opp_pit"]) if c["opp_pit"] else None
+            leg_uses[cid] = leg_uses.get(cid, 0) + 1
+        return out
 
-    if len(rr_legs) < 2:
-        rows.append((pad(["—", "Not enough 13-15 legs for a round robin today", ""]), "no_plays"))
-    else:
-        for i, c in enumerate(rr_legs, start=1):
+    n_edge_total = len({(c["batter"], c["odds"]) for c in ranked_legs})
+    band_note = f"{len(edge_bands)} +edge bands live" if edge_bands else "no bands (need resolved data)"
+    rows.append((pad([f"💎  EDGE-BAND SLATE — {n_edge_total} +edge legs today "
+                      f"({band_note}; pulled best-edge-first, ≤2 tickets/leg)"]),
+                 "section_header_parlay"))
+
+    def _implied(o):
+        o = float(o)
+        return 100/(o+100) if o >= 0 else abs(o)/(abs(o)+100)
+
+    ticket_seq = [0]
+
+    def emit_ticket(title, legs):
+        rows.append((pad([title]), "col_header_parlay"))
+        if not legs:
+            rows.append((pad(["—", "no +edge legs left for this ticket today", ""]), "no_plays"))
+            rows.append((E[:], "spacer"))
+            return
+        payout = combined_american([c["odds"] for c in legs]) if len(legs) > 1 else f"+{int(legs[0]['odds'])}"
+        for i, c in enumerate(legs, 1):
             rows.append((pad([
                 str(i), c["batter"], c["team"], f"{c['score']:.1f}",
                 f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
-                "", rr_label if i == 1 else "",
+                f"+{c['edge_pp']:.0f}pp", c.get("band", "") or "—",
             ]), "data_parlay"))
-        if len(rr_legs) < 5:
-            rows.append((pad(["", f"only {len(rr_legs)} qualified — "
-                              f"{len(rr_legs)*(len(rr_legs)-1)//2} pairs today", ""]), "no_plays"))
+        rows.append((pad(["", f"combined {payout}", ""]), "no_plays"))
+        rows.append((E[:], "spacer"))
+
+        # ── staging capture: one row per leg; combined odds + breakeven only
+        # on the first leg of a multi-leg ticket (correctly computed from the
+        # legs' decimal odds, not by misreading a book's combined figure). ──
+        ticket_seq[0] += 1
+        tid = f"{title.split()[0]}{ticket_seq[0]}"  # e.g. "🔁1", "🎰1"
+        combined_c = ""
+        be = ""
+        if len(legs) > 1:
+            dec = 1.0
+            for c in legs:
+                o = float(c["odds"])
+                dec *= 1 + (o/100 if o >= 0 else 100/abs(o))
+            combined_c = combined_american([c["odds"] for c in legs])
+            be = f"{(1/dec)*100:.1f}%"
+        for i, c in enumerate(legs):
+            staging.append({
+                "ticket_type": title.split(" ", 1)[1] if " " in title else title,
+                "ticket_id": tid,
+                "player": c["batter"], "team": c["team"], "score": c["score"],
+                "consensus_at_bet": f"+{int(c['odds'])}",
+                "combined_consensus": combined_c if i == 0 else "",
+                "breakeven_pct": be if i == 0 else "",
+                "band": c.get("band", "") or "—",
+            })
+
+    # 5-leg round robin, then two 3-leggers, then three 2-leggers.
+    # used_pit is per-ticket (a pitcher can repeat across tickets, just not
+    # within one), while leg_uses caps whole-leg reuse across the slate.
+    emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", take_diverse(5, set()))
+    for j in (1, 2):
+        emit_ticket(f"🎰 3-LEG PARLAY #{j}", take_diverse(3, set()))
+    for j in (1, 2, 3):
+        emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", take_diverse(2, set()))
 
     rows.append((E[:], "spacer"))
-
-    # ── 3-LEG PARLAY ─────────────────────────────────────────────────────
-    rows.append((pad(["🎰  3-LEG HR PARLAY — Jackpot band (+351-500), best legs"]),
-                 "section_header_parlay"))
-    rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Why"]),
-                 "col_header_parlay"))
-
-    three_pool = [c for c in parlay_candidates if c.get("in_3leg")]
-    selected, used_games = [], set()
-    for c in three_pool:
-        if len(selected) >= 3:
-            break
-        if c["opp_pit"] and c["opp_pit"] in used_games:
-            continue
-        selected.append(c)
-        if c["opp_pit"]:
-            used_games.add(c["opp_pit"])
-    if len(selected) < 3:
-        for c in three_pool:
-            if len(selected) >= 3:
-                break
-            if c not in selected:
-                selected.append(c)
-
-    if not selected:
-        rows.append((pad(["—", "No parlay candidates today", ""]), "no_plays"))
-    else:
-        payout3 = combined_american([c["odds"] for c in selected]) if len(selected) == 3 else ""
-        for i, c in enumerate(selected):
-            rows.append((pad([
-                str(i + 1), c["batter"], c["team"], f"{c['score']:.1f}",
-                f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
-                payout3 if i == 0 else "", c["why"],
-            ]), "data_parlay"))
-
-    rows.append((E[:], "spacer"))
-
-    # ── 2-LEG PARLAYS (x2 tickets) ───────────────────────────────────────
-    rows.append((pad(["🎟️  2-LEG HR PARLAYS — 2 tickets (proven +EV slots, +301-400 band)"]),
-                 "section_header_parlay"))
-    rows.append((pad(["Ticket", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Why"]),
-                 "col_header_parlay"))
-
-    two_pool = [c for c in parlay_candidates if c.get("in_2leg")]
-    diversified, used_g = [], set()
-    for c in two_pool:
-        if c["opp_pit"] and c["opp_pit"] in used_g:
-            continue
-        diversified.append(c)
-        if c["opp_pit"]:
-            used_g.add(c["opp_pit"])
-    if len(diversified) < 6:
-        for c in two_pool:
-            if len(diversified) >= 6:
-                break
-            if c not in diversified:
-                diversified.append(c)
-
-    slot_pairs = [(3, 4), (5, 6)]
-    pairs = [(diversified[i], diversified[j]) for i, j in slot_pairs if j < len(diversified)]
-    if not pairs:
-        rows.append((pad(["—", "Not enough candidates for a 2-legger today", ""]), "no_plays"))
-    else:
-        for t_idx, (a, b) in enumerate(pairs, start=1):
-            payout2 = combined_american([a["odds"], b["odds"]])
-            for leg_idx, leg in enumerate((a, b)):
-                rows.append((pad([
-                    f"#{t_idx}" if leg_idx == 0 else "", leg["batter"], leg["team"],
-                    f"{leg['score']:.1f}", f"+{int(leg['odds'])}",
-                    f"{leg['hit']:.0f}%" if leg["hit"] else "—",
-                    payout2 if leg_idx == 0 else "", leg["why"],
-                ]), "data_parlay"))
-            if t_idx < len(pairs):
-                rows.append((E[:], "spacer"))
-
-    rows.append((E[:], "spacer"))
-    return rows
+    return rows, staging
 
 
 # ── Dashboard writer ────────────────────────────────────────────────────────
@@ -924,6 +920,49 @@ def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
+def write_bet_staging(gc, sheet_id, staging, today_str) -> None:
+    """Pre-write today's DISPLAYED picks (singles + edge-slate legs) to a
+    clean Bet_Staging tab: one row per leg, consensus_at_bet filled, odds_taken
+    blank for the user to fill when they place a bet. Combined consensus and
+    implied breakeven appear once per parlay ticket (on its first leg),
+    computed correctly from the legs' decimal odds. Model_Bet_Tracker is left
+    untouched. Today's rows are replaced each run; other dates preserved."""
+    header = ["date", "ticket_type", "ticket_id", "player", "team", "score",
+              "consensus_at_bet", "odds_taken", "combined_consensus",
+              "breakeven_pct", "band", "result"]
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("Bet_Staging")
+        existing = pd.DataFrame(ws.get_all_records())
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Bet_Staging", rows=2000, cols=len(header))
+        existing = pd.DataFrame()
+
+    # preserve prior dates (and any odds_taken/result the user already filled)
+    if not existing.empty and "date" in existing.columns:
+        existing = existing[existing["date"].astype(str).str.strip() != today_str]
+    else:
+        existing = pd.DataFrame(columns=header)
+
+    new_rows = []
+    for s in staging:
+        new_rows.append({
+            "date": today_str, "ticket_type": s["ticket_type"],
+            "ticket_id": s["ticket_id"], "player": s["player"], "team": s["team"],
+            "score": s["score"], "consensus_at_bet": s["consensus_at_bet"],
+            "odds_taken": "", "combined_consensus": s["combined_consensus"],
+            "breakeven_pct": s["breakeven_pct"], "band": s["band"], "result": "",
+        })
+    new_df = pd.DataFrame(new_rows, columns=header)
+    out = pd.concat([existing.reindex(columns=header), new_df], ignore_index=True) \
+        if not existing.empty else new_df
+    out = out.fillna("")
+
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([header] + out.astype(str).values.tolist()))
+    print(f"Bet_Staging: wrote {len(new_rows)} legs for {today_str}")
+
+
 def main() -> None:
     time.sleep(5)
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
@@ -943,6 +982,10 @@ def main() -> None:
 
     print(f"HR picks: {len(hr_df)} rows | HR All Scores: {len(hr_all_scores)} rows")
     hr_hit_rates = build_hr_hit_rates(hr_all_scores)
+    edge_bands = build_edge_bands(hr_all_scores)
+    print(f"Edge bands live: {len(edge_bands)} qualifying (+edge, n>=30)")
+    for b in edge_bands[:12]:
+        print(f"  {b['band']:<20} edge +{b['edge_pp']:.1f}pp  hit {b['hit']:.1f}%  n={b['n']}")
 
     today_str = _date.today().strftime("%Y-%m-%d")
     if not hr_all_scores.empty and "date" in hr_all_scores.columns:
@@ -954,8 +997,9 @@ def main() -> None:
     et = pytz.timezone("America/New_York")
     ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
 
-    rows = build_rows(hr_df, hr_hit_rates, hr_today, ts)
+    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands)
     write_dashboard(gc, sheet_id, rows)
+    write_bet_staging(gc, sheet_id, staging, today_str)
     time.sleep(3)
     write_scorecard(gc, sheet_id, rows, today_str)
     print("Dashboard written to 'Today's Top Picks'")
