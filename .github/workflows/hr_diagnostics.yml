@@ -14,6 +14,8 @@ on:
           - compare_tabs.py
           - test_parlay_bands.py
           - test_edge_bands.py
+          - test_selector_bakeoff.py
+
 
 jobs:
   diagnostic:
@@ -69,31 +71,13 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python test_edge_bands.py
+        run: python test_edge_bands. py
 
-    
-
-
-
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-
-
-
-
-
-
+      - name: Selector bake-off (find the blend1 feel)
+        if: github.event.inputs.script == 'test_selector_bakeoff.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_selector_bakeoff.py
 
 
