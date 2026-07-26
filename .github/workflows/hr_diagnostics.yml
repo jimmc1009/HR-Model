@@ -11,6 +11,7 @@ on:
           - validate_model
           - test_13_15_separators.py      # <-- add to the existing options list
           - test_progressive_squeeze.py
+          - compare_tabs.py
 
 
 
@@ -50,6 +51,12 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_progressive_squeeze.py
 
+      - name: Compare Picks_Log vs Model_Bet_Tracker
+        if: github.event.inputs.script == 'compare_tabs.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python compare_tabs.py
 
 
     
