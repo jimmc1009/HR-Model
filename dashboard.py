@@ -393,10 +393,19 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 if odds_val <= 0 or hr_score <= 0:
                     continue
 
-                in_2leg = (301 <= odds_val <= 400) or (odds_val <= 300 and hr_score >= 13)
-                in_3leg = (351 <= odds_val <= 500) or (odds_val <= 300 and hr_score >= 13)
-                score_ok = (9.0 <= hr_score < 10.0) or (12.0 <= hr_score < 13.0) or (hr_score >= 13.0)
-                if not (score_ok and (in_2leg or in_3leg)):
+                # Parlay legs now use the SAME rule as singles: score 13-15,
+                # odds <=+499, no 15+. Parlays multiply the legs, so stacking
+                # a below-breakeven leg (the old 9-score and 12-score rungs,
+                # ~15-22% hit) compounds the loss — exactly what sank the
+                # 3-leggers. Only legs that clear their own breakeven belong
+                # in a parlay. If too few qualify, the section shows nothing,
+                # which is correct: no +EV legs means no +EV parlay.
+                LEG_SCORE_MIN, LEG_SCORE_MAX, LEG_ODDS_MAX = 13.0, 15.0, 499
+                if not (LEG_SCORE_MIN <= hr_score < LEG_SCORE_MAX and odds_val <= LEG_ODDS_MAX):
+                    continue
+                in_2leg = (301 <= odds_val <= 400) or (odds_val <= 300)
+                in_3leg = (351 <= odds_val <= 499) or (odds_val <= 300)
+                if not (in_2leg or in_3leg):
                     continue
 
                 hr_per_fb = safe_float(row.get("hr_per_fb", 0))
@@ -452,11 +461,12 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 continue
 
     # fallback ladder: (odds ceiling, score floor, label)
+    # 12+ rungs removed — the leg pool is now 13-15 only, so those rungs
+    # could never fill; keeping them would falsely imply 12-scores qualify.
     HR_LADDER = [
         (300, 13.0, "≤+300·13-15"),
         (350, 13.0, "≤+350·13-15"),
-        (300, 12.0, "≤+300·12+"),
-        (350, 12.0, "≤+350·12+"),
+        (499, 13.0, "≤+499·13-15"),
     ]
 
     def pick_hitrate_pair(exclude_names, exclude_pitchers):
@@ -498,7 +508,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
                 hr_pitchers.add(leg["opp_pit"])
 
     if not hr_tickets:
-        rows.append((pad(["—", "No hit-rate legs today (need two ≤+350 / 12+ legs)", ""]), "no_plays"))
+        rows.append((pad(["—", "No hit-rate legs today (need two 13-15 / ≤+499 legs)", ""]), "no_plays"))
     else:
         for t_idx, (a, b, label) in enumerate(hr_tickets, start=1):
             payout = combined_american([a["odds"], b["odds"]])
@@ -561,9 +571,106 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
 
     rows.append((E[:], "spacer"))
 
-    # ── 3-LEG PARLAY ─────────────────────────────────────────────────────
-    rows.append((pad(["🎰  3-LEG HR PARLAY — Jackpot band (+351-500), best legs"]),
+    # ── EDGE-BAND DAILY SLATE ─────────────────────────────────────────────
+    # Fixed structure requested: 5-leg round robin + 2x 3-leg + 3x 2-leg.
+    # Legs are drawn from the 9 score×odds bands whose RESOLVED hit rate beat
+    # their price on the full log (n>=30, +edge, from test_edge_bands.py).
+    # Every leg is tagged +EDGE (from a qualifying band) or PAD (filler used
+    # only to complete a fixed ticket when +edge legs run out). PAD legs are
+    # NOT backed by the edge finding — skip them if you want edge-only tickets.
+    #
+    # (band_id, score_lo, score_hi, odds_lo, odds_hi, edge_pp)  score hi exclusive
+    EDGE_BANDS = [
+        ("13-14 @ +301-350", 13, 14, 301, 350, 13.3),
+        ("11-12 @ +501-600", 11, 12, 501, 600, 11.1),
+        ("10-11 @ +401-450", 10, 11, 401, 450,  6.1),
+        ("10-11 @ +451-500", 10, 11, 451, 500,  4.0),
+        ("10-11 @ +351-400", 10, 11, 351, 400,  4.2),
+        ("13-14 @ +251-300", 13, 14, 251, 300,  5.2),
+        ("8.5-10 @ ≤+250",  8.5, 10,   0, 250,  7.6),
+        ("11-12 @ ≤+250",    11, 12,   0, 250,  3.4),
+        ("11-12 @ +251-300", 11, 12, 251, 300,  3.4),
+    ]
+
+    def edge_band_of(score, odds):
+        for bid, slo, shi, olo, ohi, epp in EDGE_BANDS:
+            if slo <= score < shi and olo <= odds <= ohi:
+                return bid, epp
+        return None, 0.0
+
+    # classify every pooled leg: +edge (in a qualifying band) vs pad
+    edge_legs, pad_legs = [], []
+    for c in hit_pool:
+        bid, epp = edge_band_of(c["score"], c["odds"])
+        item = dict(c, band=bid, edge_pp=epp, tag=("+EDGE" if bid else "PAD"))
+        (edge_legs if bid else pad_legs).append(item)
+    # best edge first; pads sorted by hit rate as least-bad filler
+    edge_legs.sort(key=lambda x: (-x["edge_pp"], -x["hit"]))
+    pad_legs.sort(key=lambda x: -x["hit"])
+
+    def take_diverse(pool, k, exclude_ids, used_pit):
+        """Pick up to k legs, unique pitchers, not already used."""
+        out = []
+        for c in pool:
+            if len(out) >= k:
+                break
+            cid = (c["batter"], c["odds"])
+            if cid in exclude_ids:
+                continue
+            if c["opp_pit"] and c["opp_pit"] in used_pit:
+                continue
+            out.append(c)
+            exclude_ids.add(cid)
+            if c["opp_pit"]:
+                used_pit.add(c["opp_pit"])
+        return out
+
+    def fill(k, used_ids, used_pit):
+        """Fill k legs: +edge first, then pad. Returns (legs, n_edge)."""
+        legs = take_diverse(edge_legs, k, used_ids, used_pit)
+        n_edge = len(legs)
+        if len(legs) < k:
+            legs += take_diverse(pad_legs, k - len(legs), used_ids, used_pit)
+        return legs, n_edge
+
+    n_edge_total = len(edge_legs)
+    rows.append((pad([f"💎  EDGE-BAND SLATE — {n_edge_total} +edge legs today "
+                      f"(from 9 proven bands; PAD = filler, not edge)"]),
                  "section_header_parlay"))
+
+    def emit_ticket(title, legs, n_edge):
+        rows.append((pad([title]), "col_header_parlay"))
+        if not legs:
+            rows.append((pad(["—", "no legs available", ""]), "no_plays"))
+            return
+        payout = combined_american([c["odds"] for c in legs]) if len(legs) > 1 else f"+{int(legs[0]['odds'])}"
+        for i, c in enumerate(legs, 1):
+            rows.append((pad([
+                str(i), c["batter"], c["team"], f"{c['score']:.1f}",
+                f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
+                c["tag"], c.get("band", "") or "—",
+            ]), "data_parlay"))
+        note = f"combined {payout}"
+        if n_edge < len(legs):
+            note += f"  ·  {n_edge}/{len(legs)} +edge, {len(legs)-n_edge} PAD"
+        rows.append((pad(["", note, ""]), "no_plays"))
+        rows.append((E[:], "spacer"))
+
+    used_ids, used_pit = set(), set()
+    # 5-leg round robin (bet as 10 two-leg pairs)
+    rr, rr_e = fill(5, used_ids, used_pit)
+    emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", rr, rr_e)
+    # two 3-leg parlays
+    for j in (1, 2):
+        legs, ne = fill(3, used_ids, used_pit)
+        emit_ticket(f"🎰 3-LEG PARLAY #{j}", legs, ne)
+    # three 2-leg parlays
+    for j in (1, 2, 3):
+        legs, ne = fill(2, used_ids, used_pit)
+        emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", legs, ne)
+
+    rows.append((E[:], "spacer"))
+
     rows.append((pad(["Leg", "Batter", "Team", "Score", "Odds", "Hit%", "Payout", "Why"]),
                  "col_header_parlay"))
 
