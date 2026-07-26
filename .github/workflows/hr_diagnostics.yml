@@ -10,6 +10,8 @@ on:
         options:
           - validate_model
           - test_13_15_separators.py      # <-- add to the existing options list
+          - test_progressive_squeeze.py
+
 
 
 
@@ -40,6 +42,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_13_15_separators.py HR_All_Scores.csv
+
+      - name: Progressive squeeze (burnout vs emergence)
+        if: github.event.inputs.script == 'test_progressive_squeeze.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_progressive_squeeze.py
+
 
 
     
