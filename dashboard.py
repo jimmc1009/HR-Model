@@ -515,6 +515,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                     "opp_pit": str(row.get("pitcher_name", "")).strip(),
                     "score": s, "odds": o, "hit": hit, "why": build_why(row),
                     "hr_per_pa": safe_float(row.get("hr_per_pa", 0)),
+                    "barrel_7d": safe_float(row.get("barrel_pct_7d", 0)),
+                    "ev_7d": safe_float(row.get("avg_ev_7d", 0)),
                 })
             except Exception:
                 continue
@@ -635,12 +637,36 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "band": c.get("band", "") or "—",
             })
 
-    # Structure: one 3-legger, then three 2-leggers (round robin dropped).
-    # Legs are pulled in selector order (power+edge blend); used_pit is
-    # per-ticket, while leg_uses caps whole-leg reuse across the slate at 2.
-    emit_ticket("🎰 3-LEG PARLAY", take_diverse(3, set()))
-    for j in (1, 2, 3):
-        emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", take_diverse(2, set()))
+    # Structure: 5-leg round robin (best power+edge legs) + one RECENT-FORM
+    # 3-legger (hot bats at non-chalk prices) + three 2-leggers (power+edge).
+    #
+    # RR + 2-leggers pull from the power+edge ranked pool (validated selector).
+    # The 3-legger is a deliberately DIFFERENT bet: legs at +350 or higher,
+    # ranked by 7-day form (barrel_pct_7d, then avg_ev_7d) — "hot bats at a
+    # payout price." Still restricted to +edge bands so it's not pure junk.
+    # NOTE: this 3-legger is a feel/fun swing, NOT bake-off-validated — recent-
+    # form windows are noisy. Track it, don't size it up.
+    emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", take_diverse(5, set()))
+
+    # recent-form 3-legger: +350 floor, ranked by 7-day barrel then EV
+    form_pool = sorted(
+        [c for c in ranked_legs if c["odds"] >= 350],
+        key=lambda x: (-x.get("barrel_7d", 0), -x.get("ev_7d", 0)))
+    form_legs, form_pit = [], set()
+    for c in form_pool:
+        if len(form_legs) >= 3:
+            break
+        cid = (c["batter"], c["odds"])
+        if leg_uses.get(cid, 0) >= MAX_LEG_USES:
+            continue
+        if c["opp_pit"] and c["opp_pit"] in form_pit:
+            continue
+        form_legs.append(c)
+        form_pit.add(c["opp_pit"]) if c["opp_pit"] else None
+        leg_uses[cid] = leg_uses.get(cid, 0) + 1
+    emit_ticket("🎰 3-LEG — RECENT FORM (hot bats, ≥+350)", form_legs)
+
+    emit_ticket("🎟️ 2-LEG PARLAY", take_diverse(2, set()))
 
     rows.append((E[:], "spacer"))
     return rows, staging
