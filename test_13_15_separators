@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""
+test_13_15_separators.py
+
+The standard separator table asks "what predicts a HR" and answers "power
+hitters homer" -- true but useless, because the book already prices it.
+This asks the harder, more valuable question three ways, restricted to the
+13-15 tier (the picks the model already rates highly):
+
+  LENS 1 -- RESIDUAL vs PRICE
+    Within the SAME odds band, what separates the picks that hit from the
+    ones that didn't? Anything the book already priced washes out, because
+    you're comparing picks the market valued identically. What's left is
+    what the book may have MISSED. This is the only lens that can find an
+    unpriced edge; the other two are supporting context.
+
+  LENS 2 -- SITUATIONAL ONLY
+    Ignore batter-quality features (barrel, ISO -- fully priced) and test
+    only park / weather / pitcher / platoon. These are the features most
+    plausibly mispriced, because they're matchup-specific and modeled
+    loosely by the book.
+
+  LENS 3 -- INTERACTIONS
+    Single features may not separate, but combinations might: e.g.
+    "HR-friendly park AND wind out", "vulnerable pitcher AND platoon edge".
+    Tests a few 2-way combos as HR-rate cells.
+
+EVERY result carries n and a significance flag. With ~250 picks in 13-15,
+sub-splits get small fast -- most "separators" at n<40 are noise, and the
+script says so rather than letting you fool yourself.
+
+USAGE
+    python3 test_13_15_separators.py HR_All_Scores.csv
+"""
+
+import sys
+import math
+import pandas as pd
+import numpy as np
+
+
+def wilson(h, n, z=1.96):
+    if n == 0:
+        return (0.0, 0.0)
+    p = h / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    m = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, c - m), min(1.0, c + m))
+
+
+def two_prop_z(h1, n1, h2, n2):
+    if n1 == 0 or n2 == 0:
+        return 0.0
+    p1, p2 = h1 / n1, h2 / n2
+    p = (h1 + h2) / (n1 + n2)
+    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    return (p1 - p2) / se if se > 0 else 0.0
+
+
+def flag(z):
+    a = abs(z)
+    return "***" if a >= 2.58 else "**" if a >= 1.96 else "*" if a >= 1.64 else ""
+
+
+def load(path):
+    df = pd.read_csv(path, dtype=str).fillna("")
+    df.columns = [c.strip() for c in df.columns]
+    df["score"] = pd.to_numeric(df.get("hr_score", ""), errors="coerce")
+    df["odds"] = pd.to_numeric(
+        df.get("consensus_odds", "").astype(str).str.replace("+", "", regex=False).str.strip(),
+        errors="coerce")
+    df["res"] = df.get("hit_hr", "").str.strip().str.lower()
+    df = df[df["res"].isin(["yes", "no"])].copy()
+    df["hit"] = (df["res"] == "yes").astype(int)
+    for c in ["park_hr_factor", "hr_weather_boost", "pitcher_barrel_pct",
+              "pitcher_hr_per_fb", "barrel_pct_7d", "iso", "temp_f"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.dropna(subset=["score", "odds"])
+
+
+def split_report(df, feat, hi_mask, lo_mask, hi_label, lo_label):
+    hi, lo = df[hi_mask], df[lo_mask]
+    if len(hi) < 10 or len(lo) < 10:
+        print(f"  {feat:<34} (skipped — n too small: {len(hi)}/{len(lo)})")
+        return
+    h1, n1 = hi["hit"].sum(), len(hi)
+    h2, n2 = lo["hit"].sum(), len(lo)
+    z = two_prop_z(h1, n1, h2, n2)
+    lo1, hi1 = wilson(h1, n1)
+    print(f"  {feat:<34} {hi_label}: {h1/n1*100:4.1f}% (n={n1:>3})  "
+          f"{lo_label}: {h2/n2*100:4.1f}% (n={n2:>3})  "
+          f"Δ={((h1/n1)-(h2/n2))*100:+5.1f}pp  z={z:+.2f} {flag(z)}")
+
+
+def main(path):
+    df = load(path)
+    t = df[(df["score"] >= 13) & (df["score"] < 15)].copy()
+
+    print("=" * 78)
+    print(f"13-15 TIER SEPARATOR ANALYSIS   (n={len(t)}, "
+          f"base HR rate {t['hit'].mean()*100:.1f}%)")
+    print("=" * 78)
+    if len(t) < 40:
+        print("\nToo few 13-15 rows to analyze. Need more resolved data.")
+        return
+    print("  Significance: * p<.10   ** p<.05   *** p<.01")
+    print("  (Nothing below ** should be treated as real. Even ** at small n is fragile.)")
+
+    # ── LENS 1: RESIDUAL vs PRICE ─────────────────────────────────────
+    print("\n" + "-" * 78)
+    print("LENS 1 — RESIDUAL vs PRICE  (within same odds band: hit vs miss)")
+    print("-" * 78)
+    print("For each price band, split the tier by a feature and compare HR rates.")
+    print("A separator that survives HERE is one the book's price did NOT capture.\n")
+    for band_lo, band_hi, blabel in [(0, 301, "≤+300"), (301, 500, "+301-499")]:
+        b = t[(t["odds"] >= band_lo) & (t["odds"] < band_hi)]
+        if len(b) < 25:
+            print(f"  [{blabel}] n={len(b)} — too small, skipped\n")
+            continue
+        print(f"  [{blabel}]  n={len(b)}  hit rate {b['hit'].mean()*100:.1f}%")
+        for feat, col, thresh in [
+            ("park HR factor >=105", "park_hr_factor", 105),
+            ("weather boost >0",     "hr_weather_boost", 0.01),
+            ("pitcher barrel% >=9",  "pitcher_barrel_pct", 9),
+            ("barrel% 7d >=12",      "barrel_pct_7d", 12),
+        ]:
+            if col not in b.columns or b[col].isna().all():
+                continue
+            split_report(b, feat, b[col] >= thresh, b[col] < thresh, "hi", "lo")
+        print()
+
+    # ── LENS 2: SITUATIONAL ONLY ──────────────────────────────────────
+    print("-" * 78)
+    print("LENS 2 — SITUATIONAL ONLY  (matchup features, batter-quality ignored)")
+    print("-" * 78)
+    print("These are the features most likely to be mispriced by the book.\n")
+    for feat, col, thresh in [
+        ("Park HR factor >=105",       "park_hr_factor", 105),
+        ("Park HR factor >=110",       "park_hr_factor", 110),
+        ("Weather boost >0 (wind out)","hr_weather_boost", 0.01),
+        ("Weather boost >=1.0",        "hr_weather_boost", 1.0),
+        ("Pitcher barrel% allowed >=9","pitcher_barrel_pct", 9),
+        ("Pitcher barrel% allowed >=11","pitcher_barrel_pct", 11),
+        ("Pitcher HR/FB% >=13",        "pitcher_hr_per_fb", 13),
+        ("Temp >=80F",                 "temp_f", 80),
+    ]:
+        if col not in t.columns or t[col].isna().all():
+            continue
+        split_report(t, feat, t[col] >= thresh, t[col] < thresh, "yes", "no")
+
+    # platoon (text column)
+    if "platoon_matchup" in t.columns:
+        adv = t["platoon_matchup"].str.contains("advantage", case=False, na=False)
+        split_report(t, "Platoon advantage (text)", adv, ~adv, "adv", "not")
+
+    # ── LENS 3: INTERACTIONS ──────────────────────────────────────────
+    print("\n" + "-" * 78)
+    print("LENS 3 — INTERACTIONS  (2-way combos vs everyone else)")
+    print("-" * 78)
+    print("Single features may be flat while combinations separate.\n")
+    combos = []
+    if {"park_hr_factor", "hr_weather_boost"} <= set(t.columns):
+        combos.append(("Good park (>=105) AND wind out (>0)",
+                       (t["park_hr_factor"] >= 105) & (t["hr_weather_boost"] > 0)))
+    if {"pitcher_barrel_pct", "barrel_pct_7d"} <= set(t.columns):
+        combos.append(("Vuln pitcher (brl>=9) AND hot bat (7d>=12)",
+                       (t["pitcher_barrel_pct"] >= 9) & (t["barrel_pct_7d"] >= 12)))
+    if {"park_hr_factor", "pitcher_barrel_pct"} <= set(t.columns):
+        combos.append(("Good park (>=105) AND vuln pitcher (>=9)",
+                       (t["park_hr_factor"] >= 105) & (t["pitcher_barrel_pct"] >= 9)))
+    for label, mask in combos:
+        split_report(t, label, mask, ~mask, "combo", "rest")
+
+    # ── caveats ───────────────────────────────────────────────────────
+    print("\n" + "=" * 78)
+    print("READ BEFORE BELIEVING ANYTHING ABOVE")
+    print("=" * 78)
+    print("""
+  1. MULTIPLE COMPARISONS. This runs ~20 tests. At p<.05, ~1 in 20 fires by
+     chance ALONE even if nothing separates. So one lone ** is expected noise,
+     not a finding. Look for a separator that (a) is *** , (b) repeats across
+     both price bands in Lens 1, and (c) has a mechanism you can state. Only
+     then is it a candidate.
+  2. LENS 1 IS THE ONE THAT COUNTS. A feature that separates in Lens 2 but
+     NOT in Lens 1 is already priced — the book saw it. Only Lens-1 survivors
+     are potential edge.
+  3. IN-SAMPLE. Any survivor is a hypothesis to test FORWARD, not a green
+     light. Same discipline as everything else.
+  4. SMALL n. Sub-splits here are n=20-80. A 10pp gap at n=30 is often noise.
+     Trust the z-flag and CI, not the point estimate.
+""")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+    main(sys.argv[1])
