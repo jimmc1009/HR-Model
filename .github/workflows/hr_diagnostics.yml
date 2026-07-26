@@ -9,6 +9,8 @@ on:
         type: choice
         options:
           - validate_model
+          - test_13_15_separators.py      # <-- add to the existing options list
+
 
 
 jobs:
@@ -31,6 +33,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python validate_model.py
+
+      - name: 13-15 tier separators (3 lenses)
+        if: github.event.inputs.script == 'test_13_15_separators.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_13_15_separators.py HR_All_Scores.csv
+
 
     
 
