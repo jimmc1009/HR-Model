@@ -344,6 +344,7 @@ def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
 
 
 def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
+    staging = []   # collected slate legs/tickets for the Bet_Staging tab
     def pad(row):
         return list(row) + [""] * (N_COLS - len(row))
 
@@ -424,6 +425,15 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         if not plays:
             rows.append((pad(["—", "No edge plays today — nothing beats breakeven", ""]), "no_plays"))
         else:
+            # capture singles for the Bet_Staging tab (one row per leg)
+            for p in plays:
+                staging.append({
+                    "ticket_type": "single", "ticket_id": f"S{len(staging)+1}",
+                    "player": p["batter"], "team": p["team"],
+                    "score": p["score"], "consensus_at_bet": p["odds"],
+                    "combined_consensus": "", "breakeven_pct": "",
+                    "band": "singles 13-15 ≤+499",
+                })
             for i, p in enumerate(plays):
                 rtype = ("data_hr_strong" if p["score"] >= 13
                          else "data_hr_moderate" if p["score"] >= 12
@@ -558,6 +568,12 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                       f"({band_note}; pulled best-edge-first, ≤2 tickets/leg)"]),
                  "section_header_parlay"))
 
+    def _implied(o):
+        o = float(o)
+        return 100/(o+100) if o >= 0 else abs(o)/(abs(o)+100)
+
+    ticket_seq = [0]
+
     def emit_ticket(title, legs):
         rows.append((pad([title]), "col_header_parlay"))
         if not legs:
@@ -574,6 +590,31 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         rows.append((pad(["", f"combined {payout}", ""]), "no_plays"))
         rows.append((E[:], "spacer"))
 
+        # ── staging capture: one row per leg; combined odds + breakeven only
+        # on the first leg of a multi-leg ticket (correctly computed from the
+        # legs' decimal odds, not by misreading a book's combined figure). ──
+        ticket_seq[0] += 1
+        tid = f"{title.split()[0]}{ticket_seq[0]}"  # e.g. "🔁1", "🎰1"
+        combined_c = ""
+        be = ""
+        if len(legs) > 1:
+            dec = 1.0
+            for c in legs:
+                o = float(c["odds"])
+                dec *= 1 + (o/100 if o >= 0 else 100/abs(o))
+            combined_c = combined_american([c["odds"] for c in legs])
+            be = f"{(1/dec)*100:.1f}%"
+        for i, c in enumerate(legs):
+            staging.append({
+                "ticket_type": title.split(" ", 1)[1] if " " in title else title,
+                "ticket_id": tid,
+                "player": c["batter"], "team": c["team"], "score": c["score"],
+                "consensus_at_bet": f"+{int(c['odds'])}",
+                "combined_consensus": combined_c if i == 0 else "",
+                "breakeven_pct": be if i == 0 else "",
+                "band": c.get("band", "") or "—",
+            })
+
     # 5-leg round robin, then two 3-leggers, then three 2-leggers.
     # used_pit is per-ticket (a pitcher can repeat across tickets, just not
     # within one), while leg_uses caps whole-leg reuse across the slate.
@@ -584,7 +625,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", take_diverse(2, set()))
 
     rows.append((E[:], "spacer"))
-    return rows
+    return rows, staging
 
 
 # ── Dashboard writer ────────────────────────────────────────────────────────
@@ -879,6 +920,49 @@ def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
+def write_bet_staging(gc, sheet_id, staging, today_str) -> None:
+    """Pre-write today's DISPLAYED picks (singles + edge-slate legs) to a
+    clean Bet_Staging tab: one row per leg, consensus_at_bet filled, odds_taken
+    blank for the user to fill when they place a bet. Combined consensus and
+    implied breakeven appear once per parlay ticket (on its first leg),
+    computed correctly from the legs' decimal odds. Model_Bet_Tracker is left
+    untouched. Today's rows are replaced each run; other dates preserved."""
+    header = ["date", "ticket_type", "ticket_id", "player", "team", "score",
+              "consensus_at_bet", "odds_taken", "combined_consensus",
+              "breakeven_pct", "band", "result"]
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
+    try:
+        ws = sh.worksheet("Bet_Staging")
+        existing = pd.DataFrame(ws.get_all_records())
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Bet_Staging", rows=2000, cols=len(header))
+        existing = pd.DataFrame()
+
+    # preserve prior dates (and any odds_taken/result the user already filled)
+    if not existing.empty and "date" in existing.columns:
+        existing = existing[existing["date"].astype(str).str.strip() != today_str]
+    else:
+        existing = pd.DataFrame(columns=header)
+
+    new_rows = []
+    for s in staging:
+        new_rows.append({
+            "date": today_str, "ticket_type": s["ticket_type"],
+            "ticket_id": s["ticket_id"], "player": s["player"], "team": s["team"],
+            "score": s["score"], "consensus_at_bet": s["consensus_at_bet"],
+            "odds_taken": "", "combined_consensus": s["combined_consensus"],
+            "breakeven_pct": s["breakeven_pct"], "band": s["band"], "result": "",
+        })
+    new_df = pd.DataFrame(new_rows, columns=header)
+    out = pd.concat([existing.reindex(columns=header), new_df], ignore_index=True) \
+        if not existing.empty else new_df
+    out = out.fillna("")
+
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update([header] + out.astype(str).values.tolist()))
+    print(f"Bet_Staging: wrote {len(new_rows)} legs for {today_str}")
+
+
 def main() -> None:
     time.sleep(5)
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
@@ -913,8 +997,9 @@ def main() -> None:
     et = pytz.timezone("America/New_York")
     ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
 
-    rows = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands)
+    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands)
     write_dashboard(gc, sheet_id, rows)
+    write_bet_staging(gc, sheet_id, staging, today_str)
     time.sleep(3)
     write_scorecard(gc, sheet_id, rows, today_str)
     print("Dashboard written to 'Today's Top Picks'")
