@@ -286,7 +286,64 @@ def build_why(row) -> str:
 
 
 # ── Row builder (HR only) ───────────────────────────────────────────────────
-def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
+def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
+    """Compute score×odds bands whose RESOLVED hit rate beats implied
+    breakeven, live from HR_All_Scores. Returns a ranked list (best edge
+    first) of dicts: {band, s_lo, s_hi, o_lo, o_hi, edge_pp, n, hit}.
+
+    Replaces the old hardcoded band table so the slate reflects current
+    resolved data every run instead of a frozen snapshot. Same math as
+    test_edge_bands.py. Only bands with n>=min_n AND positive edge qualify.
+    """
+    if hr_all_scores.empty:
+        return []
+    MODEL_START_DATE = "2026-06-09"
+    df = hr_all_scores.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)]
+    df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    if df.empty:
+        return []
+    df["score"] = df.apply(
+        lambda r: safe_float(r.get("hr_score_corrected"))
+        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
+        else safe_float(r.get("hr_score")), axis=1)
+    df["odds"] = df["consensus_odds"].apply(safe_float)
+    df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
+    df = df[(df["odds"] > 0) & (df["score"] > 0)]
+
+    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
+                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
+                   (8.5, 10, "8.5-10")]
+    odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
+                  (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
+                  (501, 600, "+501-600"), (601, 9999, "+601+")]
+
+    def implied(o):
+        return 100/(o+100) if o >= 0 else abs(o)/(abs(o)+100)
+
+    bands = []
+    for slo, shi, slab in score_bands:
+        for olo, ohi, olab in odds_bands:
+            sub = df[(df["score"] >= slo) & (df["score"] < shi) &
+                     (df["odds"] >= olo) & (df["odds"] <= ohi)]
+            n = len(sub)
+            if n < min_n:
+                continue
+            hit = sub["hit"].mean()
+            be = sub["odds"].apply(implied).mean()
+            edge = hit - be
+            if edge > 0:
+                bands.append({
+                    "band": f"{slab} @ {olab}", "s_lo": slo, "s_hi": shi,
+                    "o_lo": olo, "o_hi": ohi, "edge_pp": edge * 100,
+                    "n": n, "hit": hit * 100,
+                })
+    bands.sort(key=lambda b: -b["edge_pp"])
+    return bands
+
+
+def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
     def pad(row):
         return list(row) + [""] * (N_COLS - len(row))
 
@@ -453,73 +510,52 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
 
     # ── EDGE-BAND DAILY SLATE ─────────────────────────────────────────────
     # Fixed structure: 5-leg round robin + 2x 3-leg + 3x 2-leg.
-    # Legs are pulled in EDGE ORDER: every score×odds cell from the full log
-    # (test_edge_bands.py) is ranked by resolved-hit% minus implied breakeven.
-    # The builder takes legs from the highest-edge band first and walks DOWN
-    # the list as it needs more, so a ticket is always filled with the best
-    # available value legs, dropping to lower (but still ranked) bands only
-    # when the top ones are exhausted for the day.
-    #
-    # Full ranked table (band, score_lo, score_hi[excl], odds_lo, odds_hi, edge_pp).
-    # Positive edge = beats its price. Ordered best-first. Bands with negative
-    # edge are still listed at the bottom so a ticket can complete if a light
-    # slate leaves nothing else — but they're flagged so you can skip them.
-    RANKED_BANDS = [
-        # score_lo, score_hi, odds_lo, odds_hi, edge_pp, n
-        ("13-14 @ +301-350", 13, 14, 301, 350,  13.3, 30),
-        ("11-12 @ +501-600", 11, 12, 501, 600,  11.1, 30),
-        ("14-15 @ +301-350", 14, 15, 301, 350,   8.6, 22),
-        ("8.5-10 @ ≤+250",  8.5, 10,   0, 250,   7.6, 36),
-        ("14-15 @ ≤+250",    14, 15,   0, 250,   7.1, 21),
-        ("13-14 @ ≤+250",    13, 14,   0, 250,   6.5, 16),
-        ("10-11 @ +401-450", 10, 11, 401, 450,   6.1, 64),
-        ("15+ @ ≤+250",      15, 99,   0, 250,   5.8, 27),
-        ("13-14 @ +251-300", 13, 14, 251, 300,   5.2, 35),
-        ("10-11 @ +351-400", 10, 11, 351, 400,   4.2, 56),
-        ("10-11 @ +451-500", 10, 11, 451, 500,   4.0, 61),
-        ("11-12 @ ≤+250",    11, 12,   0, 250,   3.4, 37),
-        ("11-12 @ +251-300", 11, 12, 251, 300,   3.4, 37),
-        ("10-11 @ +601+",    10, 11, 601, 9999,  0.2, 32),
-    ]
+    # Bands are computed LIVE from HR_All_Scores each run (build_edge_bands),
+    # so the edges reflect currently-resolved data, not a frozen snapshot.
+    # Legs are pulled in EDGE ORDER: highest-edge band first, walking DOWN the
+    # ranked list as more legs are needed. No junk padding — a leg outside all
+    # +edge bands is ineligible, and empty slots are left blank.
+    # Each leg may appear on at most MAX_LEG_USES tickets (light reuse so thin
+    # slates still fill without stacking one play on every ticket).
+    MAX_LEG_USES = 2
 
     def band_rank(score, odds):
-        """Return (rank_index, band_id, edge_pp) for a leg, or (99, None, -99)
-        if it falls in no ranked +edge band. Lower rank = better edge."""
-        for idx, (bid, slo, shi, olo, ohi, epp, _n) in enumerate(RANKED_BANDS):
-            if slo <= score < shi and olo <= odds <= ohi:
-                return idx, bid, epp
+        for idx, b in enumerate(edge_bands or []):
+            if b["s_lo"] <= score < b["s_hi"] and b["o_lo"] <= odds <= b["o_hi"]:
+                return idx, b["band"], b["edge_pp"]
         return 99, None, -99.0
 
-    # tag every pooled leg with its edge rank; keep only ranked (+edge) legs,
-    # ordered best-edge-first, then by hit rate within a band
     ranked_legs = []
     for c in hit_pool:
         idx, bid, epp = band_rank(c["score"], c["odds"])
         if bid is None:
-            continue  # no +edge band -> not eligible (no junk padding)
+            continue
         ranked_legs.append(dict(c, band=bid, edge_pp=epp, rank=idx))
     ranked_legs.sort(key=lambda x: (x["rank"], -x["hit"]))
 
-    def take_diverse(k, used_ids, used_pit):
-        """Pull up to k legs in edge order, unique pitcher, not reused."""
+    leg_uses = {}  # (batter, odds) -> times used across the slate
+
+    def take_diverse(k, used_pit_ticket):
+        """Pull up to k legs for ONE ticket: edge order, unique pitcher within
+        the ticket, and respecting the global MAX_LEG_USES reuse cap."""
         out = []
         for c in ranked_legs:
             if len(out) >= k:
                 break
             cid = (c["batter"], c["odds"])
-            if cid in used_ids:
+            if leg_uses.get(cid, 0) >= MAX_LEG_USES:
                 continue
-            if c["opp_pit"] and c["opp_pit"] in used_pit:
+            if c["opp_pit"] and c["opp_pit"] in used_pit_ticket:
                 continue
             out.append(c)
-            used_ids.add(cid)
-            if c["opp_pit"]:
-                used_pit.add(c["opp_pit"])
+            used_pit_ticket.add(c["opp_pit"]) if c["opp_pit"] else None
+            leg_uses[cid] = leg_uses.get(cid, 0) + 1
         return out
 
     n_edge_total = len({(c["batter"], c["odds"]) for c in ranked_legs})
+    band_note = f"{len(edge_bands)} +edge bands live" if edge_bands else "no bands (need resolved data)"
     rows.append((pad([f"💎  EDGE-BAND SLATE — {n_edge_total} +edge legs today "
-                      f"(pulled best-edge-first; empty slots left blank, never padded)"]),
+                      f"({band_note}; pulled best-edge-first, ≤2 tickets/leg)"]),
                  "section_header_parlay"))
 
     def emit_ticket(title, legs):
@@ -538,15 +574,14 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str):
         rows.append((pad(["", f"combined {payout}", ""]), "no_plays"))
         rows.append((E[:], "spacer"))
 
-    used_ids, used_pit = set(), set()
-    # 5-leg round robin (bet as 10 two-leg pairs)
-    emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", take_diverse(5, used_ids, used_pit))
-    # two 3-leg parlays
+    # 5-leg round robin, then two 3-leggers, then three 2-leggers.
+    # used_pit is per-ticket (a pitcher can repeat across tickets, just not
+    # within one), while leg_uses caps whole-leg reuse across the slate.
+    emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", take_diverse(5, set()))
     for j in (1, 2):
-        emit_ticket(f"🎰 3-LEG PARLAY #{j}", take_diverse(3, used_ids, used_pit))
-    # three 2-leg parlays
+        emit_ticket(f"🎰 3-LEG PARLAY #{j}", take_diverse(3, set()))
     for j in (1, 2, 3):
-        emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", take_diverse(2, used_ids, used_pit))
+        emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", take_diverse(2, set()))
 
     rows.append((E[:], "spacer"))
     return rows
@@ -863,6 +898,10 @@ def main() -> None:
 
     print(f"HR picks: {len(hr_df)} rows | HR All Scores: {len(hr_all_scores)} rows")
     hr_hit_rates = build_hr_hit_rates(hr_all_scores)
+    edge_bands = build_edge_bands(hr_all_scores)
+    print(f"Edge bands live: {len(edge_bands)} qualifying (+edge, n>=30)")
+    for b in edge_bands[:12]:
+        print(f"  {b['band']:<20} edge +{b['edge_pp']:.1f}pp  hit {b['hit']:.1f}%  n={b['n']}")
 
     today_str = _date.today().strftime("%Y-%m-%d")
     if not hr_all_scores.empty and "date" in hr_all_scores.columns:
@@ -874,7 +913,7 @@ def main() -> None:
     et = pytz.timezone("America/New_York")
     ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
 
-    rows = build_rows(hr_df, hr_hit_rates, hr_today, ts)
+    rows = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands)
     write_dashboard(gc, sheet_id, rows)
     time.sleep(3)
     write_scorecard(gc, sheet_id, rows, today_str)
