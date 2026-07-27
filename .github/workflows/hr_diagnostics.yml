@@ -20,6 +20,7 @@ on:
           - test_platoon_progressive.py
           - test_platoon_unfiltered.py
           - test_platoon_diagnose.py
+          - inspect_matchup.py
 
 jobs:
   diagnostic:
@@ -117,5 +118,12 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python test_platoon_diagnose.py 
+        run: python test_platoon_diagnose.py
+
+      - name: Inspect matchup (DEV)
+        if: github.event.inputs.script == 'inspect_matchup.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID_DEV }}
+        run: python inspect_matchup.py "Murakami" "Fried"
 
