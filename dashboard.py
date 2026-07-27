@@ -608,7 +608,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             rows.append((pad([
                 str(i), c["batter"], c["team"], f"{c['score']:.1f}",
                 f"+{int(c['odds'])}", f"{c['hit']:.0f}%" if c["hit"] else "—",
-                f"+{c['edge_pp']:.0f}pp", c.get("band", "") or "—",
+                f"+{c['edge_pp']:.0f}pp" if c.get("edge_pp") is not None else "—",
+                c.get("band", "") or "—",
             ]), "data_parlay"))
         rows.append((pad(["", f"combined {payout}", ""]), "no_plays"))
         rows.append((E[:], "spacer"))
