@@ -16,6 +16,7 @@ on:
           - test_edge_bands.py
           - test_selector_bakeoff.py
           - test_platoon_backtest.py
+          - check_pitcher_source.py
 
 
 jobs:
@@ -87,4 +88,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_platoon_backtest.py
+
+      - name: Check pitcher source data
+        if: github.event.inputs.script == 'check_pitcher_source.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python check_pitcher_source.py
 
