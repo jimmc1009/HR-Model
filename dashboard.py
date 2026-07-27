@@ -514,20 +514,28 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                     "batter": b, "team": str(row.get("team", "")).strip(),
                     "opp_pit": str(row.get("pitcher_name", "")).strip(),
                     "score": s, "odds": o, "hit": hit, "why": build_why(row),
+                    "hr_per_pa": safe_float(row.get("hr_per_pa", 0)),
+                    "barrel_7d": safe_float(row.get("barrel_pct_7d", 0)),
+                    "ev_7d": safe_float(row.get("avg_ev_7d", 0)),
                 })
             except Exception:
                 continue
 
     # ── EDGE-BAND DAILY SLATE ─────────────────────────────────────────────
-    # Fixed structure: 5-leg round robin + 2x 3-leg + 3x 2-leg.
+    # Structure: 1x 3-leg + 3x 2-leg parlays (round robin dropped).
     # Bands are computed LIVE from HR_All_Scores each run (build_edge_bands),
-    # so the edges reflect currently-resolved data, not a frozen snapshot.
-    # Legs are pulled in EDGE ORDER: highest-edge band first, walking DOWN the
-    # ranked list as more legs are needed. No junk padding — a leg outside all
-    # +edge bands is ineligible, and empty slots are left blank.
-    # Each leg may appear on at most MAX_LEG_USES tickets (light reuse so thin
-    # slates still fill without stacking one play on every ticket).
+    # so the +edge pool reflects currently-resolved data. A leg is eligible
+    # only if it falls in a +edge band (no junk padding; empty slots blank).
+    #
+    # WITHIN the eligible pool, legs are ranked by the bake-off's winning
+    # selector: a 50/50 blend of batter power (HR-per-PA) and edge. The
+    # selector bake-off across 54 days showed batter-power+edge held its hit
+    # rate out-of-sample at non-chalk odds (HR-per-PA @ w=0.5 → ~35% OUT,
+    # +343 avg) better than pitcher/park/weather/platoon signals. This is the
+    # validated version of the old "blend1" (hr_per_fb/8 + edge*0.8).
+    # Each leg may appear on at most MAX_LEG_USES tickets (light reuse).
     MAX_LEG_USES = 2
+    POWER_W = 0.5   # weight on HR-per-PA; edge gets (1 - POWER_W)
 
     def band_rank(score, odds):
         for idx, b in enumerate(edge_bands or []):
@@ -541,7 +549,21 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         if bid is None:
             continue
         ranked_legs.append(dict(c, band=bid, edge_pp=epp, rank=idx))
-    ranked_legs.sort(key=lambda x: (x["rank"], -x["hit"]))
+
+    # z-normalize hr_per_pa and edge_pp across the eligible pool, then blend
+    if ranked_legs:
+        def _z(vals):
+            arr = [v for v in vals]
+            m = sum(arr) / len(arr)
+            var = sum((v - m) ** 2 for v in arr) / len(arr)
+            sd = var ** 0.5
+            return [(v - m) / sd if sd > 0 else 0.0 for v in arr]
+        pz = _z([c["hr_per_pa"] for c in ranked_legs])
+        ez = _z([c["edge_pp"] for c in ranked_legs])
+        for c, p, e in zip(ranked_legs, pz, ez):
+            c["selector"] = p * POWER_W + e * (1 - POWER_W)
+    # rank by the blended selector (best first); band rank breaks ties
+    ranked_legs.sort(key=lambda x: (-x.get("selector", 0.0), x["rank"]))
 
     leg_uses = {}  # (batter, odds) -> times used across the slate
 
@@ -565,7 +587,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
     n_edge_total = len({(c["batter"], c["odds"]) for c in ranked_legs})
     band_note = f"{len(edge_bands)} +edge bands live" if edge_bands else "no bands (need resolved data)"
     rows.append((pad([f"💎  EDGE-BAND SLATE — {n_edge_total} +edge legs today "
-                      f"({band_note}; pulled best-edge-first, ≤2 tickets/leg)"]),
+                      f"({band_note}; ranked by power+edge blend, ≤2 tickets/leg)"]),
                  "section_header_parlay"))
 
     def _implied(o):
@@ -615,14 +637,36 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "band": c.get("band", "") or "—",
             })
 
-    # 5-leg round robin, then two 3-leggers, then three 2-leggers.
-    # used_pit is per-ticket (a pitcher can repeat across tickets, just not
-    # within one), while leg_uses caps whole-leg reuse across the slate.
+    # Structure: 5-leg round robin (best power+edge legs) + one RECENT-FORM
+    # 3-legger (hot bats at non-chalk prices) + three 2-leggers (power+edge).
+    #
+    # RR + 2-leggers pull from the power+edge ranked pool (validated selector).
+    # The 3-legger is a deliberately DIFFERENT bet: legs at +350 or higher,
+    # ranked by 7-day form (barrel_pct_7d, then avg_ev_7d) — "hot bats at a
+    # payout price." Still restricted to +edge bands so it's not pure junk.
+    # NOTE: this 3-legger is a feel/fun swing, NOT bake-off-validated — recent-
+    # form windows are noisy. Track it, don't size it up.
     emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", take_diverse(5, set()))
-    for j in (1, 2):
-        emit_ticket(f"🎰 3-LEG PARLAY #{j}", take_diverse(3, set()))
-    for j in (1, 2, 3):
-        emit_ticket(f"🎟️ 2-LEG PARLAY #{j}", take_diverse(2, set()))
+
+    # recent-form 3-legger: +350 floor, ranked by 7-day barrel then EV
+    form_pool = sorted(
+        [c for c in ranked_legs if c["odds"] >= 350],
+        key=lambda x: (-x.get("barrel_7d", 0), -x.get("ev_7d", 0)))
+    form_legs, form_pit = [], set()
+    for c in form_pool:
+        if len(form_legs) >= 3:
+            break
+        cid = (c["batter"], c["odds"])
+        if leg_uses.get(cid, 0) >= MAX_LEG_USES:
+            continue
+        if c["opp_pit"] and c["opp_pit"] in form_pit:
+            continue
+        form_legs.append(c)
+        form_pit.add(c["opp_pit"]) if c["opp_pit"] else None
+        leg_uses[cid] = leg_uses.get(cid, 0) + 1
+    emit_ticket("🎰 3-LEG — RECENT FORM (hot bats, ≥+350)", form_legs)
+
+    emit_ticket("🎟️ 2-LEG PARLAY", take_diverse(2, set()))
 
     rows.append((E[:], "spacer"))
     return rows, staging
