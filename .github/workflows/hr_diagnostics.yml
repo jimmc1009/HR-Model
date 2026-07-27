@@ -112,7 +112,7 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_platoon_unfiltered.py
 
-     - name: Diagnose platoon inversion
+      - name: Diagnose platoon inversion
         if: github.event.inputs.script == 'test_platoon_diagnose.py'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
