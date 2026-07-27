@@ -517,6 +517,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                     "hr_per_pa": safe_float(row.get("hr_per_pa", 0)),
                     "barrel_7d": safe_float(row.get("barrel_pct_7d", 0)),
                     "ev_7d": safe_float(row.get("avg_ev_7d", 0)),
+                    "hr_fb": safe_float(row.get("hr_per_fb", 0)),
                 })
             except Exception:
                 continue
@@ -637,36 +638,51 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "band": c.get("band", "") or "—",
             })
 
-    # Structure: 5-leg round robin (best power+edge legs) + one RECENT-FORM
-    # 3-legger (hot bats at non-chalk prices) + three 2-leggers (power+edge).
+    # Structure: 5-leg round robin (best power+edge legs, from the +edge pool)
+    # + a 3-legger and a 2-legger driven by a CONGLOMERATE power signal in the
+    # +350-599 odds range (NO edge gating — these pull from the full day's
+    # scored players, not just +edge bands).
     #
-    # RR + 2-leggers pull from the power+edge ranked pool (validated selector).
-    # The 3-legger is a deliberately DIFFERENT bet: legs at +350 or higher,
-    # ranked by 7-day form (barrel_pct_7d, then avg_ev_7d) — "hot bats at a
-    # payout price." Still restricted to +edge bands so it's not pure junk.
-    # NOTE: this 3-legger is a feel/fun swing, NOT bake-off-validated — recent-
-    # form windows are noisy. Track it, don't size it up.
+    # Conglomerate = average of z-normalized hr_per_pa, hr_per_fb, barrel_7d,
+    # avg_ev_7d — the four power metrics that held up out-of-sample in the
+    # selector bake-off. Blending them is more robust than any single stat.
+    # The 3-legger takes the top conglomerate legs; the 2-legger takes the
+    # next best (no overlap with the 3-legger or, where possible, the RR).
     emit_ticket("🔁 5-LEG ROUND ROBIN (10 pairs)", take_diverse(5, set()))
 
-    # recent-form 3-legger: +350 floor, ranked by 7-day barrel then EV
-    form_pool = sorted(
-        [c for c in ranked_legs if c["odds"] >= 350],
-        key=lambda x: (-x.get("barrel_7d", 0), -x.get("ev_7d", 0)))
-    form_legs, form_pit = [], set()
-    for c in form_pool:
-        if len(form_legs) >= 3:
-            break
-        cid = (c["batter"], c["odds"])
-        if leg_uses.get(cid, 0) >= MAX_LEG_USES:
-            continue
-        if c["opp_pit"] and c["opp_pit"] in form_pit:
-            continue
-        form_legs.append(c)
-        form_pit.add(c["opp_pit"]) if c["opp_pit"] else None
-        leg_uses[cid] = leg_uses.get(cid, 0) + 1
-    emit_ticket("🎰 3-LEG — RECENT FORM (hot bats, ≥+350)", form_legs)
+    # build the conglomerate pool: all scored players in +350-599
+    congo = [c for c in hit_pool if 350 <= c["odds"] <= 599]
+    if congo:
+        def _zc(vals):
+            m = sum(vals)/len(vals)
+            sd = (sum((v-m)**2 for v in vals)/len(vals))**0.5
+            return [(v-m)/sd if sd > 0 else 0.0 for v in vals]
+        za = _zc([c["hr_per_pa"] for c in congo])
+        zb = _zc([c["hr_fb"] for c in congo])
+        zd = _zc([c["barrel_7d"] for c in congo])
+        ze = _zc([c["ev_7d"] for c in congo])
+        for c, a, b, d, e in zip(congo, za, zb, zd, ze):
+            c["congo"] = (a + b + d + e) / 4.0
+        congo.sort(key=lambda x: -x["congo"])
 
-    emit_ticket("🎟️ 2-LEG PARLAY", take_diverse(2, set()))
+    def pull_congo(k, used_ids):
+        out, pit = [], set()
+        for c in congo:
+            if len(out) >= k:
+                break
+            cid = (c["batter"], c["odds"])
+            if cid in used_ids:
+                continue
+            if c["opp_pit"] and c["opp_pit"] in pit:
+                continue
+            out.append(c)
+            used_ids.add(cid)
+            pit.add(c["opp_pit"]) if c["opp_pit"] else None
+        return out
+
+    congo_used = set()
+    emit_ticket("🎰 3-LEG — POWER BLEND (+350-599)", pull_congo(3, congo_used))
+    emit_ticket("🎟️ 2-LEG — POWER BLEND (+350-599)", pull_congo(2, congo_used))
 
     rows.append((E[:], "spacer"))
     return rows, staging
