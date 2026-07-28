@@ -422,8 +422,13 @@ PLATOON_WEIGHT = 1.2  # reduced from 1.8 — diagnose_score shows 1.8 breaks mon
 MIN_BBE_VS_HAND  = 15   # below this vs a hand, the split is noise — skip Piece 1
 BBE_VS_HAND_FULL = 90   # full weight at this many BBE vs that hand (~150 PA,
                         # mirroring MIN_PA_FULL used for season ISO)
-CLAMP_RAW        = 2.0                          # cap on the raw (pre-weight) sum
-PLATOON_CAP      = CLAMP_RAW * PLATOON_WEIGHT   # 2.4 — final contribution cap
+CLAMP_RAW        = 4.0                          # widened from 2.0 so the
+                                                # progressive platoon terms
+                                                # (batter ±3.5, pitcher ±2.5)
+                                                # reach the intended ±3-4 range
+                                                # at the extremes instead of
+                                                # being chopped flat.
+PLATOON_CAP      = CLAMP_RAW * PLATOON_WEIGHT   # final contribution cap
 
 def compute_platoon_score(row: pd.Series) -> tuple:
     batter_hand = str(row.get("batter_hand", "")).strip().upper()
@@ -486,38 +491,39 @@ def compute_platoon_score(row: pd.Series) -> tuple:
         iso_opp_reg  = regress(iso_vs_opp,  LEAGUE_AVG_ISO, bbe_vs_opp,  BBE_VS_HAND_FULL)
         iso_gap = iso_this_reg - iso_opp_reg
 
-        if iso_gap >= 0.080:
-            score += 1.5
-            parts.append(f"✅ Platoon advantage ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap >= 0.050:
-            score += 0.8
-            parts.append(f"📈 Platoon edge ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap >= 0.025:
-            score += 0.3
-        elif iso_gap <= -0.200:
-            score -= 2.0
-            parts.append(f"🚨 Severe platoon weakness ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap <= -0.140:
-            score -= 1.2
-            parts.append(f"❌ Platoon disadvantage ({label}) — ISO {iso_vs_this:.3f} vs this hand")
-        elif iso_gap <= -0.100:
-            score -= 0.6
-            parts.append(f"⚠️ Moderate platoon weakness ({label})")
+        # ── PROGRESSIVE: points scale linearly with the ISO gap instead of
+        # stepping at fixed cutoffs. ~18.75 pts per 1.000 ISO gap means a
+        # typical ±0.08 gap ≈ ±1.5 (matching the old peak), while extreme
+        # gaps push toward ±3.5 — bad matchups can now sink a pick. Negative
+        # side is scaled 15% harder (a platoon disadvantage hurts HR more
+        # than an equal advantage helps). Deadband ±0.015 kills noise.
+        if abs(iso_gap) >= 0.015:
+            raw = iso_gap * 18.75
+            if raw < 0:
+                raw *= 1.15
+            iso_pts = max(-3.5, min(3.5, raw))
+            score += iso_pts
+            if iso_pts >= 1.2:
+                parts.append(f"✅ Platoon advantage ({label}) — ISO {iso_vs_this:.3f} vs this hand ({iso_pts:+.1f})")
+            elif iso_pts >= 0.4:
+                parts.append(f"📈 Platoon edge ({label}) — ISO {iso_vs_this:.3f} vs this hand ({iso_pts:+.1f})")
+            elif iso_pts <= -2.0:
+                parts.append(f"🚨 Severe platoon weakness ({label}) — ISO {iso_vs_this:.3f} vs this hand ({iso_pts:+.1f})")
+            elif iso_pts <= -0.8:
+                parts.append(f"❌ Platoon disadvantage ({label}) — ISO {iso_vs_this:.3f} vs this hand ({iso_pts:+.1f})")
 
     if pitcher_barrel_vs_hand > 0:
-        if pitcher_barrel_vs_hand >= 14:
-            score += 0.8
-            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH")
-        elif pitcher_barrel_vs_hand >= 11:
-            score += 0.4
-            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH")
-        elif pitcher_barrel_vs_hand >= 9:
-            score += 0.2
-        elif pitcher_barrel_vs_hand <= 4:
-            score -= 0.6
-            parts.append(f"⚠️ Pitcher elite vs {effective_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed")
-        elif pitcher_barrel_vs_hand <= 6:
-            score -= 0.3
+        # ── PROGRESSIVE: scale off the league-ish center (~8% barrel vs hand).
+        # ~0.35 pts per point of barrel% above/below center, capped ±2.5.
+        # A pitcher at 14% -> +2.1; an elite-suppressor at 4% -> -1.4; Fried
+        # at ~5% vs LHH -> about -1.0. Combined with a big batter disadvantage
+        # this can push the total platoon term to the -3 to -4 range.
+        pbar_pts = max(-2.5, min(2.5, (pitcher_barrel_vs_hand - 8.0) * 0.35))
+        score += pbar_pts
+        if pbar_pts >= 1.0:
+            parts.append(f"🎯 Pitcher allows {pitcher_barrel_vs_hand:.1f}% barrels vs {effective_hand}HH ({pbar_pts:+.1f})")
+        elif pbar_pts <= -1.0:
+            parts.append(f"⚠️ Pitcher suppresses {effective_hand}HH — {pitcher_barrel_vs_hand:.1f}% barrels allowed ({pbar_pts:+.1f})")
 
     if start_rate < 0.50:
         start_penalty = round((0.50 - start_rate) * 3.0, 3)
