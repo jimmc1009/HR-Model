@@ -62,6 +62,9 @@ def show_row(r):
     ph = str(r.get("pitcher_hand", "")).strip().upper()[:1]
     eff = eff_hand(bh, ph)
     faceL = ph == "L"
+    # DEBUG: dump the raw batter-split values exactly as stored
+    print("  [debug] raw vs_lhp_iso =", repr(r.get("vs_lhp_iso")),
+          "| vs_rhp_iso =", repr(r.get("vs_rhp_iso")))
     b_iso = sf(r.get("vs_lhp_iso")) if faceL else sf(r.get("vs_rhp_iso"))
     b_hr = sf(r.get("vs_lhp_hr_rate")) if faceL else sf(r.get("vs_rhp_hr_rate"))
     b_bar = sf(r.get("vs_lhp_barrel_pct")) if faceL else sf(r.get("vs_rhp_barrel_pct"))
