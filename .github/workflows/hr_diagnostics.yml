@@ -21,6 +21,8 @@ on:
           - test_platoon_unfiltered.py
           - test_platoon_diagnose.py
           - inspect_matchup.py
+          - test_wind_categories.py
+
 
 jobs:
   diagnostic:
@@ -126,4 +128,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID_DEV }}
         run: python inspect_matchup.py "Murakami" "Fried"
+
+      - name: Wind categories on HR 10+
+        if: github.event.inputs.script == 'test_wind_categories.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_wind_categories.py
 
