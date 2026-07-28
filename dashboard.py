@@ -369,6 +369,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             batter = str(row.get("player_name", "")).strip()
             if not batter or batter == "nan":
                 continue
+            hr_score = safe_float(row.get("hr_score", 0))
+            if hr_score < 10:      # floor: skip weak power bats stacked into
+                continue           # a good matchup they can't cash
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
             combined = plat + pitch
@@ -379,13 +382,25 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "combined": combined,
                 "plat": plat,
                 "pitch": pitch,
-                "hr_score": safe_float(row.get("hr_score", 0)),
+                "hr_score": hr_score,
             })
         cand.sort(key=lambda x: -x["combined"])
         if not cand:
             rows.append((pad(["\u2014", "No players scored today", ""]), "no_plays"))
         else:
-            for i, c in enumerate(cand[:15], 1):
+            # max 2 players per team; since cand is sorted by combined score,
+            # this keeps each team's two best matchups
+            team_count = {}
+            picked = []
+            for c in cand:
+                t = c["team"]
+                if team_count.get(t, 0) >= 2:
+                    continue
+                picked.append(c)
+                team_count[t] = team_count.get(t, 0) + 1
+                if len(picked) >= 15:
+                    break
+            for i, c in enumerate(picked, 1):
                 rows.append((pad([
                     str(i), c["batter"], c["team"], c["pitcher"],
                     f"{c['combined']:+.2f}", f"{c['plat']:+.2f}",
