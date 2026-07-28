@@ -362,6 +362,58 @@ def build_analysis(df: pd.DataFrame) -> dict:
             rate = round(h / n * 100, 1)
             platoon_rows.append({"label": label, "total": n, "hits": h, "rate": rate})
 
+    # ── NEW-SCORING platoon + pitch (from the cutover date forward) ───────
+    # The progressive platoon + two-sided pitch scoring went live 2026-07-27.
+    # Old-scoring rows would dilute this, so it's filtered to cutover-forward
+    # and buckets the NUMERIC scores (not the text label).
+    NEW_SCORING_DATE = "2026-07-27"
+    new_platoon_rows = []
+    new_pitch_rows = []
+    new_combined_rows = []
+    nsdf = scored[scored["date_dt"] >= pd.Timestamp(NEW_SCORING_DATE)].copy()
+    if not nsdf.empty:
+        nsdf["ps"] = pd.to_numeric(nsdf.get("platoon_score", 0), errors="coerce")
+        nsdf["pm"] = pd.to_numeric(nsdf.get("pitch_matchup_score", 0), errors="coerce")
+        nsdf["combo"] = nsdf["ps"].fillna(0) + nsdf["pm"].fillna(0)
+
+        def bucket_rate(sub):
+            n = len(sub)
+            h = int(sub["hit_bool"].sum())
+            return n, h, (round(h / n * 100, 1) if n else 0.0)
+
+        platoon_buckets = [
+            ("Strong adv (+2+)",    lambda s: s["ps"] >= 2),
+            ("Mild adv (+0.5..2)",  lambda s: (s["ps"] >= 0.5) & (s["ps"] < 2)),
+            ("Neutral (-0.5..0.5)", lambda s: (s["ps"] > -0.5) & (s["ps"] < 0.5)),
+            ("Mild dis (-2..-0.5)", lambda s: (s["ps"] > -2) & (s["ps"] <= -0.5)),
+            ("Strong dis (-2+)",    lambda s: s["ps"] <= -2),
+        ]
+        pitch_buckets = [
+            ("Good (+0.8+)",        lambda s: s["pm"] >= 0.8),
+            ("Mild (+0.2..0.8)",    lambda s: (s["pm"] >= 0.2) & (s["pm"] < 0.8)),
+            ("Neutral (-0.2..0.2)", lambda s: (s["pm"] > -0.2) & (s["pm"] < 0.2)),
+            ("Weak (-0.2+)",        lambda s: s["pm"] <= -0.2),
+        ]
+        combo_buckets = [
+            ("Elite (+3+)",         lambda s: s["combo"] >= 3),
+            ("Good (+1..3)",        lambda s: (s["combo"] >= 1) & (s["combo"] < 3)),
+            ("Neutral (-1..1)",     lambda s: (s["combo"] > -1) & (s["combo"] < 1)),
+            ("Bad (-1..-3)",        lambda s: (s["combo"] > -3) & (s["combo"] <= -1)),
+            ("Terrible (-3+)",      lambda s: s["combo"] <= -3),
+        ]
+        for label, fn in platoon_buckets:
+            n, h, r = bucket_rate(nsdf[fn(nsdf)])
+            if n:
+                new_platoon_rows.append({"label": label, "total": n, "hits": h, "rate": r})
+        for label, fn in pitch_buckets:
+            n, h, r = bucket_rate(nsdf[fn(nsdf)])
+            if n:
+                new_pitch_rows.append({"label": label, "total": n, "hits": h, "rate": r})
+        for label, fn in combo_buckets:
+            n, h, r = bucket_rate(nsdf[fn(nsdf)])
+            if n:
+                new_combined_rows.append({"label": label, "total": n, "hits": h, "rate": r})
+
     # ── Score Tier × Odds Zone cross-tab ─────────────────────────────────
     tier_odds_rows = []
     tier_defs = [
@@ -453,6 +505,9 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "wind_strength_rows": wind_strength_rows,
         "roll_rows":          roll_rows,
         "platoon_rows":       platoon_rows,
+        "new_platoon_rows":   new_platoon_rows,
+        "new_pitch_rows":     new_pitch_rows,
+        "new_combined_rows":  new_combined_rows,
         "tier_odds_rows":     tier_odds_rows,
         "pooled_rules":       pooled_rules,
     }
@@ -537,6 +592,29 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         analysis["platoon_rows"],
         lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
     )
+
+    # ── NEW-SCORING platoon / pitch (from 2026-07-27 cutover) ─────────────
+    if analysis.get("new_platoon_rows"):
+        add_section(
+            "🆕  NEW PLATOON SCORE × HR (since 07-27)",
+            ["Platoon Score", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
+            analysis["new_platoon_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+        )
+    if analysis.get("new_pitch_rows"):
+        add_section(
+            "🆕  NEW PITCH-MATCHUP SCORE × HR (since 07-27)",
+            ["Pitch Score", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
+            analysis["new_pitch_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+        )
+    if analysis.get("new_combined_rows"):
+        add_section(
+            "🆕  PLATOON + PITCH COMBINED × HR (since 07-27)",
+            ["Combined Score", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
+            analysis["new_combined_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+        )
 
     # ── Score Tier × Odds Zone ────────────────────────────────────────────
     if analysis.get("tier_odds_rows"):
@@ -647,6 +725,9 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "🌬️  BY WIND CONDITION":    (COLOR_TEAL,      COLOR_TEAL_DIM),
         "💨  BY WIND STRENGTH (Boost Value)": (COLOR_TEAL, COLOR_TEAL_DIM),
         "🔄  BY PLATOON MATCHUP":   (COLOR_BLUE,      COLOR_BLUE_DIM),
+        "🆕  NEW PLATOON SCORE × HR (since 07-27)":        (COLOR_BLUE, COLOR_BLUE_DIM),
+        "🆕  NEW PITCH-MATCHUP SCORE × HR (since 07-27)":  (COLOR_BLUE, COLOR_BLUE_DIM),
+        "🆕  PLATOON + PITCH COMBINED × HR (since 07-27)": (COLOR_BLUE, COLOR_BLUE_DIM),
         "💰  SCORE TIER × ODDS ZONE": (COLOR_GOLD,      COLOR_GOLD_DIM),
         "🎰  POOLED DECISION RULES (95% CI vs breakeven)": (COLOR_GREEN, COLOR_GREEN_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,     COLOR_GREEN_DIM),
