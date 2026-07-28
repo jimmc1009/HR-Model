@@ -551,54 +551,99 @@ def regress_pitch_iso(raw_iso: float, bbe_count: float, league_avg: float = LEAG
     return round((raw_iso * weight) + (league_avg * (1 - weight)), 3)
 
 
+# Map exact pitch codes to grouped families for fallback when a batter's
+# sample on the exact pitch is thin. Grouped columns (iso_vs_breaking, etc.)
+# carry more BBE.
+PITCH_FAMILY = {
+    "FF": "fastball", "FA": "fastball", "SI": "fastball", "FT": "fastball",
+    "FC": "fastball",
+    "SL": "breaking", "CU": "breaking", "ST": "breaking", "SV": "breaking",
+    "KC": "breaking", "SC": "breaking",
+    "CH": "offspeed", "FS": "offspeed", "FO": "offspeed",
+    "KN": "knuckleball",
+}
+
+# league-ish reference points for centering (so "average" = 0 contribution)
+LEAGUE_ISO_VS_PITCH   = 0.150   # batter ISO on a pitch
+LEAGUE_PITCHER_ISO    = 0.150   # ISO a pitcher allows on a pitch
+BBE_PITCH_FLOOR       = 5       # below this, skip the exact pitch
+BBE_PITCH_FULL        = 40      # full trust at/above this (regression target)
+
+
+def _batter_iso_on_pitch(row, pt):
+    """Batter ISO vs an exact pitch, regressed by its BBE. Falls back to the
+    grouped family when the exact-pitch sample is below the floor. Returns
+    (regressed_iso, effective_bbe, raw_iso, used_group)."""
+    raw = safe_float(row.get(f"iso_vs_{pt}", 0))
+    bbe = safe_float(row.get(f"bbe_vs_{pt}", 0))
+    if bbe >= BBE_PITCH_FLOOR and raw > 0:
+        return regress(raw, LEAGUE_ISO_VS_PITCH, bbe, BBE_PITCH_FULL), bbe, raw, False
+    # fallback: grouped family (more sample). No per-group BBE column, so
+    # trust it lightly — regress against a modest assumed sample.
+    fam = PITCH_FAMILY.get(pt)
+    if fam:
+        graw = safe_float(row.get(f"iso_vs_{fam}", 0))
+        if graw > 0:
+            return regress(graw, LEAGUE_ISO_VS_PITCH, 20, BBE_PITCH_FULL), 20, graw, True
+    return None, 0, raw, False
+
+
 def compute_pitch_matchup_score(row: pd.Series) -> tuple:
-    scores        = []
-    descriptions  = []
-    pitch_penalty = 0.0
+    """PROGRESSIVE two-sided pitch matchup. For each of the pitcher's top-3
+    pitches, combine how well the BATTER hits that pitch (centered on league
+    ISO) with how hard the PITCHER gets hit on it (also centered), weight by
+    usage, and sum. Good matchups go positive, bad matchups go NEGATIVE
+    (batter weak vs the pitcher's main weapon drags the pick down) — not
+    floored at zero like the old version. Thin batter samples fall back to
+    the pitch family, then are skipped below the BBE floor."""
+    total = 0.0
+    descriptions = []
 
     for rank in range(1, 4):
         pitch_type = str(row.get(f"top_pitch_{rank}", "")).strip().upper()
         pitch_pct  = safe_float(row.get(f"top_pitch_{rank}_pct", 0))
+        if not pitch_type or pitch_type in ("", "NAN", "NONE") or pitch_pct <= 0:
+            continue
+        usage = pitch_pct / 100.0
 
-        if not pitch_type or pitch_type in ("", "NAN", "NONE"):
+        # ── batter side: centered ISO vs this pitch (regressed / grouped) ──
+        b_iso, b_bbe, b_raw, used_group = _batter_iso_on_pitch(row, pitch_type)
+        batter_term = None
+        if b_iso is not None:
+            # +/- around league: a .250 hitter-on-pitch is +0.10 -> positive,
+            # a .080 is -0.07 -> negative. Scale to points.
+            batter_term = (b_iso - LEAGUE_ISO_VS_PITCH) * 12.0
+
+        # ── pitcher side: centered ISO allowed on this pitch ──
+        p_iso = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
+        p_bbe = safe_float(row.get(f"pitcher_bbe_vs_{pitch_type}", 0))
+        pitcher_term = None
+        if p_iso > 0 and p_bbe >= BBE_PITCH_FLOOR:
+            p_iso_reg = regress(p_iso, LEAGUE_PITCHER_ISO, p_bbe, BBE_PITCH_FULL)
+            pitcher_term = (p_iso_reg - LEAGUE_PITCHER_ISO) * 10.0
+
+        if batter_term is None and pitcher_term is None:
             continue
 
-        raw_batter_iso = safe_float(row.get(f"iso_vs_{pitch_type}", 0))
-        batter_hr_rate = safe_float(row.get(f"hr_rate_vs_{pitch_type}", 0))
-        batter_barrel  = safe_float(row.get(f"barrel_pct_vs_{pitch_type}", 0))
+        # combine available sides (batter weighted a touch heavier), weight by
+        # how often this pitch is actually thrown
+        combined = (batter_term or 0.0) * 0.6 + (pitcher_term or 0.0) * 0.4
+        total += combined * usage
 
-        batter_bbe = safe_float(row.get(f"bbe_vs_{pitch_type}", 0))
-        batter_iso = regress_pitch_iso(raw_batter_iso, batter_bbe) if raw_batter_iso > 0 else 0.0
-        batter_has = (raw_batter_iso > 0 or batter_hr_rate > 0) and batter_bbe >= 5
+        # descriptions on meaningful, high-usage pitches
+        if pitch_pct >= 15:
+            if batter_term is not None and batter_term >= 1.0:
+                src = f"grp {PITCH_FAMILY.get(pitch_type,'')}" if used_group else f"{int(b_bbe)} BBE"
+                descriptions.append(f"✅ Mashes {pitch_type} — ISO {b_raw:.3f} ({src}, {pitch_pct:.0f}%)")
+            elif batter_term is not None and batter_term <= -1.0:
+                src = f"grp {PITCH_FAMILY.get(pitch_type,'')}" if used_group else f"{int(b_bbe)} BBE"
+                descriptions.append(f"⚠️ Weak vs {pitch_type} — ISO {b_raw:.3f} ({src}, {pitch_pct:.0f}%)")
+            if pitcher_term is not None and pitcher_term >= 0.8:
+                descriptions.append(f"✅ Pitcher hit hard on {pitch_type} — {p_iso:.3f} ISO allowed")
 
-        pitcher_iso    = safe_float(row.get(f"pitcher_iso_allowed_{pitch_type}", 0))
-        pitcher_hr     = safe_float(row.get(f"pitcher_hr_rate_allowed_{pitch_type}", 0))
-        pitcher_barrel = safe_float(row.get(f"pitcher_barrel_pct_allowed_{pitch_type}", 0))
-        pitcher_bbe    = safe_float(row.get(f"pitcher_bbe_vs_{pitch_type}", 0))
-        pitcher_has    = (pitcher_iso > 0 or pitcher_hr > 0)
-
-        if not batter_has and not pitcher_has:
-            continue
-
-        batter_component  = (batter_iso * 3 + batter_hr_rate / 10 + batter_barrel / 20) if batter_has else 0.0
-        pitcher_component = (pitcher_iso * 2 + pitcher_hr / 10 + pitcher_barrel / 20) if pitcher_has else 0.0
-        pitch_score       = (batter_component + pitcher_component) * (pitch_pct / 100)
-        scores.append(pitch_score)
-
-        if batter_has and batter_iso >= 0.200 and pitch_pct >= 15:
-            descriptions.append(f"✅ ISO {raw_batter_iso:.3f} vs {pitch_type} ({int(batter_bbe)} BBE, {pitch_pct:.0f}% usage)")
-        if pitcher_has and pitcher_iso >= 0.180 and pitch_pct >= 15:
-            bbe_note = f" ({int(pitcher_bbe)} BBE)" if pitcher_bbe > 0 else ""
-            descriptions.append(f"✅ Pitcher allows {pitcher_iso:.3f} ISO on {pitch_type}{bbe_note}")
-
-        if batter_has and raw_batter_iso < 0.100 and pitch_pct >= 15:
-            pitcher_iso_factor = max(0.0, 1.0 - (pitcher_iso / 0.150)) if pitcher_has else 1.0
-            pen = round((0.100 - batter_iso) * (pitch_pct / 100) * 10 * pitcher_iso_factor, 3)
-            pitch_penalty = max(pitch_penalty, pen)
-            if pen > 0.02:
-                descriptions.append(f"⚠️ Weak vs {pitch_type} — ISO {raw_batter_iso:.3f} ({int(batter_bbe)} BBE, {pitch_pct:.0f}% usage)")
-
-    return sum(scores), " + ".join(descriptions), pitch_penalty
+    # progressive range: clamp wide so a bad matchup can actually sink a pick
+    total = max(-2.5, min(2.5, total))
+    return round(total, 3), " + ".join(descriptions), 0.0
 
 
 # ── BvP score ──────────────────────────────────────────────────────────────
@@ -927,7 +972,7 @@ def prepare_combined(
     combined["confidence"] = combined.apply(assign_confidence, axis=1)
 
     # ── Cap context scores ─────────────────────────────────────────────────
-    combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(0.0, 1.0)
+    combined["pitch_matchup_capped"] = combined["pitch_matchup_score"].clip(-2.5, 2.5)
     combined["bvp_capped"]           = combined["bvp_score"].clip(-0.5, 1.0)
     combined["momentum_capped"]      = combined["momentum_score"].clip(-1.5, 1.5)
     combined["platoon_capped"]       = combined["platoon_score"].clip(-PLATOON_CAP, PLATOON_CAP)
