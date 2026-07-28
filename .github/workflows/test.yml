@@ -35,6 +35,8 @@ on:
           - hr_cards
           - extract_feature_bounds
           - test_hand_split
+          - build_hr_separators.py
+
 
 jobs:
   test:
@@ -286,4 +288,12 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python hr_odds_backtest.py
+        run: python hr_odds_backtest by.py
+
+      - name: Build HR_Separators tab
+        if: github.event.inputs.script == 'build_hr_separators.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python build_hr_separators.py
+
