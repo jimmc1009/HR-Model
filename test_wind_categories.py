@@ -28,7 +28,7 @@ import sys, os, json
 import numpy as np
 import pandas as pd
 
-HR_FLOOR = 10.0
+HR_FLOOR = 11.0
 
 
 def sf(v, d=np.nan):
