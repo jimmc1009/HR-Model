@@ -359,7 +359,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
     rows.append((pad(["\U0001F3AF  TOP 15 MATCHUPS — ranked by platoon + pitch-matchup score"]),
                  "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Pitcher", "Plat+Pitch",
-                      "Platoon", "Pitch", "HR Score"]), "col_header_hr"))
+                      "Platoon", "Pitch", "HR Score", "Matchup Info"]), "col_header_hr"))
 
     if hr_source.empty:
         rows.append((pad(["\u2014", "No players scored today", ""]), "no_plays"))
@@ -375,6 +375,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
             combined = plat + pitch
+
+            # brief matchup info: pitcher barrel vs the batter's hand,
+            # batter season barrel%, batter ISO vs the hand faced
+            bh = str(row.get("batter_hand", "")).strip().upper()[:1]
+            ph = str(row.get("pitcher_hand", "")).strip().upper()[:1]
+            eff = ("R" if ph == "L" else "L") if bh == "S" else bh
+            p_bbl = safe_float(row.get(f"pitcher_barrel_vs_{'lhh' if eff=='L' else 'rhh'}", 0))
+            b_bbl = safe_float(row.get("season_barrel_pct", 0))
+            b_iso = safe_float(row.get(f"vs_{'lhp' if ph=='L' else 'rhp'}_iso", 0))
+            info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
+
             cand.append({
                 "batter": batter,
                 "team": str(row.get("team", "")).strip(),
@@ -383,6 +394,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "plat": plat,
                 "pitch": pitch,
                 "hr_score": hr_score,
+                "info": info,
             })
         cand.sort(key=lambda x: -x["combined"])
         if not cand:
@@ -404,7 +416,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 rows.append((pad([
                     str(i), c["batter"], c["team"], c["pitcher"],
                     f"{c['combined']:+.2f}", f"{c['plat']:+.2f}",
-                    f"{c['pitch']:+.2f}", f"{c['hr_score']:.1f}",
+                    f"{c['pitch']:+.2f}", f"{c['hr_score']:.1f}", c["info"],
                 ]), "data_hr_strong"))
 
     rows.append((E[:], "spacer"))
