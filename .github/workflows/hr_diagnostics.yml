@@ -22,6 +22,7 @@ on:
           - test_platoon_diagnose.py
           - inspect_matchup.py
           - test_wind_categories.py
+          - test_wind_controlled.py
 
 
 jobs:
@@ -135,4 +136,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_wind_categories.py
+
+      - name: Wind effect controlled (hitter + park)
+        if: github.event.inputs.script == 'test_wind_controlled.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_wind_controlled.py
 
