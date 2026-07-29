@@ -382,11 +382,13 @@ def build_analysis(df: pd.DataFrame) -> dict:
             return n, h, (round(h / n * 100, 1) if n else 0.0)
 
         platoon_buckets = [
-            ("Strong adv (+2+)",    lambda s: s["ps"] >= 2),
+            ("Elite adv (+4+)",     lambda s: s["ps"] >= 4),
+            ("Strong adv (+2..4)",  lambda s: (s["ps"] >= 2) & (s["ps"] < 4)),
             ("Mild adv (+0.5..2)",  lambda s: (s["ps"] >= 0.5) & (s["ps"] < 2)),
             ("Neutral (-0.5..0.5)", lambda s: (s["ps"] > -0.5) & (s["ps"] < 0.5)),
             ("Mild dis (-2..-0.5)", lambda s: (s["ps"] > -2) & (s["ps"] <= -0.5)),
-            ("Strong dis (-2+)",    lambda s: s["ps"] <= -2),
+            ("Strong dis (-4..-2)", lambda s: (s["ps"] > -4) & (s["ps"] <= -2)),
+            ("Elite dis (-4+)",     lambda s: s["ps"] <= -4),
         ]
         pitch_buckets = [
             ("Good (+0.8+)",        lambda s: s["pm"] >= 0.8),
@@ -395,7 +397,9 @@ def build_analysis(df: pd.DataFrame) -> dict:
             ("Weak (-0.2+)",        lambda s: s["pm"] <= -0.2),
         ]
         combo_buckets = [
-            ("Elite (+3+)",         lambda s: s["combo"] >= 3),
+            ("Elite+ (+5+)",        lambda s: s["combo"] >= 5),
+            ("Elite (+4..5)",       lambda s: (s["combo"] >= 4) & (s["combo"] < 5)),
+            ("Great (+3..4)",       lambda s: (s["combo"] >= 3) & (s["combo"] < 4)),
             ("Good (+1..3)",        lambda s: (s["combo"] >= 1) & (s["combo"] < 3)),
             ("Neutral (-1..1)",     lambda s: (s["combo"] > -1) & (s["combo"] < 1)),
             ("Bad (-1..-3)",        lambda s: (s["combo"] > -3) & (s["combo"] <= -1)),
