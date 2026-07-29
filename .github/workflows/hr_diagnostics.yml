@@ -23,6 +23,7 @@ on:
           - inspect_matchup.py
           - test_wind_categories.py
           - test_wind_controlled.py
+          - test_pitcher_barrel.py
 
 
 jobs:
@@ -143,4 +144,12 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_wind_controlled.py
+
+      - name: Pitcher barrel penalty sizing
+        if: github.event.inputs.script == 'test_pitcher_barrel.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_pitcher_barrel.py
+
 
