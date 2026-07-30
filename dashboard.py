@@ -456,20 +456,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             })
     relaxed.sort(key=lambda x: -x["combined"])
 
-    # select up to 15 unique, pitcher-diversified: strict legs first, then
-    # relaxed fallback only to reach 15 (fills RR#3).
+    # select up to 15 legs: strict-filter legs first (ranked), then relaxed
+    # fallback to reach 15. No global pitcher cap — diversity is enforced
+    # per-RR (1 per team within a ticket) during tiering below, so capping
+    # pitchers globally here only starved the pool and left RR#3 empty.
     selected = []
-    used_pit = set()
     strict_ids = set()
     for c in cand:                     # strict legs first
         if len(selected) >= 15:
             break
-        if c["opp_pit"] and c["opp_pit"] in used_pit:
-            continue
         selected.append(c)
         strict_ids.add((c["batter"], c["odds"]))
-        if c["opp_pit"]:
-            used_pit.add(c["opp_pit"])
     n_strict = len(selected)
     for c in relaxed:                  # fallback to fill remaining slots
         if len(selected) >= 15:
@@ -477,38 +474,38 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         cid = (c["batter"], c["odds"])
         if cid in strict_ids:
             continue
-        if c["opp_pit"] and c["opp_pit"] in used_pit:
-            continue
         selected.append(c)
-        if c["opp_pit"]:
-            used_pit.add(c["opp_pit"])
 
     if len(selected) < 2:
         rows.append((pad(["\u2014", "Not enough qualifying legs today "
                           "(need pitch\u2265+0.2, platoon\u22650, \u2264+499, score\u226510)", ""]),
                      "no_plays"))
     else:
-        # assign the 15 ranked legs into 3 RRs of 5, enforcing NO two players
-        # from the same team WITHIN a single RR (teams may repeat across RRs).
-        # Greedy: walk ranked legs, drop each into the first RR (1->2->3) that
-        # isn't full and doesn't already hold that team.
+        # Distribute the ranked legs into 3 tiers by strength: best -> RR#1,
+        # next -> RR#2, rest -> RR#3, each capped at 5, enforcing 1-per-team
+        # WITHIN a tier. If the natural tier already has that team, the leg
+        # slides to the next tier that has room and no team clash; if none, it
+        # sits out. This keeps strongest legs in RR#1 while still spreading
+        # teams within each ticket and letting a partial RR#3 populate.
         rr_legs = [[], [], []]
         rr_teams = [set(), set(), set()]
-        leftovers = []
         for c in selected:
+            home = 0 if len(rr_legs[0]) < 5 else (1 if len(rr_legs[1]) < 5 else 2)
             placed = False
-            for k in range(3):
+            for k in list(range(home, 3)) + list(range(0, home)):
                 if len(rr_legs[k]) < 5 and c["team"] not in rr_teams[k]:
                     rr_legs[k].append(c)
                     rr_teams[k].add(c["team"])
                     placed = True
                     break
+            # if every eligible tier already holds that team, allow the dup in
+            # the first tier with room (last resort, keeps the leg in play)
             if not placed:
-                leftovers.append(c)
-        # fill any short RR with leftovers (team dup allowed only as last resort)
-        for k in range(3):
-            while len(rr_legs[k]) < 5 and leftovers:
-                rr_legs[k].append(leftovers.pop(0))
+                for k in range(3):
+                    if len(rr_legs[k]) < 5:
+                        rr_legs[k].append(c)
+                        rr_teams[k].add(c["team"])
+                        break
 
         strict_set = {(c["batter"], c["odds"]) for c in selected[:n_strict]}
 
@@ -539,12 +536,21 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                                  "data_parlay"))
             rows.append((E[:], "spacer"))
 
-        titles = ["\U0001F3C6 RR#1 — STRONGEST 5",
-                  "\U0001F948 RR#2 — MIDDLE 5",
-                  "\U0001F949 RR#3 — WEAKEST 5"]
+        titles = ["\U0001F3C6 RR#1 — STRONGEST", "\U0001F948 RR#2 — MIDDLE",
+                  "\U0001F949 RR#3 — WEAKEST"]
         for title, legs in zip(titles, rr_legs):
-            if legs:
-                emit_rr(title, legs)
+            if len(legs) >= 2:                       # a real round robin (2+ legs)
+                pairs = len(legs) * (len(legs) - 1) // 2
+                emit_rr(f"{title} {len(legs)} LEGS \u2192 {pairs} PAIRS", legs)
+            elif len(legs) == 1:                     # lone leg: show as a single
+                c = legs[0]
+                rows.append((pad([f"{title} \u2014 1 leg only (single, not a RR)"]),
+                             "col_header_parlay"))
+                rows.append((pad(["1", c["batter"], c["team"], c["pitcher"],
+                                  f"{c['combined']:+.2f}", "", "", f"+{int(c['odds'])}",
+                                  f"{c['hr_score']:.1f}", c["info"], c["trend"]]),
+                             "data_hr_strong"))
+                rows.append((E[:], "spacer"))
 
     rows.append((E[:], "spacer"))
     return rows, staging
