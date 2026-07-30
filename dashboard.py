@@ -359,7 +359,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
     rows.append((pad(["\U0001F3AF  TOP 15 MATCHUPS — ranked by platoon + pitch-matchup score"]),
                  "section_header_hr"))
     rows.append((pad(["Rank", "Batter", "Team", "Pitcher", "Plat+Pitch",
-                      "Platoon", "Pitch", "HR Score", "Matchup Info"]), "col_header_hr"))
+                      "Platoon", "Pitch", "HR Score", "Matchup Info", "Form"]), "col_header_hr"))
 
     if hr_source.empty:
         rows.append((pad(["\u2014", "No players scored today", ""]), "no_plays"))
@@ -386,6 +386,27 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             b_iso = safe_float(row.get(f"vs_{'lhp' if ph=='L' else 'rhp'}_iso", 0))
             info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
 
+            # hot/cold power trend: recent barrel% vs the batter's season rate.
+            # Uses 7d if it has enough batted balls, else falls back to 10d/14d
+            # so the read isn't off 2-3 balls. Shows the window it used.
+            season_bbl = safe_float(row.get("season_barrel_pct", 0))
+            trend = "\u2796 \u2014"
+            for win, bbe_col, bbl_col in [("7d", "bbe_7d", "barrel_pct_7d"),
+                                          ("10d", "bbe_10d", "barrel_pct_10d"),
+                                          ("14d", "bbe_14d", "barrel_pct_14d")]:
+                wbbe = safe_float(row.get(bbe_col, 0))
+                wbbl = safe_float(row.get(bbl_col, 0))
+                if wbbe >= 8:   # enough contact to mean something
+                    diff = wbbl - season_bbl
+                    if diff >= 4:
+                        icon = "\U0001F525"      # hot
+                    elif diff <= -4:
+                        icon = "\U0001F9CA"      # cold
+                    else:
+                        icon = "\u2796"          # neutral
+                    trend = f"{icon} {win} {wbbl:.0f}% (avg {season_bbl:.0f}%)"
+                    break
+
             cand.append({
                 "batter": batter,
                 "team": str(row.get("team", "")).strip(),
@@ -395,6 +416,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "pitch": pitch,
                 "hr_score": hr_score,
                 "info": info,
+                "trend": trend,
             })
         cand.sort(key=lambda x: -x["combined"])
         if not cand:
@@ -416,7 +438,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 rows.append((pad([
                     str(i), c["batter"], c["team"], c["pitcher"],
                     f"{c['combined']:+.2f}", f"{c['plat']:+.2f}",
-                    f"{c['pitch']:+.2f}", f"{c['hr_score']:.1f}", c["info"],
+                    f"{c['pitch']:+.2f}", f"{c['hr_score']:.1f}", c["info"], c["trend"],
                 ]), "data_hr_strong"))
 
     rows.append((E[:], "spacer"))
