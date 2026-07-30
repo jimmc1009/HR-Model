@@ -488,7 +488,34 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                           "(need pitch\u2265+0.2, platoon\u22650, \u2264+499, score\u226510)", ""]),
                      "no_plays"))
     else:
+        # assign the 15 ranked legs into 3 RRs of 5, enforcing NO two players
+        # from the same team WITHIN a single RR (teams may repeat across RRs).
+        # Greedy: walk ranked legs, drop each into the first RR (1->2->3) that
+        # isn't full and doesn't already hold that team.
+        rr_legs = [[], [], []]
+        rr_teams = [set(), set(), set()]
+        leftovers = []
+        for c in selected:
+            placed = False
+            for k in range(3):
+                if len(rr_legs[k]) < 5 and c["team"] not in rr_teams[k]:
+                    rr_legs[k].append(c)
+                    rr_teams[k].add(c["team"])
+                    placed = True
+                    break
+            if not placed:
+                leftovers.append(c)
+        # fill any short RR with leftovers (team dup allowed only as last resort)
+        for k in range(3):
+            while len(rr_legs[k]) < 5 and leftovers:
+                rr_legs[k].append(leftovers.pop(0))
+
+        strict_set = {(c["batter"], c["odds"]) for c in selected[:n_strict]}
+
         def emit_rr(title, legs):
+            n_fb = sum(1 for c in legs if (c["batter"], c["odds"]) not in strict_set)
+            if n_fb:
+                title += f"  ({n_fb} relaxed-filter)"
             rows.append((pad([title]), "col_header_parlay"))
             rows.append((pad(["#", "Batter", "Team", "Pitcher", "Comb",
                               "Plat", "Pitch", "Odds", "HR", "Info", "Form"]),
@@ -499,23 +526,25 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                     f"{c['combined']:+.2f}", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}",
                     f"+{int(c['odds'])}", f"{c['hr_score']:.1f}", c["info"], c["trend"],
                 ]), "data_hr_strong"))
+            # ── the 10 two-leg combos for this RR (for building at the book) ──
             if len(legs) >= 2:
-                pairs = len(legs) * (len(legs) - 1) // 2
-                rows.append((pad(["", f"{len(legs)} legs \u2192 {pairs} two-leg pairs", ""]), "no_plays"))
+                import itertools as _it
+                pair_list = list(_it.combinations(legs, 2))
+                rows.append((pad([f"  \u25b8 {len(pair_list)} PAIRS:"]), "no_plays"))
+                for j, (a, b) in enumerate(pair_list, 1):
+                    same_game = a["opp_pit"] and a["opp_pit"] == b["opp_pit"]
+                    tag = "  (same game)" if same_game else ""
+                    rows.append((pad([f"  {j}.", f"{a['batter']} + {b['batter']}",
+                                      f"+{int(a['odds'])}/+{int(b['odds'])}{tag}"]),
+                                 "data_parlay"))
             rows.append((E[:], "spacer"))
 
-        tiers = [("\U0001F3C6 RR#1 — STRONGEST 5", selected[0:5]),
-                 ("\U0001F948 RR#2 — MIDDLE 5",    selected[5:10]),
-                 ("\U0001F949 RR#3 — WEAKEST 5",   selected[10:15])]
-        for idx, (title, legs) in enumerate(tiers):
-            if not legs:
-                continue
-            # note if this tier contains relaxed-filter fallback legs
-            start = idx * 5
-            n_fallback = sum(1 for j in range(start, start + len(legs)) if j >= n_strict)
-            if n_fallback:
-                title += f"  ({n_fallback} relaxed-filter)"
-            emit_rr(title, legs)
+        titles = ["\U0001F3C6 RR#1 — STRONGEST 5",
+                  "\U0001F948 RR#2 — MIDDLE 5",
+                  "\U0001F949 RR#3 — WEAKEST 5"]
+        for title, legs in zip(titles, rr_legs):
+            if legs:
+                emit_rr(title, legs)
 
     rows.append((E[:], "spacer"))
     return rows, staging
