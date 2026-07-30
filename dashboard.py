@@ -355,29 +355,33 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
 
-    # ── TOP 15 BY PLATOON + PITCH MATCHUP ────────────────────────────────
-    rows.append((pad(["\U0001F3AF  TOP 15 MATCHUPS — ranked by platoon + pitch-matchup score"]),
+    # ── 3 TIERED 5-LEG ROUND ROBINS ──────────────────────────────────────
+    # Legs filtered to what your resolved data says works: hr_score >= 10,
+    # odds <= +499 (above +500 collapses), pitch score >= +0.2 (Weak/Neutral
+    # pitch hits 1.6-7.8%), platoon >= 0 (negative platoon hits 5.8-7%).
+    # Survivors ranked by combined platoon+pitch. Best 5 -> RR#1, next 5 ->
+    # RR#2, weakest 5 -> RR#3. Concentrating the strongest legs in one ticket
+    # maximizes that ticket's cash probability. No player repeats across RRs.
+    rows.append((pad(["\U0001F3B0  TIERED 5-LEG ROUND ROBINS — RR#1 strongest, RR#3 weakest"]),
                  "section_header_hr"))
-    rows.append((pad(["Rank", "Batter", "Team", "Pitcher", "Plat+Pitch",
-                      "Platoon", "Pitch", "HR Score", "Matchup Info", "Form"]), "col_header_hr"))
 
-    if hr_source.empty:
-        rows.append((pad(["\u2014", "No players scored today", ""]), "no_plays"))
-    else:
-        cand = []
+    cand = []
+    if not hr_source.empty:
         for _, row in hr_source.iterrows():
             batter = str(row.get("player_name", "")).strip()
             if not batter or batter == "nan":
                 continue
             hr_score = safe_float(row.get("hr_score", 0))
-            if hr_score < 10:      # floor: skip weak power bats stacked into
-                continue           # a good matchup they can't cash
+            odds = safe_float(row.get("consensus_odds", 0))
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
+            # ── data-driven filter ──
+            if hr_score < 10:            continue
+            if not (0 < odds <= 499):    continue
+            if pitch < 0.2:              continue
+            if plat < 0:                 continue
             combined = plat + pitch
 
-            # brief matchup info: pitcher barrel vs the batter's hand,
-            # batter season barrel%, batter ISO vs the hand faced
             bh = str(row.get("batter_hand", "")).strip().upper()[:1]
             ph = str(row.get("pitcher_hand", "")).strip().upper()[:1]
             eff = ("R" if ph == "L" else "L") if bh == "S" else bh
@@ -386,60 +390,68 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             b_iso = safe_float(row.get(f"vs_{'lhp' if ph=='L' else 'rhp'}_iso", 0))
             info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
 
-            # hot/cold power trend: recent barrel% vs the batter's season rate.
-            # Uses 7d if it has enough batted balls, else falls back to 10d/14d
-            # so the read isn't off 2-3 balls. Shows the window it used.
-            season_bbl = safe_float(row.get("season_barrel_pct", 0))
+            season_bbl = b_bbl
             trend = "\u2796 \u2014"
             for win, bbe_col, bbl_col in [("7d", "bbe_7d", "barrel_pct_7d"),
                                           ("10d", "bbe_10d", "barrel_pct_10d"),
                                           ("14d", "bbe_14d", "barrel_pct_14d")]:
                 wbbe = safe_float(row.get(bbe_col, 0))
                 wbbl = safe_float(row.get(bbl_col, 0))
-                if wbbe >= 8:   # enough contact to mean something
+                if wbbe >= 8:
                     diff = wbbl - season_bbl
-                    if diff >= 4:
-                        icon = "\U0001F525"      # hot
-                    elif diff <= -4:
-                        icon = "\U0001F9CA"      # cold
-                    else:
-                        icon = "\u2796"          # neutral
-                    trend = f"{icon} {win} {wbbl:.0f}% (avg {season_bbl:.0f}%)"
+                    icon = "\U0001F525" if diff >= 4 else "\U0001F9CA" if diff <= -4 else "\u2796"
+                    trend = f"{icon} {win} {wbbl:.0f}%"
                     break
 
             cand.append({
-                "batter": batter,
-                "team": str(row.get("team", "")).strip(),
+                "batter": batter, "team": str(row.get("team", "")).strip(),
                 "pitcher": str(row.get("pitcher_name", "")).strip(),
-                "combined": combined,
-                "plat": plat,
-                "pitch": pitch,
-                "hr_score": hr_score,
-                "info": info,
-                "trend": trend,
+                "opp_pit": str(row.get("pitcher_name", "")).strip(),
+                "combined": combined, "plat": plat, "pitch": pitch,
+                "odds": odds, "hr_score": hr_score, "info": info, "trend": trend,
             })
-        cand.sort(key=lambda x: -x["combined"])
-        if not cand:
-            rows.append((pad(["\u2014", "No players scored today", ""]), "no_plays"))
-        else:
-            # max 2 players per team; since cand is sorted by combined score,
-            # this keeps each team's two best matchups
-            team_count = {}
-            picked = []
-            for c in cand:
-                t = c["team"]
-                if team_count.get(t, 0) >= 2:
-                    continue
-                picked.append(c)
-                team_count[t] = team_count.get(t, 0) + 1
-                if len(picked) >= 15:
-                    break
-            for i, c in enumerate(picked, 1):
+
+    cand.sort(key=lambda x: -x["combined"])
+
+    # select 15 unique legs, pitcher-diversified overall, then tier into 3x5
+    selected = []
+    used_pit = set()
+    for c in cand:
+        if len(selected) >= 15:
+            break
+        if c["opp_pit"] and c["opp_pit"] in used_pit:
+            continue
+        selected.append(c)
+        if c["opp_pit"]:
+            used_pit.add(c["opp_pit"])
+
+    if len(selected) < 2:
+        rows.append((pad(["\u2014", "Not enough qualifying legs today "
+                          "(need pitch\u2265+0.2, platoon\u22650, \u2264+499, score\u226510)", ""]),
+                     "no_plays"))
+    else:
+        def emit_rr(title, legs):
+            rows.append((pad([title]), "col_header_parlay"))
+            rows.append((pad(["#", "Batter", "Team", "Pitcher", "Comb",
+                              "Plat", "Pitch", "Odds", "HR", "Info", "Form"]),
+                         "col_header_hr"))
+            for i, c in enumerate(legs, 1):
                 rows.append((pad([
                     str(i), c["batter"], c["team"], c["pitcher"],
-                    f"{c['combined']:+.2f}", f"{c['plat']:+.2f}",
-                    f"{c['pitch']:+.2f}", f"{c['hr_score']:.1f}", c["info"], c["trend"],
+                    f"{c['combined']:+.2f}", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}",
+                    f"+{int(c['odds'])}", f"{c['hr_score']:.1f}", c["info"], c["trend"],
                 ]), "data_hr_strong"))
+            if len(legs) >= 2:
+                pairs = len(legs) * (len(legs) - 1) // 2
+                rows.append((pad(["", f"{len(legs)} legs \u2192 {pairs} two-leg pairs", ""]), "no_plays"))
+            rows.append((E[:], "spacer"))
+
+        tiers = [("\U0001F3C6 RR#1 — STRONGEST 5", selected[0:5]),
+                 ("\U0001F948 RR#2 — MIDDLE 5",    selected[5:10]),
+                 ("\U0001F949 RR#3 — WEAKEST 5",   selected[10:15])]
+        for title, legs in tiers:
+            if legs:
+                emit_rr(title, legs)
 
     rows.append((E[:], "spacer"))
     return rows, staging
