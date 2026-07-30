@@ -413,12 +413,70 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
 
     cand.sort(key=lambda x: -x["combined"])
 
-    # select 15 unique legs, pitcher-diversified overall, then tier into 3x5
+    # RR#1 and RR#2 use the STRICT filter (already applied above building cand).
+    # RR#3 gets filled with next-best legs that missed the strict filter, so
+    # the dart-throw ticket still fills without diluting the confidence plays.
+    # Build the relaxed pool now (score>=10, odds<=499 kept; platoon/pitch gates
+    # dropped) for fallback only.
+    relaxed = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            batter = str(row.get("player_name", "")).strip()
+            if not batter or batter == "nan":
+                continue
+            hr_score = safe_float(row.get("hr_score", 0))
+            odds = safe_float(row.get("consensus_odds", 0))
+            if hr_score < 10 or not (0 < odds <= 499):
+                continue
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            bh = str(row.get("batter_hand", "")).strip().upper()[:1]
+            ph = str(row.get("pitcher_hand", "")).strip().upper()[:1]
+            eff = ("R" if ph == "L" else "L") if bh == "S" else bh
+            p_bbl = safe_float(row.get(f"pitcher_barrel_vs_{'lhh' if eff=='L' else 'rhh'}", 0))
+            b_bbl = safe_float(row.get("season_barrel_pct", 0))
+            b_iso = safe_float(row.get(f"vs_{'lhp' if ph=='L' else 'rhp'}_iso", 0))
+            info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
+            trend = "\u2796 \u2014"
+            for win, bbe_col, bbl_col in [("7d", "bbe_7d", "barrel_pct_7d"),
+                                          ("10d", "bbe_10d", "barrel_pct_10d"),
+                                          ("14d", "bbe_14d", "barrel_pct_14d")]:
+                wbbe = safe_float(row.get(bbe_col, 0)); wbbl = safe_float(row.get(bbl_col, 0))
+                if wbbe >= 8:
+                    diff = wbbl - b_bbl
+                    icon = "\U0001F525" if diff >= 4 else "\U0001F9CA" if diff <= -4 else "\u2796"
+                    trend = f"{icon} {win} {wbbl:.0f}%"
+                    break
+            relaxed.append({
+                "batter": batter, "team": str(row.get("team", "")).strip(),
+                "pitcher": str(row.get("pitcher_name", "")).strip(),
+                "opp_pit": str(row.get("pitcher_name", "")).strip(),
+                "combined": plat + pitch, "plat": plat, "pitch": pitch,
+                "odds": odds, "hr_score": hr_score, "info": info, "trend": trend,
+            })
+    relaxed.sort(key=lambda x: -x["combined"])
+
+    # select up to 15 unique, pitcher-diversified: strict legs first, then
+    # relaxed fallback only to reach 15 (fills RR#3).
     selected = []
     used_pit = set()
-    for c in cand:
+    strict_ids = set()
+    for c in cand:                     # strict legs first
         if len(selected) >= 15:
             break
+        if c["opp_pit"] and c["opp_pit"] in used_pit:
+            continue
+        selected.append(c)
+        strict_ids.add((c["batter"], c["odds"]))
+        if c["opp_pit"]:
+            used_pit.add(c["opp_pit"])
+    n_strict = len(selected)
+    for c in relaxed:                  # fallback to fill remaining slots
+        if len(selected) >= 15:
+            break
+        cid = (c["batter"], c["odds"])
+        if cid in strict_ids:
+            continue
         if c["opp_pit"] and c["opp_pit"] in used_pit:
             continue
         selected.append(c)
@@ -449,9 +507,15 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         tiers = [("\U0001F3C6 RR#1 — STRONGEST 5", selected[0:5]),
                  ("\U0001F948 RR#2 — MIDDLE 5",    selected[5:10]),
                  ("\U0001F949 RR#3 — WEAKEST 5",   selected[10:15])]
-        for title, legs in tiers:
-            if legs:
-                emit_rr(title, legs)
+        for idx, (title, legs) in enumerate(tiers):
+            if not legs:
+                continue
+            # note if this tier contains relaxed-filter fallback legs
+            start = idx * 5
+            n_fallback = sum(1 for j in range(start, start + len(legs)) if j >= n_strict)
+            if n_fallback:
+                title += f"  ({n_fallback} relaxed-filter)"
+            emit_rr(title, legs)
 
     rows.append((E[:], "spacer"))
     return rows, staging
