@@ -448,9 +448,11 @@ def build_analysis(df: pd.DataFrame) -> dict:
                 n    = len(sub)
                 h    = int(sub["hit_bool"].sum())
                 rate = round(h / n * 100, 1)
+                avg_odds = sub[sub["odds_num"] > 0]["odds_num"].mean()
+                avg_odds_s = f"+{int(round(avg_odds))}" if pd.notna(avg_odds) and avg_odds > 0 else "\u2014"
                 tier_odds_rows.append({
                     "label": f"{odds_label} | {tier_label}",
-                    "total": n, "hits": h, "rate": rate,
+                    "total": n, "hits": h, "rate": rate, "avg_odds": avg_odds_s,
                 })
 
     # ── Pooled decision rules (Wilson CI vs breakeven) ────────────────────
@@ -624,9 +626,9 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     if analysis.get("tier_odds_rows"):
         add_section(
             "💰  SCORE TIER × ODDS ZONE",
-            ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
+            ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "Avg Odds", "", "", ""],
             analysis["tier_odds_rows"],
-            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r.get("avg_odds", "\u2014"), "", "", ""]
         )
 
     # ── Pooled Decision Rules ─────────────────────────────────────────────
