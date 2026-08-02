@@ -26,6 +26,7 @@ on:
           - test_pitcher_barrel.py
           - test_within_matchup_separators.py
           - test_pitcher_trends.py
+          - test_filter_bakeoff.py
 
 
 jobs:
@@ -167,3 +168,10 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_pitcher_trends.py
+
+      - name: RR filter bakeoff (combined vs score×odds)
+        if: github.event.inputs.script == 'test_filter_bakeoff.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_filter_bakeoff.py
