@@ -484,6 +484,10 @@ def build_breakeven_lookup(hr_df):
     d["sc"] = d.apply(_score, axis=1) if "hr_score" in d.columns or "hr_score_corrected" in d.columns else np.nan
     d["od"] = pd.to_numeric(d["consensus_odds"], errors="coerce") if "consensus_odds" in d.columns else np.nan
     d = d.dropna(subset=["sc", "od"])
+    print(f"  [be_debug] resolved={len(d)}, "
+          f"od range={d['od'].min():.0f}..{d['od'].max():.0f} "
+          f"sc range={d['sc'].min():.1f}..{d['sc'].max():.1f}, "
+          f"od<=499={int((d['od']<=499).sum())}, od>0={int((d['od']>0).sum())}")
 
     tier_defs = [("15+",15,999),("14-15",14,15),("13-14",13,14),("12-13",12,13),
                  ("11-12",11,12),("10-11",10,11),("9-10",9,10),("8.5-9",8.5,9)]
