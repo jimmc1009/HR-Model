@@ -458,6 +458,62 @@ def hr_rates_get(hit_rates, key, default):
         return default
 
 
+def build_all_band_rates(hr_all_scores: pd.DataFrame, min_n: int = 20) -> dict:
+    """Like build_edge_bands but returns EVERY band's hit rate (not only the
+    +EV ones), keyed by (s_lo, s_hi, o_lo, o_hi). Used to check each player's
+    OWN odds against their band's breakeven — a player priced long enough is
+    +EV for himself even if his band averages -EV. Same score/odds/date logic
+    as the working edge-bands so it can't diverge."""
+    if hr_all_scores.empty:
+        return {}
+    MODEL_START_DATE = "2026-06-09"
+    df = hr_all_scores.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)]
+    df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    if df.empty:
+        return {}
+    df["score"] = df.apply(
+        lambda r: safe_float(r.get("hr_score_corrected"))
+        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
+        else safe_float(r.get("hr_score")), axis=1)
+    df["odds"] = df["consensus_odds"].apply(safe_float)
+    df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
+    df = df[(df["odds"] > 0) & (df["score"] > 0)]
+
+    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
+                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
+                   (8.5, 10, "8.5-10")]
+    odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
+                  (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
+                  (501, 600, "+501-600"), (601, 9999, "+601+")]
+    out = {}
+    for slo, shi, slab in score_bands:
+        for olo, ohi, olab in odds_bands:
+            sub = df[(df["score"] >= slo) & (df["score"] < shi) &
+                     (df["odds"] >= olo) & (df["odds"] <= ohi)]
+            n = len(sub)
+            if n < min_n:
+                continue
+            hit = sub["hit"].mean()
+            if hit <= 0:
+                continue
+            # breakeven American odds from the band's hit rate
+            be = -(hit / (1 - hit) * 100) if hit >= 0.5 else ((1 - hit) / hit * 100)
+            out[(slo, shi, olo, ohi)] = {
+                "band": f"{slab} @ {olab}", "hit": hit * 100, "be": be, "n": n,
+            }
+    return out
+
+
+def player_band(score, odds, band_rates):
+    """Find the band a player falls into and return its rate/breakeven/n."""
+    for (slo, shi, olo, ohi), v in band_rates.items():
+        if slo <= score < shi and olo <= odds <= ohi:
+            return v
+    return None
+
+
 def build_breakeven_lookup(hr_df):
     """Compute the live breakeven odds for each score-tier x odds-zone cell
     from resolved history — same logic as HR_Analysis, so it auto-updates
@@ -617,22 +673,22 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
 
     hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
 
-    # ── +EV SELECTIONS — legs whose odds beat their cell's live breakeven ─
-    # For each of today's legs, look up the breakeven odds for its score-tier
-    # x odds-zone cell (computed fresh from history every run, so it tracks
-    # HR_Analysis daily). Show only legs whose actual price beats that
-    # breakeven — i.e. the model's historical hit rate in that cell clears
-    # the price. This is the honest edge filter.
-    be_lookup = build_breakeven_lookup(hr_df)
+    # ── +EV SELECTIONS — each player's odds vs THEIR band's breakeven ─────
+    # For every player, find their score x odds BAND (same logic as the
+    # working edge-bands), get that band's historical hit rate -> breakeven,
+    # and show the player if HIS odds beat it. A player priced long enough is
+    # +EV for himself even if the band averages -EV. Bands computed fresh from
+    # HR_All_Scores each run, so it tracks the data daily.
+    band_rates = build_all_band_rates(hr_df)
 
-    rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat cell breakeven (live)"]),
+    rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
                  "section_header_hr"))
     rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds",
-                      "Cell BE", "Edge", "Cell Hit%", "Info"]), "col_header_hr"))
+                      "Band BE", "Edge", "Band Hit%", "Band", "Info"]), "col_header_hr"))
 
     picks = []
-    _diag = {"total": 0, "no_odds": 0, "no_cell": 0, "neg_edge": 0, "kept": 0}
-    if not hr_source.empty and be_lookup:
+    _diag = {"total": 0, "no_odds": 0, "no_band": 0, "neg_edge": 0, "kept": 0}
+    if not hr_source.empty and band_rates:
         for _, row in hr_source.iterrows():
             batter = str(row.get("player_name", "")).strip()
             if not batter or batter == "nan":
@@ -645,17 +701,13 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             if od <= 0:
                 _diag["no_odds"] += 1
                 continue
-            tk = _tier_key(sc); zk = _zone_key(od)
-            if not tk or not zk:
-                _diag["no_cell"] += 1
+            band = player_band(sc, od, band_rates)
+            if not band:
+                _diag["no_band"] += 1
                 continue
-            cell = be_lookup.get((tk, zk))
-            if not cell:
-                _diag["no_cell"] += 1
-                continue
-            be = cell["be"]
-            leg_impl = american_to_implied(od) * 100
-            edge = cell["rate"] - leg_impl        # pp edge vs the price
+            # +EV for this player if his odds imply LESS than the band's rate
+            leg_impl = (100 / (od + 100) if od >= 0 else abs(od) / (abs(od) + 100)) * 100
+            edge = band["hit"] - leg_impl        # pp edge of his price vs band rate
             if edge <= 0:
                 _diag["neg_edge"] += 1
                 continue
@@ -667,24 +719,26 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             b_bbl = safe_float(row.get("season_barrel_pct", 0))
             b_iso = safe_float(row.get(f"vs_{'lhp' if ph=='L' else 'rhp'}_iso", 0))
             info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
+            be = band["be"]
             be_s = f"+{int(round(be))}" if be > 0 else f"-{int(round(abs(be)))}"
             picks.append({"batter":batter,"team":str(row.get("team","")).strip(),
                 "pitcher":str(row.get("pitcher_name","")).strip(),
-                "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":cell["rate"],"info":info})
+                "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
+                "band":band["band"],"info":info})
 
     picks.sort(key=lambda x: -x["edge"])
     print(f"  +EV selections: {_diag['kept']} kept of {_diag['total']} legs "
-          f"(no_odds={_diag['no_odds']}, no_cell={_diag['no_cell']}, "
-          f"neg_edge={_diag['neg_edge']}); breakeven cells={len(be_lookup)}")
+          f"(no_odds={_diag['no_odds']}, no_band={_diag['no_band']}, "
+          f"neg_edge={_diag['neg_edge']}); bands={len(band_rates)}")
     if not picks:
         rows.append((pad(["\u2014", "No +EV selections today "
-                          "(no leg's odds beat its cell breakeven)", ""]), "no_plays"))
+                          "(no player's odds beat their band breakeven)", ""]), "no_plays"))
     else:
         for c in picks:
             rows.append((pad([
                 c["batter"], c["team"], c["pitcher"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c["be_s"], f"+{c['edge']:.1f}pp",
-                f"{c['rate']:.1f}%", c["info"]]), "data_hr_strong"))
+                f"{c['rate']:.1f}%", c["band"], c["info"]]), "data_hr_strong"))
     rows.append((E[:], "spacer"))
     return rows, staging
 
