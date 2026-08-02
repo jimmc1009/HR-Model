@@ -661,7 +661,7 @@ def reconstruct_heater(hr_df, days_back=7):
     }
 
 
-def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
+def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr_all_scores=None):
     staging = []   # collected slate legs/tickets for the Bet_Staging tab
     def pad(row):
         return list(row) + [""] * (N_COLS - len(row))
@@ -679,7 +679,10 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
     # and show the player if HIS odds beat it. A player priced long enough is
     # +EV for himself even if the band averages -EV. Bands computed fresh from
     # HR_All_Scores each run, so it tracks the data daily.
-    band_rates = build_all_band_rates(hr_df)
+    # bands need the full HR_All_Scores (with dates); hr_df is the small picks
+    # tab. Fall back to hr_df only if hr_all_scores wasn't passed.
+    band_source = hr_all_scores if hr_all_scores is not None and not hr_all_scores.empty else hr_df
+    band_rates = build_all_band_rates(band_source)
 
     rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
                  "section_header_hr"))
@@ -1112,7 +1115,7 @@ def main() -> None:
     et = pytz.timezone("America/New_York")
     ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
 
-    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands)
+    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands, hr_all_scores=hr_all_scores)
     write_dashboard(gc, sheet_id, rows)
     # dashboard is top-15 matchup only now; no tickets to stage, so the
     # Bet_Staging write is skipped to avoid overwriting it with blanks.
