@@ -573,9 +573,15 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
             combined = plat + pitch
-            # Great+ tier only: combined >= 3 (your data's 20% sweet spot)
-            if combined < 3 or hr_score < 10 or not (0 < odds <= 499):
+            # Leg qualifies via the SCORE x ODDS strong cells (primary — these
+            # hit 25.4% in the bakeoff) OR the COMBINED matchup tier (backfill
+            # — 21.6%, keeps the card full when score x odds is short).
+            in_scoreodds = (0 < odds <= 499 and 13 <= hr_score < 16) or \
+                           (0 < odds <= 300 and 11 <= hr_score < 13)
+            in_combined = (combined >= 3 and hr_score >= 10 and 0 < odds <= 499)
+            if not (in_scoreodds or in_combined):
                 continue
+            leg_tier = "S\u00d7O" if in_scoreodds else "combo"
             bh = str(row.get("batter_hand", "")).strip().upper()[:1]
             ph = str(row.get("pitcher_hand", "")).strip().upper()[:1]
             eff = ("R" if ph == "L" else "L") if bh == "S" else bh
@@ -594,18 +600,14 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "opp_pit":str(row.get("pitcher_name","")).strip(),
                 "combined":combined,"plat":plat,"pitch":pitch,"odds":odds,
-                "hr_score":hr_score,"info":info,"trend":trend,
+                "hr_score":hr_score,"info":info,"trend":trend,"tier":leg_tier,
                 "blend":blended_hit_prob(hr_score, odds, plat, pitch, hr_hit_rates)})
-    # rank by blended empirical hit probability. The blend already reflects
-    # that combined +3-4 ("Great", ~18-20%) out-hits the +5 extreme (which
-    # regresses toward ~13-15%), because it uses the bucket's own rate. The
-    # tiebreaker also peaks at +3-4 rather than rewarding raw height, so a
-    # +5.5 leg isn't ranked above a +3.5 leg on combined alone.
+    # Score x Odds legs first (primary, 25.4% in bakeoff), combined legs as
+    # backfill, then by blended probability within tier. This fills the card
+    # with the sharpest legs and only dips into combined to avoid a short card.
     def combo_pref(c):
-        # +3.5 is the sweet spot; extremes cost. Larger = better, so negate
-        # the distance and sort so closer-to-3.5 comes first.
-        return abs(c["combined"] - 3.5)
-    pool.sort(key=lambda x: (-x["blend"], combo_pref(x)))
+        return abs(c["combined"] - 3.5)   # +3.5 sweet spot for combined legs
+    pool.sort(key=lambda x: (0 if x["tier"] == "S\u00d7O" else 1, -x["blend"], combo_pref(x)))
 
     # 1-per-team within the card, take top 6
     card = []; card_teams = set()
@@ -628,10 +630,10 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         rows.append((pad([f"\U0001F0CF  TODAY'S CARD \u2014 {len(card)} legs \u2192 "
                           f"{len(card)*(len(card)-1)//2} pairs \u00b7 full parlay {rr_line}"]),
                      "col_header_parlay"))
-        rows.append((pad(["#","Batter","Team","Pitcher","Comb","Plat","Pitch","Odds","HR","Blend%","Info","Form"]),
+        rows.append((pad(["#","Batter","Team","Pitcher","Tier","Comb","Plat","Pitch","Odds","HR","Blend%","Info","Form"]),
                      "col_header_hr"))
         for i, c in enumerate(card, 1):
-            rows.append((pad([str(i), c["batter"], c["team"], c["pitcher"],
+            rows.append((pad([str(i), c["batter"], c["team"], c["pitcher"], c.get("tier",""),
                 f"{c['combined']:+.2f}", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}",
                 f"+{int(c['odds'])}", f"{c['hr_score']:.1f}", f"{c['blend']*100:.1f}%",
                 c["info"], c["trend"]]),
