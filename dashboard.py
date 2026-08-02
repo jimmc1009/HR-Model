@@ -468,13 +468,15 @@ def build_breakeven_lookup(hr_df):
     if hr_df is None or hr_df.empty:
         return out
     d = hr_df.copy()
-    d["res"] = d.get("hit_hr", "").astype(str).str.strip()
+    if "hit_hr" not in d.columns:
+        return out
+    d["res"] = d["hit_hr"].astype(str).str.strip()
     d = d[d["res"].isin(["Yes", "No"])]
     if d.empty:
         return out
     d["hit"] = (d["res"] == "Yes").astype(int)
-    d["sc"] = pd.to_numeric(d.get("hr_score", 0), errors="coerce")
-    d["od"] = pd.to_numeric(d.get("consensus_odds", 0), errors="coerce")
+    d["sc"] = pd.to_numeric(d["hr_score"], errors="coerce") if "hr_score" in d.columns else np.nan
+    d["od"] = pd.to_numeric(d["consensus_odds"], errors="coerce") if "consensus_odds" in d.columns else np.nan
     d = d.dropna(subset=["sc", "od"])
 
     tier_defs = [("15+",15,999),("14-15",14,15),("13-14",13,14),("12-13",12,13),
