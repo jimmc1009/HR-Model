@@ -198,6 +198,34 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
             zsub = tier_sub[tier_sub["odds_num"].apply(_hr_odds_zone_key) == zk]
             if len(zsub) >= 15:
                 hit_rates[(tier_label, zk)] = shrunk_rate(zsub)
+
+    # ── regressed rates for platoon / pitch / combined tiers (for the blended
+    # card ranker). Same shrinkage — small/extreme buckets pulled toward base.
+    resolved["ps_val"] = pd.to_numeric(resolved.get("platoon_score", 0), errors="coerce").fillna(0)
+    resolved["pm_val"] = pd.to_numeric(resolved.get("pitch_matchup_score", 0), errors="coerce").fillna(0)
+    resolved["cb_val"] = resolved["ps_val"] + resolved["pm_val"]
+    plat_defs = [("plat_elite", 4, 99), ("plat_strong", 2, 4), ("plat_mild", 0.5, 2),
+                 ("plat_neu", -0.5, 0.5), ("plat_mdis", -2, -0.5),
+                 ("plat_sdis", -4, -2), ("plat_edis", -99, -4)]
+    pitch_defs = [("pit_good", 0.8, 99), ("pit_mild", 0.2, 0.8),
+                  ("pit_neu", -0.2, 0.2), ("pit_weak", -99, -0.2)]
+    combo_defs = [("cb_elitep", 5, 99), ("cb_elite", 4, 5), ("cb_great", 3, 4),
+                  ("cb_good", 1, 3), ("cb_neu", -1, 1), ("cb_bad", -3, -1),
+                  ("cb_terrible", -99, -3)]
+    for key, lo, hi in plat_defs:
+        sub = resolved[(resolved["ps_val"] >= lo) & (resolved["ps_val"] < hi)]
+        if len(sub) >= 10:
+            hit_rates[key] = shrunk_rate(sub)
+    for key, lo, hi in pitch_defs:
+        sub = resolved[(resolved["pm_val"] >= lo) & (resolved["pm_val"] < hi)]
+        if len(sub) >= 10:
+            hit_rates[key] = shrunk_rate(sub)
+    for key, lo, hi in combo_defs:
+        sub = resolved[(resolved["cb_val"] >= lo) & (resolved["cb_val"] < hi)]
+        if len(sub) >= 10:
+            hit_rates[key] = shrunk_rate(sub)
+    hit_rates["_base"] = base_rate
+
     print(f"  HR hit rate lookup: {len(hit_rates)} entries from {len(resolved)} resolved picks "
           f"(base {base_rate*100:.1f}%, shrink k={SHRINK_K:.0f})")
     return hit_rates
@@ -343,6 +371,93 @@ def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
     return bands
 
 
+def blended_hit_prob(hr_score, odds, plat, pitch, hit_rates):
+    """Blend the regressed hit rates from every validated dimension into one
+    expected hit probability for a leg. Overlap-aware: the combined tier
+    already contains platoon+pitch, so those get low weight to avoid triple-
+    counting the same signal; score×odds is the independent backbone.
+
+    All rates are already shrunk toward base by sample in build_hr_hit_rates,
+    so thin/extreme buckets (n=20-something) are automatically pulled toward
+    reality — this same code just trusts them more as the samples grow.
+    """
+    base = hr_rates_get(hit_rates, "_base", 0.12)
+    combo = plat + pitch
+
+    def score_tier_key(s):
+        for lab, lo, hi in [("15+",15,999),("14-15",14,15),("13-14",13,14),
+                            ("12-13",12,13),("11-12",11,12),("10-11",10,11),
+                            ("9-10",9,10),("8.5-9",8.5,9)]:
+            if lo <= s < hi:
+                return lab
+        return None
+
+    def zone_key(o):
+        if o <= 0:      return None
+        if o <= 300:    return "le300"
+        if o < 500:     return "301-499"
+        if o < 700:     return "500-699"
+        return "700plus"
+
+    def plat_key(p):
+        for k, lo, hi in [("plat_elite",4,99),("plat_strong",2,4),("plat_mild",0.5,2),
+                          ("plat_neu",-0.5,0.5),("plat_mdis",-2,-0.5),
+                          ("plat_sdis",-4,-2),("plat_edis",-99,-4)]:
+            if lo <= p < hi: return k
+        return None
+
+    def pitch_key(p):
+        for k, lo, hi in [("pit_good",0.8,99),("pit_mild",0.2,0.8),
+                          ("pit_neu",-0.2,0.2),("pit_weak",-99,-0.2)]:
+            if lo <= p < hi: return k
+        return None
+
+    def combo_key(c):
+        for k, lo, hi in [("cb_elitep",5,99),("cb_elite",4,5),("cb_great",3,4),
+                          ("cb_good",1,3),("cb_neu",-1,1),("cb_bad",-3,-1),
+                          ("cb_terrible",-99,-3)]:
+            if lo <= c < hi: return k
+        return None
+
+    # gather available component rates with weights. score×odds crosstab is the
+    # strongest independent cell; fall back to score-tier alone if the crosstab
+    # cell is thin/absent.
+    st = score_tier_key(hr_score); zk = zone_key(odds)
+    comps = []  # (rate, weight)
+    cross = hr_rates_get(hit_rates, (st, zk), None) if st and zk else None
+    if cross is not None:
+        comps.append((cross, 3.0))
+    elif st:
+        r = hr_rates_get(hit_rates, st, None)
+        if r is not None:
+            comps.append((r, 2.0))
+    # combined tier — the validated backbone of the card
+    ck = combo_key(combo)
+    rc = hr_rates_get(hit_rates, ck, None) if ck else None
+    if rc is not None:
+        comps.append((rc, 2.5))
+    # platoon & pitch — low weight, already inside combined (avoid triple count)
+    pk = plat_key(plat); rp = hr_rates_get(hit_rates, pk, None) if pk else None
+    if rp is not None:
+        comps.append((rp, 0.6))
+    qk = pitch_key(pitch); rq = hr_rates_get(hit_rates, qk, None) if qk else None
+    if rq is not None:
+        comps.append((rq, 0.6))
+
+    if not comps:
+        return base
+    wsum = sum(w for _, w in comps)
+    return sum(r * w for r, w in comps) / wsum
+
+
+def hr_rates_get(hit_rates, key, default):
+    try:
+        v = hit_rates.get(key, default)
+        return v if v is not None else default
+    except Exception:
+        return default
+
+
 def reconstruct_heater(hr_df, days_back=7):
     """Rebuild what the Dinger Card would have been each past day from
     HR_All_Scores history and tally how it did. A 'card day' = the top-6
@@ -479,8 +594,18 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "opp_pit":str(row.get("pitcher_name","")).strip(),
                 "combined":combined,"plat":plat,"pitch":pitch,"odds":odds,
-                "hr_score":hr_score,"info":info,"trend":trend})
-    pool.sort(key=lambda x: -x["combined"])
+                "hr_score":hr_score,"info":info,"trend":trend,
+                "blend":blended_hit_prob(hr_score, odds, plat, pitch, hr_hit_rates)})
+    # rank by blended empirical hit probability. The blend already reflects
+    # that combined +3-4 ("Great", ~18-20%) out-hits the +5 extreme (which
+    # regresses toward ~13-15%), because it uses the bucket's own rate. The
+    # tiebreaker also peaks at +3-4 rather than rewarding raw height, so a
+    # +5.5 leg isn't ranked above a +3.5 leg on combined alone.
+    def combo_pref(c):
+        # +3.5 is the sweet spot; extremes cost. Larger = better, so negate
+        # the distance and sort so closer-to-3.5 comes first.
+        return abs(c["combined"] - 3.5)
+    pool.sort(key=lambda x: (-x["blend"], combo_pref(x)))
 
     # 1-per-team within the card, take top 6
     card = []; card_teams = set()
@@ -503,12 +628,13 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
         rows.append((pad([f"\U0001F0CF  TODAY'S CARD \u2014 {len(card)} legs \u2192 "
                           f"{len(card)*(len(card)-1)//2} pairs \u00b7 full parlay {rr_line}"]),
                      "col_header_parlay"))
-        rows.append((pad(["#","Batter","Team","Pitcher","Comb","Plat","Pitch","Odds","HR","Info","Form"]),
+        rows.append((pad(["#","Batter","Team","Pitcher","Comb","Plat","Pitch","Odds","HR","Blend%","Info","Form"]),
                      "col_header_hr"))
         for i, c in enumerate(card, 1):
             rows.append((pad([str(i), c["batter"], c["team"], c["pitcher"],
                 f"{c['combined']:+.2f}", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}",
-                f"+{int(c['odds'])}", f"{c['hr_score']:.1f}", c["info"], c["trend"]]),
+                f"+{int(c['odds'])}", f"{c['hr_score']:.1f}", f"{c['blend']*100:.1f}%",
+                c["info"], c["trend"]]),
                 "data_hr_strong"))
         # the 2-leg round robin: all pairs
         import itertools as _it
