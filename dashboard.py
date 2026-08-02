@@ -475,7 +475,13 @@ def build_breakeven_lookup(hr_df):
     if d.empty:
         return out
     d["hit"] = (d["res"] == "Yes").astype(int)
-    d["sc"] = pd.to_numeric(d["hr_score"], errors="coerce") if "hr_score" in d.columns else np.nan
+    # use corrected score when present (matches HR_Analysis + hit-rates builder)
+    def _score(r):
+        c = str(r.get("hr_score_corrected", "")).strip()
+        if c not in ("", "nan", "None"):
+            return safe_float(c)
+        return safe_float(r.get("hr_score", 0))
+    d["sc"] = d.apply(_score, axis=1) if "hr_score" in d.columns or "hr_score_corrected" in d.columns else np.nan
     d["od"] = pd.to_numeric(d["consensus_odds"], errors="coerce") if "consensus_odds" in d.columns else np.nan
     d = d.dropna(subset=["sc", "od"])
 
@@ -621,28 +627,35 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                       "Cell BE", "Edge", "Cell Hit%", "Info"]), "col_header_hr"))
 
     picks = []
+    _diag = {"total": 0, "no_odds": 0, "no_cell": 0, "neg_edge": 0, "kept": 0}
     if not hr_source.empty and be_lookup:
         for _, row in hr_source.iterrows():
             batter = str(row.get("player_name", "")).strip()
             if not batter or batter == "nan":
                 continue
-            sc = safe_float(row.get("hr_score", 0))
+            _diag["total"] += 1
+            _sc_corr = str(row.get("hr_score_corrected", "")).strip()
+            sc = safe_float(_sc_corr) if _sc_corr not in ("", "nan", "None") \
+                 else safe_float(row.get("hr_score", 0))
             od = safe_float(row.get("consensus_odds", 0))
             if od <= 0:
+                _diag["no_odds"] += 1
                 continue
             tk = _tier_key(sc); zk = _zone_key(od)
             if not tk or not zk:
+                _diag["no_cell"] += 1
                 continue
             cell = be_lookup.get((tk, zk))
             if not cell:
+                _diag["no_cell"] += 1
                 continue
             be = cell["be"]
-            # +EV if the leg's implied prob is LOWER than the cell's true rate,
-            # equivalently if its odds are longer (better) than breakeven.
             leg_impl = american_to_implied(od) * 100
             edge = cell["rate"] - leg_impl        # pp edge vs the price
             if edge <= 0:
+                _diag["neg_edge"] += 1
                 continue
+            _diag["kept"] += 1
             bh = str(row.get("batter_hand", "")).strip().upper()[:1]
             ph = str(row.get("pitcher_hand", "")).strip().upper()[:1]
             eff = ("R" if ph == "L" else "L") if bh == "S" else bh
@@ -656,6 +669,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":cell["rate"],"info":info})
 
     picks.sort(key=lambda x: -x["edge"])
+    print(f"  +EV selections: {_diag['kept']} kept of {_diag['total']} legs "
+          f"(no_odds={_diag['no_odds']}, no_cell={_diag['no_cell']}, "
+          f"neg_edge={_diag['neg_edge']}); breakeven cells={len(be_lookup)}")
     if not picks:
         rows.append((pad(["\u2014", "No +EV selections today "
                           "(no leg's odds beat its cell breakeven)", ""]), "no_plays"))
