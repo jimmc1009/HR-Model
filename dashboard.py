@@ -596,9 +596,16 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None):
                 "combined":combined,"plat":plat,"pitch":pitch,"odds":odds,
                 "hr_score":hr_score,"info":info,"trend":trend,
                 "blend":blended_hit_prob(hr_score, odds, plat, pitch, hr_hit_rates)})
-    # rank by the blended empirical hit probability (falls back to combined
-    # score ordering when history is thin, since blend -> base for everyone)
-    pool.sort(key=lambda x: (-x["blend"], -x["combined"]))
+    # rank by blended empirical hit probability. The blend already reflects
+    # that combined +3-4 ("Great", ~18-20%) out-hits the +5 extreme (which
+    # regresses toward ~13-15%), because it uses the bucket's own rate. The
+    # tiebreaker also peaks at +3-4 rather than rewarding raw height, so a
+    # +5.5 leg isn't ranked above a +3.5 leg on combined alone.
+    def combo_pref(c):
+        # +3.5 is the sweet spot; extremes cost. Larger = better, so negate
+        # the distance and sort so closer-to-3.5 comes first.
+        return abs(c["combined"] - 3.5)
+    pool.sort(key=lambda x: (-x["blend"], combo_pref(x)))
 
     # 1-per-team within the card, take top 6
     card = []; card_teams = set()
