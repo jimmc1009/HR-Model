@@ -686,7 +686,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
 
     rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
                  "section_header_hr"))
-    rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds",
+    rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book",
                       "Band BE", "Edge", "Band Hit%", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
 
     picks = []
@@ -700,7 +700,13 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             _sc_corr = str(row.get("hr_score_corrected", "")).strip()
             sc = safe_float(_sc_corr) if _sc_corr not in ("", "nan", "None") \
                  else safe_float(row.get("hr_score", 0))
-            od = safe_float(row.get("consensus_odds", 0))
+            # prefer the best available price across your books; fall back to
+            # consensus if best_odds isn't present (older rows / no odds).
+            _best = str(row.get("best_odds", "")).strip()
+            od = safe_float(_best) if _best not in ("", "nan", "None") \
+                 else safe_float(row.get("consensus_odds", 0))
+            best_book = str(row.get("best_book", "")).strip()
+            cons_od = safe_float(row.get("consensus_odds", 0))
             if od <= 0:
                 _diag["no_odds"] += 1
                 continue
@@ -742,7 +748,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
                 "band":band["band"],"info":info,
-                "combo":combo,"plat":plat,"form":form})
+                "combo":combo,"plat":plat,"form":form,
+                "book":best_book,"cons":cons_od})
 
     # rank by edge (primary — how much the price beats the band rate), then by
     # combined matchup tier (secondary — a +EV play that's ALSO a great matchup
@@ -759,9 +766,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for c in picks:
             rows.append((pad([
                 c["batter"], c["team"], c["pitcher"], f"{c['sc']:.1f}",
-                f"+{int(c['od'])}", c["be_s"], f"+{c['edge']:.1f}pp",
-                f"{c['rate']:.1f}%", f"{c['combo']:+.1f}", f"{c['plat']:+.1f}",
-                c["form"], c["band"], c["info"]]), "data_hr_strong"))
+                f"+{int(c['od'])}", c.get("book","") or "\u2014", c["be_s"],
+                f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", f"{c['combo']:+.1f}",
+                f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]), "data_hr_strong"))
     rows.append((E[:], "spacer"))
     return rows, staging
 
