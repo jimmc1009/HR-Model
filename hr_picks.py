@@ -1106,19 +1106,35 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     combined["reason"] = combined.apply(build_reason, axis=1)
 
     odds_lookup = {}
+    best_odds_lookup = {}
+    best_book_lookup = {}
     if odds_df is not None and not odds_df.empty and "player_name_norm" in odds_df.columns and "consensus_odds" in odds_df.columns:
+        has_best = "best_odds" in odds_df.columns
         for _, row in odds_df.iterrows():
             norm = str(row["player_name_norm"]).strip()
             try:
                 odds_lookup[norm] = int(float(row["consensus_odds"]))
             except (ValueError, TypeError):
                 pass
-        print(f"Odds lookup built: {len(odds_lookup)} players")
+            if has_best:
+                try:
+                    best_odds_lookup[norm] = int(float(row["best_odds"]))
+                    best_book_lookup[norm] = str(row.get("best_book", "")).strip()
+                except (ValueError, TypeError):
+                    pass
+        print(f"Odds lookup built: {len(odds_lookup)} players"
+              + (f" ({len(best_odds_lookup)} with best_odds)" if has_best else " (no best_odds column)"))
     else:
         print("No odds data available")
 
     combined["consensus_odds"] = combined["player_name"].apply(
         lambda n: odds_lookup.get(normalize_name(str(n)), None)
+    )
+    combined["best_odds"] = combined["player_name"].apply(
+        lambda n: best_odds_lookup.get(normalize_name(str(n)), None)
+    )
+    combined["best_book"] = combined["player_name"].apply(
+        lambda n: best_book_lookup.get(normalize_name(str(n)), "")
     )
 
     filtered = combined[combined["score"] >= MIN_SCORE_FLOOR].copy()
@@ -1184,6 +1200,8 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
         "park_name":                  "Park",
         "score":                      "HR Score",
         "consensus_odds":             "Consensus Odds",
+        "best_odds":                  "Best Odds",
+        "best_book":                  "Best Book",
         "edge":                       "Edge",
         "confidence":                 "Confidence",
         "reason":                     "Key Reasons",
@@ -1362,6 +1380,8 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> 
                 "park_name":            str(row.get("Park", "")),
                 "hr_score":             str(row.get("HR Score", "")),
                 "consensus_odds":       str(row.get("Consensus Odds", "")),
+                "best_odds":            str(row.get("Best Odds", "")),
+                "best_book":            str(row.get("Best Book", "")),
                 "edge":                 str(row.get("Edge", "")),
                 "confidence":           str(row.get("Confidence", "")),
                 "hit_hr":               "Pending",
