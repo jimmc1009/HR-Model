@@ -687,7 +687,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
                  "section_header_hr"))
     rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book",
-                      "Band BE", "Edge", "Band Hit%", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
+                      "Band BE", "Edge", "Band Hit%", "N", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
 
     picks = []
     _diag = {"total": 0, "no_odds": 0, "no_band": 0, "neg_edge": 0, "kept": 0}
@@ -747,7 +747,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             picks.append({"batter":batter,"team":str(row.get("team","")).strip(),
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
-                "band":band["band"],"info":info,
+                "band":band["band"],"info":info,"bn":band.get("n",0),
                 "combo":combo,"plat":plat,"form":form,
                 "book":best_book,"cons":cons_od})
 
@@ -767,8 +767,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             rows.append((pad([
                 c["batter"], c["team"], c["pitcher"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c.get("book","") or "\u2014", c["be_s"],
-                f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", f"{c['combo']:+.1f}",
-                f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]), "data_hr_strong"))
+                f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", str(c.get("bn","")),
+                f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
+                "data_hr_strong"))
     rows.append((E[:], "spacer"))
     return rows, staging
 
