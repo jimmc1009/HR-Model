@@ -35,17 +35,29 @@ def sf(v, d=np.nan):
         return d
 
 
+def _col(df, name):
+    """Safely get a column as floats, or NaN series if the column is absent."""
+    if name in df.columns:
+        return df[name].apply(sf)
+    return pd.Series([np.nan] * len(df), index=df.index)
+
+
 def load(src):
     df = src if isinstance(src, pd.DataFrame) else pd.read_csv(src, dtype=str)
     df = df.fillna("")
     df.columns = [c.strip() for c in df.columns]
-    df["res"] = df.get("hit_hr", "").astype(str).str.strip().str.lower()
+    df["res"] = df.get("hit_hr", "").astype(str).str.strip().str.lower() \
+        if "hit_hr" in df.columns else ""
     df = df[df["res"].isin(["yes", "no"])].copy()
     df["hit"] = (df["res"] == "yes").astype(int)
-    df["score"] = df.get("hr_score", "").apply(sf)
-    df["hrpa"] = df.get("hr_per_pa", "").apply(sf)
-    df["pa14"] = df.get("pa_14d", "").apply(sf)
-    df["hr14"] = df.get("hr_14d", "").apply(sf)
+    df["score"] = _col(df, "hr_score")
+    df["hrpa"] = _col(df, "hr_per_pa")
+    df["pa14"] = _col(df, "pa_14d")
+    df["hr14"] = _col(df, "hr_14d")
+    # report which dueness inputs are actually present
+    present = {c: (c in df.columns) for c in ["hr_per_pa", "pa_14d", "hr_14d",
+                                              "hr_7d", "hr_30d"]}
+    print("  dueness columns present:", {k: v for k, v in present.items()})
     return df
 
 
