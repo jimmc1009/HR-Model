@@ -240,6 +240,12 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                 for outcome in market.get("outcomes", []):
                     if outcome.get("name", "").lower() != "over":
                         continue
+                    # ONLY the 0.5 line = the standard "1+ HR" prop. Without
+                    # this, a book's "2+ HR" line (point 1.5) at long odds gets
+                    # read as a regular HR prop and poisons consensus/best_odds.
+                    # (This is why espnbet was previously excluded wholesale.)
+                    if safe_float(outcome.get("point", -1)) != 0.5:
+                        continue
                     player = outcome.get("description", "").strip()
                     price  = outcome.get("price")
                     if player and price is not None:
