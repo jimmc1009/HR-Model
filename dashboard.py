@@ -41,7 +41,7 @@ COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT   = {"red": 0.600, "green": 0.600, "blue": 0.600}
 COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
 
-N_COLS = 8
+N_COLS = 15
 RESET_ROWS = 400
 RESET_COLS = 26
 
@@ -862,14 +862,14 @@ def write_dashboard(gc, sheet_id, rows) -> None:
             c = data_counts.get(key, 0)
             data_counts[key] = c + 1
             bg = COLOR_BG if c % 2 == 0 else COLOR_BG_ALT
-            # whole row: bg + WRAP (so Why can wrap without clipping)
+            # whole row: bg + CLIP (names/values stay on one line, no wrapping)
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": N_COLS},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": bg,
                     "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
-                    "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "WRAP"}},
+                    "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "CLIP"}},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
             }})
             # col 0 (Rank/Leg/Ticket) centered dim
@@ -915,8 +915,9 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat)",
             }})
 
-    # Column widths (fit content; Why wraps)
-    col_widths = [56, 158, 52, 62, 66, 66, 120, 300]
+    # Column widths matched to the +EV layout:
+    # Batter Team Pitcher Score Odds Book BandBE Edge BandHit% N Comb Plat Form Band Info
+    col_widths = [110, 60, 100, 52, 60, 88, 72, 64, 74, 44, 52, 52, 46, 118, 150]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
