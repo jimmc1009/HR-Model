@@ -1865,6 +1865,8 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "batter_hand":            str(row.get("batter_hand", "")),
             "hr_score":               str(row.get("score", "")),
             "consensus_odds":         str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
+            "best_odds":              str(row.get("best_odds", "") if "best_odds" in row.index else ""),
+            "best_book":              str(row.get("best_book", "") if "best_book" in row.index else ""),
             "barrel_pct_7d":          str(row.get("barrel_pct_7d", "")),
             "season_barrel_pct":      str(row.get("season_barrel_pct", "")),
             "barrel_pct_5d":          str(row.get("barrel_pct_5d", "")),
@@ -1986,6 +1988,24 @@ def main() -> None:
     combined["consensus_odds"] = combined["player_name"].apply(
         lambda n: odds_lookup.get(normalize_name(str(n)), "")
     )
+    # also carry best_odds/best_book into HR_All_Scores (dashboard reads these)
+    _best_odds_lk = {}
+    _best_book_lk = {}
+    if odds_df is not None and not odds_df.empty and "best_odds" in odds_df.columns:
+        for _, orow in odds_df.iterrows():
+            nm = str(orow.get("player_name_norm", "")).strip()
+            try:
+                _best_odds_lk[nm] = int(float(orow["best_odds"]))
+                _best_book_lk[nm] = str(orow.get("best_book", "")).strip()
+            except (ValueError, TypeError):
+                pass
+    combined["best_odds"] = combined["player_name"].apply(
+        lambda n: _best_odds_lk.get(normalize_name(str(n)), "")
+    )
+    combined["best_book"] = combined["player_name"].apply(
+        lambda n: _best_book_lk.get(normalize_name(str(n)), "")
+    )
+    print(f"  best_odds carried to all_scores: {len(_best_odds_lk)} players")
     log_all_scores(gc, sheet_id, combined)
     time.sleep(10)
     update_scorecard(gc, sheet_id)
