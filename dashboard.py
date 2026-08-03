@@ -687,7 +687,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
                  "section_header_hr"))
     rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds",
-                      "Band BE", "Edge", "Band Hit%", "Band", "Info"]), "col_header_hr"))
+                      "Band BE", "Edge", "Band Hit%", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
 
     picks = []
     _diag = {"total": 0, "no_odds": 0, "no_band": 0, "neg_edge": 0, "kept": 0}
@@ -724,12 +724,31 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
             be = band["be"]
             be_s = f"+{int(round(be))}" if be > 0 else f"-{int(round(abs(be)))}"
+            # matchup tier + form for ranking/layering on top of edge
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            combo = plat + pitch
+            season_bbl = b_bbl
+            form = "\u2796"
+            for win, bc, blc in [("7d","bbe_7d","barrel_pct_7d"),
+                                 ("10d","bbe_10d","barrel_pct_10d"),
+                                 ("14d","bbe_14d","barrel_pct_14d")]:
+                wbbe = safe_float(row.get(bc, 0)); wbbl = safe_float(row.get(blc, 0))
+                if wbbe >= 8:
+                    diff = wbbl - season_bbl
+                    form = "\U0001F525" if diff >= 4 else "\U0001F9CA" if diff <= -4 else "\u2796"
+                    break
             picks.append({"batter":batter,"team":str(row.get("team","")).strip(),
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
-                "band":band["band"],"info":info})
+                "band":band["band"],"info":info,
+                "combo":combo,"plat":plat,"form":form})
 
-    picks.sort(key=lambda x: -x["edge"])
+    # rank by edge (primary — how much the price beats the band rate), then by
+    # combined matchup tier (secondary — a +EV play that's ALSO a great matchup
+    # is your strongest position). Rounds edge to 0.5pp so tier can break near-
+    # ties without a fatter edge being leapfrogged by a better matchup.
+    picks.sort(key=lambda x: (-round(x["edge"] * 2) / 2, -x["combo"]))
     print(f"  +EV selections: {_diag['kept']} kept of {_diag['total']} legs "
           f"(no_odds={_diag['no_odds']}, no_band={_diag['no_band']}, "
           f"neg_edge={_diag['neg_edge']}); bands={len(band_rates)}")
@@ -741,7 +760,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             rows.append((pad([
                 c["batter"], c["team"], c["pitcher"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c["be_s"], f"+{c['edge']:.1f}pp",
-                f"{c['rate']:.1f}%", c["band"], c["info"]]), "data_hr_strong"))
+                f"{c['rate']:.1f}%", f"{c['combo']:+.1f}", f"{c['plat']:+.1f}",
+                c["form"], c["band"], c["info"]]), "data_hr_strong"))
     rows.append((E[:], "spacer"))
     return rows, staging
 
