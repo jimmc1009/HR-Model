@@ -41,7 +41,7 @@ COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
 COLOR_SUBTEXT   = {"red": 0.600, "green": 0.600, "blue": 0.600}
 COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
 
-N_COLS = 8
+N_COLS = 15
 RESET_ROWS = 400
 RESET_COLS = 26
 
@@ -686,8 +686,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
 
     rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
                  "section_header_hr"))
-    rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds",
-                      "Band BE", "Edge", "Band Hit%", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
+    rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book",
+                      "Band BE", "Edge", "Band Hit%", "N", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
 
     picks = []
     _diag = {"total": 0, "no_odds": 0, "no_band": 0, "neg_edge": 0, "kept": 0}
@@ -700,7 +700,13 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             _sc_corr = str(row.get("hr_score_corrected", "")).strip()
             sc = safe_float(_sc_corr) if _sc_corr not in ("", "nan", "None") \
                  else safe_float(row.get("hr_score", 0))
-            od = safe_float(row.get("consensus_odds", 0))
+            # prefer the best available price across your books; fall back to
+            # consensus if best_odds isn't present (older rows / no odds).
+            _best = str(row.get("best_odds", "")).strip()
+            od = safe_float(_best) if _best not in ("", "nan", "None") \
+                 else safe_float(row.get("consensus_odds", 0))
+            best_book = str(row.get("best_book", "")).strip()
+            cons_od = safe_float(row.get("consensus_odds", 0))
             if od <= 0:
                 _diag["no_odds"] += 1
                 continue
@@ -741,8 +747,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             picks.append({"batter":batter,"team":str(row.get("team","")).strip(),
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
-                "band":band["band"],"info":info,
-                "combo":combo,"plat":plat,"form":form})
+                "band":band["band"],"info":info,"bn":band.get("n",0),
+                "combo":combo,"plat":plat,"form":form,
+                "book":best_book,"cons":cons_od})
 
     # rank by edge (primary — how much the price beats the band rate), then by
     # combined matchup tier (secondary — a +EV play that's ALSO a great matchup
@@ -759,9 +766,10 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for c in picks:
             rows.append((pad([
                 c["batter"], c["team"], c["pitcher"], f"{c['sc']:.1f}",
-                f"+{int(c['od'])}", c["be_s"], f"+{c['edge']:.1f}pp",
-                f"{c['rate']:.1f}%", f"{c['combo']:+.1f}", f"{c['plat']:+.1f}",
-                c["form"], c["band"], c["info"]]), "data_hr_strong"))
+                f"+{int(c['od'])}", c.get("book","") or "\u2014", c["be_s"],
+                f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", str(c.get("bn","")),
+                f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
+                "data_hr_strong"))
     rows.append((E[:], "spacer"))
     return rows, staging
 
@@ -854,14 +862,14 @@ def write_dashboard(gc, sheet_id, rows) -> None:
             c = data_counts.get(key, 0)
             data_counts[key] = c + 1
             bg = COLOR_BG if c % 2 == 0 else COLOR_BG_ALT
-            # whole row: bg + WRAP (so Why can wrap without clipping)
+            # whole row: bg + CLIP (names/values stay on one line, no wrapping)
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": N_COLS},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": bg,
                     "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
-                    "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "WRAP"}},
+                    "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "CLIP"}},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
             }})
             # col 0 (Rank/Leg/Ticket) centered dim
@@ -907,8 +915,9 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat)",
             }})
 
-    # Column widths (fit content; Why wraps)
-    col_widths = [56, 158, 52, 62, 66, 66, 120, 300]
+    # Column widths matched to the +EV layout:
+    # Batter Team Pitcher Score Odds Book BandBE Edge BandHit% N Comb Plat Form Band Info
+    col_widths = [110, 60, 100, 52, 60, 88, 72, 64, 74, 44, 52, 52, 46, 118, 150]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},

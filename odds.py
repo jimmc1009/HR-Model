@@ -16,7 +16,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-EXCLUDED_BOOKS = {"fliff", "espnbet"}
+# fliff excluded (not a book you bet). espnbet (TheScore/ESPN Bet) is kept
+# because you bet it — its price should count toward best-available odds.
+EXCLUDED_BOOKS = {"fliff"}
 
 ESPN_TO_MLB = {
     "WSH": "WSH", "HOU": "HOU", "MIL": "MIL", "LAD": "LAD",
@@ -238,6 +240,12 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
                 for outcome in market.get("outcomes", []):
                     if outcome.get("name", "").lower() != "over":
                         continue
+                    # ONLY the 0.5 line = the standard "1+ HR" prop. Without
+                    # this, a book's "2+ HR" line (point 1.5) at long odds gets
+                    # read as a regular HR prop and poisons consensus/best_odds.
+                    # (This is why espnbet was previously excluded wholesale.)
+                    if safe_float(outcome.get("point", -1)) != 0.5:
+                        continue
                     player = outcome.get("description", "").strip()
                     price  = outcome.get("price")
                     if player and price is not None:
@@ -267,6 +275,9 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
     if not player_book_odds:
         return pd.DataFrame()
 
+    # your bettable books (The Odds API keys). Caesars = williamhill_us.
+    MY_BOOKS = {"fanduel", "draftkings", "espnbet", "williamhill_us", "fanatics"}
+
     all_rows = []
     for key, book_odds in player_book_odds.items():
         norm, event_id = key
@@ -276,6 +287,20 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
             continue
         consensus = int(np.median(odds_list))
         implied   = round(100 / (consensus + 100) * 100, 2)
+
+        # best price among YOUR books (the ones you can actually bet). Higher
+        # American odds = better payout = better for you. Falls back to best
+        # across all books if none of yours quoted this player.
+        mine = {b: o for b, o in book_odds.items() if b in MY_BOOKS}
+        if mine:
+            best_book = max(mine, key=mine.get)
+            best_odds = mine[best_book]
+        else:
+            best_book = max(book_odds, key=book_odds.get)
+            best_odds = book_odds[best_book]
+        best_implied = round(100 / (best_odds + 100) * 100, 2) if best_odds >= 0 \
+            else round(abs(best_odds) / (abs(best_odds) + 100) * 100, 2)
+
         all_rows.append({
             "player_name":      player_display_names[key],
             "player_name_norm": norm,
@@ -285,6 +310,9 @@ def build_hr_odds(events: List[dict], api_key: str) -> pd.DataFrame:
             "away_team":        player_away_teams[key],
             "consensus_odds":   consensus,
             "implied_prob_pct": implied,
+            "best_odds":        best_odds,
+            "best_book":        best_book,
+            "best_implied_pct": best_implied,
             "num_books":        len(odds_list),
             "book_detail":      str(book_odds),
         })

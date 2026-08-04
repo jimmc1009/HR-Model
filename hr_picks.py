@@ -1106,19 +1106,35 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
     combined["reason"] = combined.apply(build_reason, axis=1)
 
     odds_lookup = {}
+    best_odds_lookup = {}
+    best_book_lookup = {}
     if odds_df is not None and not odds_df.empty and "player_name_norm" in odds_df.columns and "consensus_odds" in odds_df.columns:
+        has_best = "best_odds" in odds_df.columns
         for _, row in odds_df.iterrows():
             norm = str(row["player_name_norm"]).strip()
             try:
                 odds_lookup[norm] = int(float(row["consensus_odds"]))
             except (ValueError, TypeError):
                 pass
-        print(f"Odds lookup built: {len(odds_lookup)} players")
+            if has_best:
+                try:
+                    best_odds_lookup[norm] = int(float(row["best_odds"]))
+                    best_book_lookup[norm] = str(row.get("best_book", "")).strip()
+                except (ValueError, TypeError):
+                    pass
+        print(f"Odds lookup built: {len(odds_lookup)} players"
+              + (f" ({len(best_odds_lookup)} with best_odds)" if has_best else " (no best_odds column)"))
     else:
         print("No odds data available")
 
     combined["consensus_odds"] = combined["player_name"].apply(
         lambda n: odds_lookup.get(normalize_name(str(n)), None)
+    )
+    combined["best_odds"] = combined["player_name"].apply(
+        lambda n: best_odds_lookup.get(normalize_name(str(n)), None)
+    )
+    combined["best_book"] = combined["player_name"].apply(
+        lambda n: best_book_lookup.get(normalize_name(str(n)), "")
     )
 
     filtered = combined[combined["score"] >= MIN_SCORE_FLOOR].copy()
@@ -1184,6 +1200,8 @@ def build_main_picks(combined: pd.DataFrame, odds_df: pd.DataFrame = None) -> tu
         "park_name":                  "Park",
         "score":                      "HR Score",
         "consensus_odds":             "Consensus Odds",
+        "best_odds":                  "Best Odds",
+        "best_book":                  "Best Book",
         "edge":                       "Edge",
         "confidence":                 "Confidence",
         "reason":                     "Key Reasons",
@@ -1362,6 +1380,8 @@ def log_todays_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> 
                 "park_name":            str(row.get("Park", "")),
                 "hr_score":             str(row.get("HR Score", "")),
                 "consensus_odds":       str(row.get("Consensus Odds", "")),
+                "best_odds":            str(row.get("Best Odds", "")),
+                "best_book":            str(row.get("Best Book", "")),
                 "edge":                 str(row.get("Edge", "")),
                 "confidence":           str(row.get("Confidence", "")),
                 "hit_hr":               "Pending",
@@ -1845,6 +1865,8 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "batter_hand":            str(row.get("batter_hand", "")),
             "hr_score":               str(row.get("score", "")),
             "consensus_odds":         str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
+            "best_odds":              str(row.get("best_odds", "") if "best_odds" in row.index else ""),
+            "best_book":              str(row.get("best_book", "") if "best_book" in row.index else ""),
             "barrel_pct_7d":          str(row.get("barrel_pct_7d", "")),
             "season_barrel_pct":      str(row.get("season_barrel_pct", "")),
             "barrel_pct_5d":          str(row.get("barrel_pct_5d", "")),
@@ -1966,6 +1988,24 @@ def main() -> None:
     combined["consensus_odds"] = combined["player_name"].apply(
         lambda n: odds_lookup.get(normalize_name(str(n)), "")
     )
+    # also carry best_odds/best_book into HR_All_Scores (dashboard reads these)
+    _best_odds_lk = {}
+    _best_book_lk = {}
+    if odds_df is not None and not odds_df.empty and "best_odds" in odds_df.columns:
+        for _, orow in odds_df.iterrows():
+            nm = str(orow.get("player_name_norm", "")).strip()
+            try:
+                _best_odds_lk[nm] = int(float(orow["best_odds"]))
+                _best_book_lk[nm] = str(orow.get("best_book", "")).strip()
+            except (ValueError, TypeError):
+                pass
+    combined["best_odds"] = combined["player_name"].apply(
+        lambda n: _best_odds_lk.get(normalize_name(str(n)), "")
+    )
+    combined["best_book"] = combined["player_name"].apply(
+        lambda n: _best_book_lk.get(normalize_name(str(n)), "")
+    )
+    print(f"  best_odds carried to all_scores: {len(_best_odds_lk)} players")
     log_all_scores(gc, sheet_id, combined)
     time.sleep(10)
     update_scorecard(gc, sheet_id)
