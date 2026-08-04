@@ -770,6 +770,89 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", str(c.get("bn","")),
                 f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
                 "data_hr_strong"))
+    # ── DAILY 3-LEGGER — the "cash a big ticket" play ────────────────────
+    # Pool: three proven zones (A 13+|<=+300, C 13+|+301-400, D 9-10|+301-400).
+    # Zone B (12-13|+301-400) dropped — it regressed 31%->20.5% on thin sample.
+    # Rule: all 3 legs score>=12 AND at most 1 leg <=+300 (best cash rate that
+    # isn't all chalk). Ranked by blended probability, strongest legs first.
+    rows.append((pad(["\U0001F3AF  DAILY 3-LEGGER — proven zones, score\u226512, not all chalk"]),
+                 "section_header_hr"))
+
+    def in_zone(sc, od):
+        if sc >= 13 and od <= 300:            return "A"   # 13+ | <=+300
+        if sc >= 13 and 301 <= od <= 400:     return "C"   # 13+ | +301-400
+        if 9 <= sc < 10 and 301 <= od <= 400: return "D"   # 9-10 | +301-400
+        return None
+
+    leg_pool = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            batter = str(row.get("player_name", "")).strip()
+            if not batter or batter == "nan":
+                continue
+            _sc = str(row.get("hr_score_corrected", "")).strip()
+            sc = safe_float(_sc) if _sc not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
+            _best = str(row.get("best_odds", "")).strip()
+            od = safe_float(_best) if _best not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if od <= 0:
+                continue
+            z = in_zone(sc, od)
+            if not z:
+                continue
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            leg_pool.append({"batter":batter,"team":str(row.get("team","")).strip(),
+                "pitcher":str(row.get("pitcher_name","")).strip(),
+                "sc":sc,"od":od,"zone":z,"blend":blend,"book":str(row.get("best_book","")).strip(),
+                "cheap":od <= 300})
+    # require score>=12 (zones A/C are 13+, D is 9-10 — so D legs are <12 and
+    # get excluded by the score>=12 rule automatically unless we keep them for
+    # payout; per the rule, all legs must be >=12, so pool is effectively A+C)
+    elig = [c for c in leg_pool if c["sc"] >= 12]
+    elig.sort(key=lambda x: -x["blend"])
+
+    # build one ticket: top blends, at most 1 cheap (<=+300) leg, 1 per team
+    ticket, teams, cheap_used = [], set(), 0
+    for c in elig:
+        if len(ticket) >= 3:
+            break
+        if c["team"] in teams:
+            continue
+        if c["cheap"] and cheap_used >= 1:
+            continue
+        ticket.append(c); teams.add(c["team"])
+        if c["cheap"]:
+            cheap_used += 1
+    # backfill if short (relax the 1-cheap cap before giving up)
+    if len(ticket) < 3:
+        for c in elig:
+            if len(ticket) >= 3: break
+            if c in ticket or c["team"] in teams: continue
+            ticket.append(c); teams.add(c["team"])
+
+    if len(ticket) < 3:
+        rows.append((pad(["\u2014", "Not enough score\u226512 zone legs today for a 3-legger", ""]),
+                     "no_plays"))
+    else:
+        payout = combined_american([c["od"] for c in ticket])
+        # combined decimal = product of each leg's decimal odds
+        combo_dec = 1.0
+        for c in ticket:
+            o = c["od"]
+            combo_dec *= (1 + (o / 100 if o > 0 else 100 / abs(o)))
+        win_return = 0.25 * (combo_dec - 1)
+        rows.append((pad([f"  TICKET \u2014 pays {payout} \u00b7 25\u00a2 returns "
+                          f"${win_return:.2f} on a win"]),
+                     "col_header_parlay"))
+        rows.append((pad(["Leg","Batter","Team","Pitcher","Score","Odds","Book","Zone","Blend%"]),
+                     "col_header_hr"))
+        for i, c in enumerate(ticket, 1):
+            rows.append((pad([str(i), c["batter"], c["team"], c["pitcher"],
+                f"{c['sc']:.1f}", f"+{int(c['od'])}", c["book"] or "\u2014",
+                c["zone"], f"{c['blend']*100:.1f}%"]), "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
     rows.append((E[:], "spacer"))
     return rows, staging
 
