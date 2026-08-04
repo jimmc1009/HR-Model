@@ -28,6 +28,7 @@ on:
           - test_pitcher_trends.py
           - test_filter_bakeoff.py
           - test_dueness.py
+          - test_blend_zones.py
 
 
 jobs:
