@@ -194,6 +194,59 @@ def report(name, bands):
               f"{edge:>+7.1f}{roi:>+8.1f}%   [{lo:>+6.1f},{hi:>+6.1f}]{star}")
 
 
+def sweep_model_selectors(df, legs):
+    """Compare leg-selection methods head-to-head: does picking legs by the
+    MODEL (HR score, platoon, combined tier) cash more than picking by raw
+    odds range? Builds same-day N-leg parlays from each pool, reports hit rate
+    + payout so we can see which selection actually connects most."""
+    print(f"\n{'='*76}\n{legs}-LEG SELECTOR COMPARISON — model vs odds range\n{'='*76}")
+    print(f"{'selection method':<30}{'tickets':>9}{'hit%':>8}{'avg payout':>14}{'$/25c':>10}")
+    print("-"*76)
+
+    # numeric helpers
+    d = df.copy()
+    d["plat"] = pd.to_numeric(d.get("platoon_score", ""), errors="coerce").fillna(0) \
+        if "platoon_score" in d.columns else 0
+    d["pitch"] = pd.to_numeric(d.get("pitch_matchup_score", ""), errors="coerce").fillna(0) \
+        if "pitch_matchup_score" in d.columns else 0
+    d["combo"] = d["plat"] + d["pitch"]
+
+    methods = [
+        ("raw +200-300",          d[(d["odds"] >= 200) & (d["odds"] <= 300)]),
+        ("score >=13",            d[d["score"] >= 13]),
+        ("score >=11 & +200-300", d[(d["score"] >= 11) & (d["odds"] >= 200) & (d["odds"] <= 300)]),
+        ("platoon >=+2",          d[d["plat"] >= 2]),
+        ("combined >=+3 (Great)", d[d["combo"] >= 3]),
+        ("combined>=3 & score>=12", d[(d["combo"] >= 3) & (d["score"] >= 12)]),
+        ("combined>=3 & +200-350", d[(d["combo"] >= 3) & (d["odds"] >= 200) & (d["odds"] <= 350)]),
+    ]
+    results = []
+    for name, pool in methods:
+        tickets = make_combos(pool, legs=legs)
+        n = len(tickets)
+        if n < 15:
+            results.append((name, n, None, None))
+            continue
+        cash = sum(t[0] for t in tickets)
+        rate = cash / n
+        avg_dec = np.mean([t[1] for t in tickets])
+        results.append((name, n, rate, avg_dec))
+    results.sort(key=lambda x: -(x[2] if x[2] is not None else -1))
+    for name, n, rate, avg_dec in results:
+        if rate is None:
+            print(f"{name:<30}{n:>9}{'--':>8}{'(too few)':>14}")
+            continue
+        am = (avg_dec - 1) * 100
+        win = 0.25 * (avg_dec - 1)
+        print(f"{name:<30}{n:>9}{rate*100:>7.1f}%{'+'+format(am,'.0f'):>14}{'$'+format(win,'.2f'):>10}")
+    if results and results[0][2] is not None:
+        b = results[0]
+        print(f"\n  -> best-cashing method: {b[0]} at {b[2]*100:.1f}% "
+              f"(pays ~+{(b[3]-1)*100:.0f}, ${0.25*(b[3]-1):.2f} on 25c)")
+    print("  This answers whether the MODEL (score/platoon/combo) beats raw odds")
+    print("  for building parlays that actually cash. In-sample.")
+
+
 def sweep_odds_windows(df, legs, width=100, step=50, lo_start=200, hi_end=800):
     """Slide an odds window across the range; for each window, build all N-leg
     parlays whose legs ALL fall in that window, and report hit rate + payout.
@@ -258,6 +311,10 @@ def main(src):
     df["sband"] = df["score"].apply(score_band)
     df["eband"] = df["edge_txt"].apply(edge_band)
     df["oband_wide"] = df["odds"].apply(odds_band_wide)
+
+    print("\n" + "#"*76 + "\n# MODEL vs ODDS SELECTOR COMPARISON\n" + "#"*76)
+    sweep_model_selectors(df, 2)
+    sweep_model_selectors(df, 3)
 
     print("\n" + "#"*76 + "\n# ODDS-WINDOW SWEEP — find the optimal range\n" + "#"*76)
     sweep_odds_windows(df, 2)
