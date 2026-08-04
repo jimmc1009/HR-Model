@@ -63,14 +63,21 @@ def load(src):
     df = src if isinstance(src, pd.DataFrame) else pd.read_csv(src, dtype=str)
     df = df.fillna("")
     df.columns = [c.strip() for c in df.columns]
-    df["score"] = pd.to_numeric(df.get("hr_score", ""), errors="coerce")
+
+    def col(name):
+        """Return the column as a string Series, or an empty-string Series if absent."""
+        if name in df.columns:
+            return df[name].astype(str)
+        return pd.Series([""] * len(df), index=df.index)
+
+    df["score"] = pd.to_numeric(col("hr_score"), errors="coerce")
     df["odds"] = pd.to_numeric(
-        df.get("consensus_odds", "").astype(str).str.replace("+", "", regex=False).str.strip(),
+        col("consensus_odds").str.replace("+", "", regex=False).str.strip(),
         errors="coerce")
-    df["res"] = df.get("hit_hr", "").str.strip().str.lower()
-    df["date"] = df.get("date", "").astype(str).str.strip()
-    df["game"] = df.get("pitcher_name", "").astype(str).str.strip()  # proxy for game/opponent
-    df["edge_txt"] = df.get("edge", "").astype(str)
+    df["res"] = col("hit_hr").str.strip().str.lower()
+    df["date"] = col("date").str.strip()
+    df["game"] = col("pitcher_name").str.strip()  # proxy for game/opponent
+    df["edge_txt"] = col("edge")
     df = df[df["res"].isin(["yes", "no"])].copy()
     df["hit"] = (df["res"] == "yes").astype(int)
     df = df.dropna(subset=["score", "odds"])
