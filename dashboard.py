@@ -853,6 +853,83 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 c["zone"], f"{c['blend']*100:.1f}%"]), "data_hr_strong"))
     rows.append((E[:], "spacer"))
 
+    # ── 🗿 TODAY'S MOUNT RUSHMORE — 4 faces, 4 reasons ───────────────────
+    # Not the top 4 by score — the 4 hitters with main-character energy, each
+    # carved in for a DIFFERENT reason: hottest, strongest, best matchup, best
+    # launch pad. Swagger over EV. Pure fun.
+    rows.append((pad(["\U0001F5FF  TODAY'S MOUNT RUSHMORE — four faces, four reasons"]),
+                 "section_header_hr"))
+
+    cands = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            _sc = str(row.get("hr_score_corrected", "")).strip()
+            sc = safe_float(_sc) if _sc not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
+            if sc < 8:   # must at least be a real bat
+                continue
+            sb = safe_float(row.get("season_barrel_pct", 0))
+            b7 = safe_float(row.get("barrel_pct_7d", 0))
+            bbe7 = safe_float(row.get("bbe_7d", 0))
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            pf = safe_float(row.get("park_hr_factor", 100))
+            _best = str(row.get("best_odds", "")).strip()
+            od = safe_float(_best) if _best not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            cands.append({
+                "nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(),
+                "sc": sc, "od": od,
+                "hot": (b7 - sb) if bbe7 >= 8 else -99,   # recent form delta
+                "mash": sb,                                # raw power
+                "match": plat + pitch,                     # matchup edge
+                "pad": pf + sc * 3,                        # park + score combo
+                "book": str(row.get("best_book", "")).strip(),
+            })
+
+    faces = []
+    used = set()
+    def carve(title, emoji, keyfn, blurb_fn):
+        pool = [c for c in cands if c["nm"] not in used]
+        if not pool:
+            return
+        best = max(pool, key=keyfn)
+        used.add(best["nm"])
+        faces.append((emoji, title, best, blurb_fn(best)))
+
+    carve("The Hot Hand", "\U0001F525", lambda c: c["hot"],
+          lambda c: f"barreling +{c['hot']:.0f}% over baseline lately")
+    carve("The Masher", "\U0001F4AA", lambda c: c["mash"],
+          lambda c: f"{c['mash']:.0f}% season barrel \u2014 raw thump")
+    carve("The Matchup King", "\U0001F3AF", lambda c: c["match"],
+          lambda c: f"combined {c['match']:+.1f} platoon+pitch edge")
+    carve("The Launch Pad", "\U0001F3DF\uFE0F", lambda c: c["pad"],
+          lambda c: f"score {c['sc']:.1f} in a park that plays big")
+
+    if len(faces) < 4:
+        rows.append((pad(["\u2014", "Not enough bats on the slate to carve a monument today", ""]),
+                     "no_plays"))
+    else:
+        rows.append((pad(["Face", "Batter", "Team", "Pitcher", "Odds", "Book", "Why they're carved"]),
+                     "col_header_hr"))
+        for emoji, title, c, blurb in faces:
+            odds_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
+            rows.append((pad([f"{emoji} {title}", c["nm"], c["team"], c["pit"],
+                odds_s, c["book"] or "\u2014", blurb]), "data_hr_strong"))
+        # the monument parlay: all 4 faces
+        combo_dec = 1.0
+        ok = all(c["od"] > 0 for _, _, c, _ in faces)
+        if ok:
+            for _, _, c, _ in faces:
+                o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
+            payout = combined_american([c["od"] for _, _, c, _ in faces])
+            rows.append((pad([f"  \U0001F5FF ALL FOUR FACES parlay: {payout} \u00b7 "
+                              f"25\u00a2 \u2192 ${0.25*(combo_dec-1):.2f} if you carve a perfect monument"]),
+                         "col_header_parlay"))
+    rows.append((E[:], "spacer"))
+
     rows.append((E[:], "spacer"))
     return rows, staging
 
