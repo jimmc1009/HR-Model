@@ -845,10 +845,10 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         rows.append((pad([f"  TICKET \u2014 pays {payout} \u00b7 25\u00a2 returns "
                           f"${win_return:.2f} on a win"]),
                      "col_header_parlay"))
-        rows.append((pad(["Leg","Batter","Team","Pitcher","Score","Odds","Book","Zone","Blend%"]),
+        rows.append((pad(["Batter","Team","Pitcher","Score","Odds","Book","Zone","Blend%"]),
                      "col_header_hr"))
-        for i, c in enumerate(ticket, 1):
-            rows.append((pad([str(i), c["batter"], c["team"], c["pitcher"],
+        for c in ticket:
+            rows.append((pad([c["batter"], c["team"], c["pitcher"],
                 f"{c['sc']:.1f}", f"+{int(c['od'])}", c["book"] or "\u2014",
                 c["zone"], f"{c['blend']*100:.1f}%"]), "data_hr_strong"))
     rows.append((E[:], "spacer"))
