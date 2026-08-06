@@ -1937,9 +1937,28 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
     combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
     combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
 
+    # Column ORDER in the sheet comes from combined_log.columns (concat order),
+    # NOT the row-dict order. Explicitly move platoon/pitch/combined to sit right
+    # after hr_score, near the name.
+    cols = list(combined_log.columns)
+    want_after_hr = ["platoon_score", "pitch_matchup_score", "combined_score"]
+    if "hr_score" in cols:
+        for c in want_after_hr:
+            if c in cols:
+                cols.remove(c)
+        hr_idx = cols.index("hr_score")
+        for offset, c in enumerate(want_after_hr, 1):
+            if c in combined_log.columns:
+                cols.insert(hr_idx + offset, c)
+        # ensure combined_score exists even if concat dropped it
+        if "combined_score" not in combined_log.columns:
+            combined_log["combined_score"] = ""
+        combined_log = combined_log[cols]
+
     with_retry(lambda: ws.clear())
     with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
     print(f"Logged {len(new_rows)} scored players to HR_All_Scores")
+    print(f"  columns near name: {combined_log.columns.tolist()[7:11]}")
 
 
 def main() -> None:
