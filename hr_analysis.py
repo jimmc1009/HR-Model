@@ -383,25 +383,33 @@ def build_analysis(df: pd.DataFrame) -> dict:
 
         platoon_buckets = [
             ("Elite adv (+4+)",     lambda s: s["ps"] >= 4),
-            ("Strong adv (+2..4)",  lambda s: (s["ps"] >= 2) & (s["ps"] < 4)),
-            ("Mild adv (+0.5..2)",  lambda s: (s["ps"] >= 0.5) & (s["ps"] < 2)),
-            ("Neutral (-0.5..0.5)", lambda s: (s["ps"] > -0.5) & (s["ps"] < 0.5)),
-            ("Mild dis (-2..-0.5)", lambda s: (s["ps"] > -2) & (s["ps"] <= -0.5)),
+            ("Strong adv (+3..4)",  lambda s: (s["ps"] >= 3) & (s["ps"] < 4)),
+            ("Strong adv (+2..3)",  lambda s: (s["ps"] >= 2) & (s["ps"] < 3)),
+            ("Mild adv (+1..2)",    lambda s: (s["ps"] >= 1) & (s["ps"] < 2)),
+            ("Mild adv (+0.5..1)",  lambda s: (s["ps"] >= 0.5) & (s["ps"] < 1)),
+            ("Neutral (0..0.5)",    lambda s: (s["ps"] >= 0) & (s["ps"] < 0.5)),
+            ("Neutral (-0.5..0)",   lambda s: (s["ps"] > -0.5) & (s["ps"] < 0)),
+            ("Mild dis (-1..-0.5)", lambda s: (s["ps"] > -1) & (s["ps"] <= -0.5)),
+            ("Mild dis (-2..-1)",   lambda s: (s["ps"] > -2) & (s["ps"] <= -1)),
             ("Strong dis (-4..-2)", lambda s: (s["ps"] > -4) & (s["ps"] <= -2)),
             ("Elite dis (-4+)",     lambda s: s["ps"] <= -4),
         ]
         pitch_buckets = [
             ("Good (+0.8+)",        lambda s: s["pm"] >= 0.8),
-            ("Mild (+0.2..0.8)",    lambda s: (s["pm"] >= 0.2) & (s["pm"] < 0.8)),
-            ("Neutral (-0.2..0.2)", lambda s: (s["pm"] > -0.2) & (s["pm"] < 0.2)),
+            ("Mild (+0.5..0.8)",    lambda s: (s["pm"] >= 0.5) & (s["pm"] < 0.8)),
+            ("Mild (+0.2..0.5)",    lambda s: (s["pm"] >= 0.2) & (s["pm"] < 0.5)),
+            ("Neutral (0..0.2)",    lambda s: (s["pm"] >= 0) & (s["pm"] < 0.2)),
+            ("Neutral (-0.2..0)",   lambda s: (s["pm"] > -0.2) & (s["pm"] < 0),),
             ("Weak (-0.2+)",        lambda s: s["pm"] <= -0.2),
         ]
         combo_buckets = [
             ("Elite+ (+5+)",        lambda s: s["combo"] >= 5),
             ("Elite (+4..5)",       lambda s: (s["combo"] >= 4) & (s["combo"] < 5)),
             ("Great (+3..4)",       lambda s: (s["combo"] >= 3) & (s["combo"] < 4)),
-            ("Good (+1..3)",        lambda s: (s["combo"] >= 1) & (s["combo"] < 3)),
-            ("Neutral (-1..1)",     lambda s: (s["combo"] > -1) & (s["combo"] < 1)),
+            ("Good (+2..3)",        lambda s: (s["combo"] >= 2) & (s["combo"] < 3)),
+            ("Good (+1..2)",        lambda s: (s["combo"] >= 1) & (s["combo"] < 2)),
+            ("Neutral (0..1)",      lambda s: (s["combo"] >= 0) & (s["combo"] < 1)),
+            ("Neutral (-1..0)",     lambda s: (s["combo"] > -1) & (s["combo"] < 0)),
             ("Bad (-1..-3)",        lambda s: (s["combo"] > -3) & (s["combo"] <= -1)),
             ("Terrible (-3+)",      lambda s: s["combo"] <= -3),
         ]
