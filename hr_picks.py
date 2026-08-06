@@ -1864,6 +1864,9 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "pitcher_hand":           str(row.get("pitcher_hand", "")),
             "batter_hand":            str(row.get("batter_hand", "")),
             "hr_score":               str(row.get("score", "")),
+            "platoon_score":          str(row.get("platoon_score", "")),
+            "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
+            "combined_score":         str(round(safe_float(row.get("platoon_score", 0)) + safe_float(row.get("pitch_matchup_score", 0)), 2)),
             "consensus_odds":         str(row.get("consensus_odds", "") if "consensus_odds" in row.index else ""),
             "best_odds":              str(row.get("best_odds", "") if "best_odds" in row.index else ""),
             "best_book":              str(row.get("best_book", "") if "best_book" in row.index else ""),
@@ -1892,7 +1895,6 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "vs_lhp_bbe":             str(row.get("vs_lhp_bbe", "")),
             "vs_rhp_bbe":             str(row.get("vs_rhp_bbe", "")),
             "platoon_matchup":        str(row.get("platoon_desc", "")),
-            "platoon_score":          str(row.get("platoon_score", "")),
             "pitch_matchup":          str(row.get("pitch_matchup_desc", "")),
             "pitcher_barrel_pct":     str(row.get("pitcher_barrel_pct", "")),
             "pitcher_hr_per_fb":      str(row.get("pitcher_hr_per_fb", "")),
@@ -1914,7 +1916,6 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
             "temp_f":                 str(row.get("temp_f", "")),
             "momentum_score":         str(row.get("momentum_score", "")),
             "momentum_desc":          str(row.get("momentum_desc", "")),
-            "pitch_matchup_score":    str(row.get("pitch_matchup_score", "")),
             "top_pitch_iso_vs_hand":  str(_get_top_pitch_iso_vs_hand(row)),
             "pa":                     str(row.get("pa", "")),
             "bbe_7d":                 str(row.get("bbe_7d", "")),
@@ -1936,9 +1937,28 @@ def log_all_scores(gc: gspread.Client, sheet_id: str, combined: pd.DataFrame) ->
     combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
     combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
 
+    # Column ORDER in the sheet comes from combined_log.columns (concat order),
+    # NOT the row-dict order. Explicitly move platoon/pitch/combined to sit right
+    # after hr_score, near the name.
+    cols = list(combined_log.columns)
+    want_after_hr = ["platoon_score", "pitch_matchup_score", "combined_score"]
+    if "hr_score" in cols:
+        for c in want_after_hr:
+            if c in cols:
+                cols.remove(c)
+        hr_idx = cols.index("hr_score")
+        for offset, c in enumerate(want_after_hr, 1):
+            if c in combined_log.columns:
+                cols.insert(hr_idx + offset, c)
+        # ensure combined_score exists even if concat dropped it
+        if "combined_score" not in combined_log.columns:
+            combined_log["combined_score"] = ""
+        combined_log = combined_log[cols]
+
     with_retry(lambda: ws.clear())
     with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
     print(f"Logged {len(new_rows)} scored players to HR_All_Scores")
+    print(f"  columns near name: {combined_log.columns.tolist()[7:11]}")
 
 
 def main() -> None:
