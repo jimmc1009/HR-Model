@@ -29,6 +29,7 @@ on:
           - test_filter_bakeoff.py
           - test_dueness.py
           - test_blend_zones.py
+          - test_monotonic.py
 
 
 jobs:
@@ -191,4 +192,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_blend_zones.py
+
+      - name: Monotonic diagnosis
+        if: github.event.inputs.script == 'test_monotonic.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_monotonic.py
 
