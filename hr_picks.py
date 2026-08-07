@@ -206,6 +206,35 @@ def score_barrel_pct_10d(v: float, bbe_10d: float) -> float:
     return 0.0
 
 
+def score_power_composite(season_barrel, hr_per_fb, hr_per_pa, iso, pa) -> float:
+    """Collapse the 4 correlated LEVEL power metrics (season barrel, HR/FB,
+    HR/PA, ISO) into ONE composite, instead of summing them independently.
+
+    Why: these 4 are ~90% correlated — they all measure 'hits it hard and
+    far'. Summing them let elite mashers pile up ~5.5 points from one trait,
+    inflating scores to 15/16/17 where corr(score,HR) is ~0 (saturation the
+    book overprices). This takes the AVERAGE of the individual metric scores
+    (not the sum) and caps it, so power counts ONCE. A guy elite in all four
+    scores the same as the old best-single, not 4x.
+
+    Returns a single power score in ~[0, 2.0], vs the old ~[0, 5.5].
+    """
+    parts = [
+        score_season_barrel_pct(season_barrel, pa),   # 0..1.5
+        score_hr_per_fb(hr_per_fb, pa),                # 0..1.5
+        score_hr_per_pa(hr_per_pa, pa),                # 0..1.5
+        score_iso(iso, pa) * 1.5,                      # 0..1.5 (iso maxed 1.0 -> scale)
+    ]
+    active = [p for p in parts if p > 0]
+    if not active:
+        return 0.0
+    # average of the metric scores (so redundant power isn't multiplied),
+    # then a small convergence bonus for agreeing across metrics, capped at 2.0
+    avg = sum(active) / len(active)
+    convergence = (len(active) - 1) * 0.12   # up to +0.36 for all 4 agreeing
+    return min(2.0, avg + convergence)
+
+
 def score_season_barrel_pct(v: float, pa: float) -> float:
     """Barrel% Season — +31.0% separation"""
     v = regress(v, LEAGUE_AVG_SEASON_BARREL, pa, MIN_PA_FULL)
@@ -980,15 +1009,16 @@ def prepare_combined(
 
     # ── Final score ────────────────────────────────────────────────────────
     combined["score"] = (
-        # Barrel% windows — strongest predictors
+        # Barrel% windows — recent form (kept; these are time-windowed, not
+        # pure level, so less redundant with the composite)
         combined.apply(lambda r: score_barrel_pct_7d(r["barrel_pct_7d"], r["bbe_7d"]), axis=1) +
         combined.apply(lambda r: score_barrel_pct_5d(r["barrel_pct_5d"], r["bbe_5d"]), axis=1) +
         combined.apply(lambda r: score_barrel_pct_10d(r["barrel_pct_10d"], r["bbe_10d"]), axis=1) +
-        combined.apply(lambda r: score_season_barrel_pct(r["season_barrel_pct"], r["pa"]), axis=1) +
-        # Power metrics
-        combined.apply(lambda r: score_hr_per_fb(r["hr_per_fb"], r["pa"]), axis=1) +
-        combined.apply(lambda r: score_hr_per_pa(r["hr_per_pa"], r["pa"]), axis=1) +
-        combined.apply(lambda r: score_iso(r["iso"], r["pa"]), axis=1) +
+        # LEVEL power — collapsed into ONE composite (was 4 independent sums
+        # that quadruple-counted the same trait and caused 15+ saturation)
+        combined.apply(lambda r: score_power_composite(
+            r["season_barrel_pct"], r["hr_per_fb"], r["hr_per_pa"], r["iso"], r["pa"]
+        ), axis=1) +
         # Pitcher side — light weight
         combined["pitcher_barrel_pct"].apply(score_pitcher_barrel_pct) +
         combined["pitcher_hr_per_fb"].apply(score_pitcher_hr_per_fb) -
