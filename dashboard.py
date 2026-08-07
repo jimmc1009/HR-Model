@@ -930,88 +930,93 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                          "col_header_parlay"))
     rows.append((E[:], "spacer"))
 
-    # ── 🏆 TIER PARLAY — 3 guys who light up the most validated signals ───
-    # Points system across the signals that ACTUALLY held up: score×odds zone,
-    # platoon, pitch. (Wind dropped — it failed controlled testing.) Every guy
-    # scores tier points; take the top 3 by total, always filling 3 legs even
-    # if the 3rd isn't perfect (next-best fallback).
-    rows.append((pad(["\U0001F3C6  TIER PARLAY — top 3 across your best signals"]),
-                 "section_header_hr"))
+    # ── 🎯🔥💣 FUN PARLAYS — cash-shot, hot-hand, moonshot ────────────────
+    def leg_odds_book(row):
+        _b = str(row.get("best_odds", "")).strip()
+        od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+        return od, str(row.get("best_book", "")).strip()
 
-    def zone_pts(sc, od):
-        if sc >= 13 and od <= 300:            return 3   # 13+ | <=+300
-        if sc >= 13 and 301 <= od <= 400:     return 2   # 13+ | +301-400
-        if 12 <= sc < 13 and 301 <= od <= 400: return 1  # 12-13 | +301-400
-        if 9 <= sc < 10 and 301 <= od <= 400: return 1   # 9-10 | +301-400
-        return 0
-
-    def plat_pts(p):
-        if p >= 4:   return 3
-        if p >= 2:   return 2
-        if p >= 0.5: return 1
-        return 0
-
-    def pitch_pts(p):
-        if p >= 0.8: return 2
-        if p >= 0.2: return 1
-        return 0
-
-    tier_cands = []
-    if not hr_source.empty:
+    def build_leg_pool():
+        pool = []
+        if hr_source.empty:
+            return pool
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
                 continue
             _sc = str(row.get("hr_score_corrected", "")).strip()
             sc = safe_float(_sc) if _sc not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
-            _best = str(row.get("best_odds", "")).strip()
-            od = safe_float(_best) if _best not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            od, book = leg_odds_book(row)
             if od <= 0 or sc < 8:
                 continue
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
-            zp, pp, qp = zone_pts(sc, od), plat_pts(plat), pitch_pts(pitch)
-            total = zp + pp + qp
-            tier_cands.append({
-                "nm": nm, "team": str(row.get("team", "")).strip(),
-                "pit": str(row.get("pitcher_name", "")).strip(),
-                "sc": sc, "od": od, "plat": plat, "pitch": pitch,
-                "zp": zp, "pp": pp, "qp": qp, "total": total,
-                "book": str(row.get("best_book", "")).strip(),
-            })
-    # rank by total points, then by score as a tiebreak; take top 3, 1 per team
-    tier_cands.sort(key=lambda x: (-x["total"], -x["sc"]))
-    picks3, teams3 = [], set()
-    for c in tier_cands:
-        if len(picks3) >= 3:
-            break
-        if c["team"] in teams3:
-            continue
-        picks3.append(c); teams3.add(c["team"])
-    if len(picks3) < 3:   # relax team rule to always fill 3
-        for c in tier_cands:
-            if len(picks3) >= 3: break
-            if c in picks3: continue
-            picks3.append(c)
+            sb = safe_float(row.get("season_barrel_pct", 0))
+            b7 = safe_float(row.get("barrel_pct_7d", 0))
+            bbe7 = safe_float(row.get("bbe_7d", 0))
+            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            pool.append({"nm":nm,"team":str(row.get("team","")).strip(),
+                "pit":str(row.get("pitcher_name","")).strip(),"sc":sc,"od":od,"book":book,
+                "plat":plat,"pitch":pitch,"blend":blend,
+                "hot":(b7-sb) if bbe7>=8 else -99})
+        return pool
 
-    if len(picks3) < 3:
-        rows.append((pad(["\u2014", "Fewer than 3 eligible bats on the slate today", ""]),
-                     "no_plays"))
-    else:
+    fun_pool = build_leg_pool()
+
+    def emit_parlay(title, emoji, legs, note=""):
+        if len(legs) < 2:
+            rows.append((pad([f"{emoji}  {title}"]), "section_header_hr"))
+            rows.append((pad(["\u2014", "Not enough qualifying legs today", ""]), "no_plays"))
+            rows.append((E[:], "spacer"))
+            return
         combo_dec = 1.0
-        for c in picks3:
+        for c in legs:
             o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
-        payout = combined_american([c["od"] for c in picks3])
-        rows.append((pad([f"  TICKET \u2014 pays {payout} \u00b7 25\u00a2 \u2192 ${0.25*(combo_dec-1):.2f} on a win"]),
-                     "col_header_parlay"))
-        rows.append((pad(["Batter","Team","Pitcher","Score","Odds","Book","Tier Pts","Plat","Pitch"]),
+        payout = combined_american([c["od"] for c in legs])
+        rows.append((pad([f"{emoji}  {title}"]), "section_header_hr"))
+        rows.append((pad([f"  {len(legs)} legs \u00b7 pays {payout} \u00b7 25\u00a2 \u2192 "
+                          f"${0.25*(combo_dec-1):.2f} on a win{note}"]), "col_header_parlay"))
+        rows.append((pad(["Batter","Team","Pitcher","Score","Odds","Book","Blend%","Impl%","Gap"]),
                      "col_header_hr"))
-        for c in picks3:
-            pts_s = f"{c['total']} (z{c['zp']}/p{c['pp']}/m{c['qp']})"
+        for c in legs:
+            impl = (100/(c["od"]+100) if c["od"] > 0 else abs(c["od"])/(abs(c["od"])+100)) * 100
+            gap = c["blend"]*100 - impl
             rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
-                f"+{int(c['od'])}", c["book"] or "\u2014", pts_s,
-                f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]), "data_hr_strong"))
-    rows.append((E[:], "spacer"))
+                f"+{int(c['od'])}", c["book"] or "\u2014", f"{c['blend']*100:.1f}%",
+                f"{impl:.1f}%", f"{gap:+.1f}"]), "data_hr_strong"))
+        rows.append((E[:], "spacer"))
+
+    # 🎯 CHALK STACK — 2 legs from the best zone (13+ | <=+300), best cash odds
+    chalk = [c for c in fun_pool if c["sc"] >= 13 and c["od"] <= 300]
+    chalk.sort(key=lambda x: -x["blend"])
+    ct, cteams = [], set()
+    for c in chalk:
+        if len(ct) >= 2: break
+        if c["team"] in cteams: continue
+        ct.append(c); cteams.add(c["team"])
+    emit_parlay("CHALK STACK — 2 safest from your 30% zone", "\U0001F3AF", ct,
+                "  (best real shot to cash)")
+
+    # 🔥 ALL HOT HANDS — 3 hottest bats by recent-form delta
+    hot = [c for c in fun_pool if c["hot"] > -99]
+    hot.sort(key=lambda x: -x["hot"])
+    ht, hteams = [], set()
+    for c in hot:
+        if len(ht) >= 3: break
+        if c["team"] in hteams: continue
+        ht.append(c); hteams.add(c["team"])
+    emit_parlay("ALL HOT HANDS — 3 bats barreling up lately", "\U0001F525", ht)
+
+    # 💣 MOONSHOT — 3 longshots (+600+) the MODEL likes most (blend vs implied)
+    moon = [c for c in fun_pool if c["od"] >= 600]
+    moon.sort(key=lambda x: -x["blend"])   # model's best longshots, not random
+    mt, mteams = [], set()
+    for c in moon:
+        if len(mt) >= 3: break
+        if c["team"] in mteams: continue
+        mt.append(c); mteams.add(c["team"])
+    emit_parlay("MOONSHOT — 3 longshots the model likes (Gap = edge)", "\U0001F4A3", mt,
+                "  \u00b7 lottery ticket, but model-picked")
 
     rows.append((E[:], "spacer"))
     return rows, staging
