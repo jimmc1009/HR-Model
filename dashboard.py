@@ -710,6 +710,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             if od <= 0:
                 _diag["no_odds"] += 1
                 continue
+            # DATA-PROVEN GUARDRAILS (test_pocket_and_inversion, test_monotonic):
+            # 1) Hard cap at +499. At +500 and longer the model's "value" picks
+            #    are anti-predictive (10.4% in the 9-10 pocket, +val 4-6% at
+            #    +700). The longshots are a black hole — never bet them.
+            # 2) Cap score at 15. corr(score,HR) within 15+ = ~0 — above 15 is
+            #    saturation the book overprices, not real edge.
+            if od > 499:
+                _diag["no_odds"] += 1
+                continue
+            if sc > 15:
+                sc = 15.0
             band = player_band(sc, od, band_rates)
             if not band:
                 _diag["no_band"] += 1
@@ -744,18 +755,21 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                     diff = wbbl - season_bbl
                     form = "\U0001F525" if diff >= 4 else "\U0001F9CA" if diff <= -4 else "\u2796"
                     break
+            # proven-zone tag: +301-499 value bucket hit 27.8% (model beats
+            # market there); short-odds 9-10 pocket hit 21-26%. Float these up.
+            in_prime = (301 <= od <= 499) or (9 <= sc < 10 and od <= 499)
             picks.append({"batter":batter,"team":str(row.get("team","")).strip(),
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
                 "band":band["band"],"info":info,"bn":band.get("n",0),
                 "combo":combo,"plat":plat,"form":form,
-                "book":best_book,"cons":cons_od})
+                "book":best_book,"cons":cons_od,"prime":in_prime})
 
-    # rank by edge (primary — how much the price beats the band rate), then by
-    # combined matchup tier (secondary — a +EV play that's ALSO a great matchup
-    # is your strongest position). Rounds edge to 0.5pp so tier can break near-
-    # ties without a fatter edge being leapfrogged by a better matchup.
-    picks.sort(key=lambda x: (-round(x["edge"] * 2) / 2, -x["combo"]))
+    # rank: proven-zone plays first (the +301-499 value bucket & 9-10 short-odds
+    # pocket, where the model genuinely beats the market), then by edge, then by
+    # matchup tier. Longshots already filtered out (+499 cap).
+    picks.sort(key=lambda x: (0 if x["prime"] else 1,
+                              -round(x["edge"] * 2) / 2, -x["combo"]))
     print(f"  +EV selections: {_diag['kept']} kept of {_diag['total']} legs "
           f"(no_odds={_diag['no_odds']}, no_band={_diag['no_band']}, "
           f"neg_edge={_diag['neg_edge']}); bands={len(band_rates)}")
