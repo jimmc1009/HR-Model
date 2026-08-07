@@ -30,6 +30,7 @@ on:
           - test_dueness.py
           - test_blend_zones.py
           - test_monotonic.py
+          - test_pocket_and_inversion.py
 
 
 jobs:
@@ -199,4 +200,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_monotonic.py
+
+      - name: Pocket + inversion analysis
+        if: github.event.inputs.script == 'test_pocket_and_inversion.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_pocket_and_inversion.py
 
