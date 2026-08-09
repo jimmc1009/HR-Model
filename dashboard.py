@@ -792,11 +792,34 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     rows.append((pad(["\U0001F3AF  DAILY 3-LEGGER — proven zones, score\u226512, not all chalk"]),
                  "section_header_hr"))
 
+    # Zones defined by PERCENTILE of today's score distribution, so they self-
+    # recalibrate when the scoring scale shifts (the power-composite fix
+    # compressed scores). "High" = top ~12% of today's slate, "pocket" = the
+    # 25th-40th pctile band (the old 9-10 underrated-hitter pocket). Fixed
+    # numeric cutoffs would starve as the scale changes; percentiles don't.
+    all_scores = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            _s = str(row.get("hr_score_corrected", "")).strip()
+            s = safe_float(_s) if _s not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
+            if s > 0:
+                all_scores.append(s)
+    import numpy as _np
+    if all_scores:
+        hi_cut = float(_np.percentile(all_scores, 88))   # top ~12% = "high"
+        pk_lo  = float(_np.percentile(all_scores, 25))   # pocket band low
+        pk_hi  = float(_np.percentile(all_scores, 42))   # pocket band high
+    else:
+        hi_cut, pk_lo, pk_hi = 13, 9, 10
+
     def in_zone(sc, od):
-        if sc >= 13 and od <= 300:            return "A"   # 13+ | <=+300
-        if sc >= 13 and 301 <= od <= 400:     return "C"   # 13+ | +301-400
-        if 9 <= sc < 10 and 301 <= od <= 400: return "D"   # 9-10 | +301-400
+        if sc >= hi_cut and od <= 300:            return "A"   # high | <=+300
+        if sc >= hi_cut and 301 <= od <= 400:     return "C"   # high | +301-400
+        if pk_lo <= sc < pk_hi and 301 <= od <= 400: return "D"  # pocket | +301-400
         return None
+
+    rows.append((pad([f"\U0001F3AF  DAILY 3-LEGGER — proven zones (high\u2265{hi_cut:.0f}), not all chalk"]),
+                 "section_header_hr"))
 
     leg_pool = []
     if not hr_source.empty:
@@ -820,10 +843,10 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 "pitcher":str(row.get("pitcher_name","")).strip(),
                 "sc":sc,"od":od,"zone":z,"blend":blend,"book":str(row.get("best_book","")).strip(),
                 "cheap":od <= 300})
-    # require score>=12 (zones A/C are 13+, D is 9-10 — so D legs are <12 and
-    # get excluded by the score>=12 rule automatically unless we keep them for
-    # payout; per the rule, all legs must be >=12, so pool is effectively A+C)
-    elig = [c for c in leg_pool if c["sc"] >= 12]
+    # eligible = high-zone legs (A/C). Pocket (D) legs fill only if short on high.
+    elig = [c for c in leg_pool if c["zone"] in ("A", "C")]
+    if len(elig) < 3:
+        elig = elig + [c for c in leg_pool if c["zone"] == "D"]
     elig.sort(key=lambda x: -x["blend"])
 
     # build one ticket: top blends, at most 1 cheap (<=+300) leg, 1 per team
@@ -1001,7 +1024,11 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         rows.append((E[:], "spacer"))
 
     # 🎯 CHALK STACK — 2 legs from the best zone (13+ | <=+300), best cash odds
-    chalk = [c for c in fun_pool if c["sc"] >= 13 and c["od"] <= 300]
+    # 🎯 CHALK STACK — 2 legs from the highest-score short-odds pool. Uses the
+    # same percentile "high" cutoff as the 3-legger so it self-recalibrates.
+    ch_scores = [c["sc"] for c in fun_pool if c["sc"] > 0]
+    ch_cut = float(_np.percentile(ch_scores, 82)) if ch_scores else 13
+    chalk = [c for c in fun_pool if c["sc"] >= ch_cut and c["od"] <= 300]
     chalk.sort(key=lambda x: -x["blend"])
     ct, cteams = [], set()
     for c in chalk:
