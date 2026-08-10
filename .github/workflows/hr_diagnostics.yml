@@ -31,6 +31,7 @@ on:
           - test_blend_zones.py
           - test_monotonic.py
           - test_pocket_and_inversion.py
+          - rescore_all.py
 
 
 jobs:
@@ -207,4 +208,11 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_pocket_and_inversion.py
+
+      - name: Rescore all + tier analysis
+        if: github.event.inputs.script == 'rescore_all.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python rescore_all.py
 
