@@ -802,16 +802,17 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 all_scores.append(s)
     import numpy as _np
     if all_scores:
-        hi_cut = float(_np.percentile(all_scores, 88))   # top ~12% = "high"
-        pk_lo  = float(_np.percentile(all_scores, 25))   # pocket band low
-        pk_hi  = float(_np.percentile(all_scores, 42))   # pocket band high
+        hi_cut = float(_np.percentile(all_scores, 75))   # top ~25% = "high" (widened from 88)
+        pk_lo  = float(_np.percentile(all_scores, 20))   # pocket band low (widened)
+        pk_hi  = float(_np.percentile(all_scores, 45))   # pocket band high (widened)
     else:
-        hi_cut, pk_lo, pk_hi = 13, 9, 10
+        hi_cut, pk_lo, pk_hi = 12, 8.5, 10
 
     def in_zone(sc, od):
+        # odds windows widened to +499 (was +400) to capture more legs
         if sc >= hi_cut and od <= 300:            return "A"   # high | <=+300
-        if sc >= hi_cut and 301 <= od <= 400:     return "C"   # high | +301-400
-        if pk_lo <= sc < pk_hi and 301 <= od <= 400: return "D"  # pocket | +301-400
+        if sc >= hi_cut and 301 <= od <= 499:     return "C"   # high | +301-499
+        if pk_lo <= sc < pk_hi and 301 <= od <= 499: return "D"  # pocket | +301-499
         return None
 
     rows.append((pad([f"\U0001F3AF  DAILY 3-LEGGER — proven zones (high\u2265{hi_cut:.0f}), not all chalk"]),
@@ -845,12 +846,21 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         elig = elig + [c for c in leg_pool if c["zone"] == "D"]
     elig.sort(key=lambda x: -x["blend"])
 
+    # ── BOARD-WIDE SPREAD CAP (shared across ALL parlays incl 3-legger &
+    # Rushmore) — no player anchors more than 2 tickets across the whole board.
+    _board_use = {}
+    _BOARD_CAP = 2
+    def _avail(nm):
+        return _board_use.get(nm, 0) < _BOARD_CAP
+    def _mark(nm):
+        _board_use[nm] = _board_use.get(nm, 0) + 1
+
     # build one ticket: top blends, at most 1 cheap (<=+300) leg, 1 per team
     ticket, teams, cheap_used = [], set(), 0
     for c in elig:
         if len(ticket) >= 3:
             break
-        if c["team"] in teams:
+        if c["team"] in teams or not _avail(c["batter"]):
             continue
         if c["cheap"] and cheap_used >= 1:
             continue
@@ -863,6 +873,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             if len(ticket) >= 3: break
             if c in ticket or c["team"] in teams: continue
             ticket.append(c); teams.add(c["team"])
+    for c in ticket:
+        _mark(c["batter"])
 
     if len(ticket) < 3:
         rows.append((pad(["\u2014", "Not enough score\u226512 zone legs today for a 3-legger", ""]),
@@ -925,11 +937,11 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     faces = []
     used = set()
     def carve(title, emoji, keyfn, blurb_fn):
-        pool = [c for c in cands if c["nm"] not in used]
+        pool = [c for c in cands if c["nm"] not in used and _avail(c["nm"])]
         if not pool:
             return
         best = max(pool, key=keyfn)
-        used.add(best["nm"])
+        used.add(best["nm"]); _mark(best["nm"])
         faces.append((emoji, title, best, blurb_fn(best)))
 
     carve("The Hot Hand", "\U0001F525", lambda c: c["hot"],
@@ -996,18 +1008,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
 
     fun_pool = build_leg_pool()
 
-    # ── CROSS-BOARD SPREAD ────────────────────────────────────────────────
-    # Track how many parlays each player anchors across the WHOLE board. Once a
-    # guy hits the cap, later parlays skip him and reach deeper into the pool,
-    # so the board spreads across many players instead of leaning on 6-8 guys.
-    # Combined with each parlay's distinct criteria (Chalk=score, Hot=form,
-    # Moon=longshots), this fishes different ponds AND spreads risk.
-    _board_use = {}
-    _BOARD_CAP = 2   # any single player anchors at most 2 parlays board-wide
-    def _avail(nm):
-        return _board_use.get(nm, 0) < _BOARD_CAP
-    def _mark(nm):
-        _board_use[nm] = _board_use.get(nm, 0) + 1
+    # (board-wide cap _board_use/_avail/_mark defined earlier, shared across
+    # 3-legger, Rushmore, and these fun parlays)
 
     def emit_parlay(title, emoji, legs, note=""):
         if len(legs) < 2:
@@ -1041,7 +1043,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
 
     # 🎯 CHALK STACK — biggest bats at short odds (score axis). Respects board cap.
     ch_scores = [c["sc"] for c in fun_pool if c["sc"] > 0]
-    ch_cut = float(_np.percentile(ch_scores, 82)) if ch_scores else 13
+    ch_cut = float(_np.percentile(ch_scores, 70)) if ch_scores else 12
     chalk = [c for c in fun_pool if c["sc"] >= ch_cut and c["od"] <= 300]
     chalk.sort(key=lambda x: (-x["sc"], _rot(x["nm"])))
     ct, cteams = [], set()
