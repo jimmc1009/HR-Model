@@ -785,12 +785,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
                 "data_hr_strong"))
     # ── DAILY 3-LEGGER — the "cash a big ticket" play ────────────────────
-    # Pool: three proven zones (A 13+|<=+300, C 13+|+301-400, D 9-10|+301-400).
-    # Zone B (12-13|+301-400) dropped — it regressed 31%->20.5% on thin sample.
-    # Rule: all 3 legs score>=12 AND at most 1 leg <=+300 (best cash rate that
-    # isn't all chalk). Ranked by blended probability, strongest legs first.
-    rows.append((pad(["\U0001F3AF  DAILY 3-LEGGER — proven zones, score\u226512, not all chalk"]),
-                 "section_header_hr"))
+    # Rule: all 3 legs in the top score zones AND at most 1 leg <=+300 (best
+    # cash rate that isn't all chalk). Ranked by blended probability.
 
     # Zones defined by PERCENTILE of today's score distribution, so they self-
     # recalibrate when the scoring scale shifts (the power-composite fix
@@ -1000,12 +996,27 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
 
     fun_pool = build_leg_pool()
 
+    # ── CROSS-BOARD SPREAD ────────────────────────────────────────────────
+    # Track how many parlays each player anchors across the WHOLE board. Once a
+    # guy hits the cap, later parlays skip him and reach deeper into the pool,
+    # so the board spreads across many players instead of leaning on 6-8 guys.
+    # Combined with each parlay's distinct criteria (Chalk=score, Hot=form,
+    # Moon=longshots), this fishes different ponds AND spreads risk.
+    _board_use = {}
+    _BOARD_CAP = 2   # any single player anchors at most 2 parlays board-wide
+    def _avail(nm):
+        return _board_use.get(nm, 0) < _BOARD_CAP
+    def _mark(nm):
+        _board_use[nm] = _board_use.get(nm, 0) + 1
+
     def emit_parlay(title, emoji, legs, note=""):
         if len(legs) < 2:
             rows.append((pad([f"{emoji}  {title}"]), "section_header_hr"))
             rows.append((pad(["\u2014", "Not enough qualifying legs today", ""]), "no_plays"))
             rows.append((E[:], "spacer"))
             return
+        for c in legs:
+            _mark(c["nm"])
         combo_dec = 1.0
         for c in legs:
             o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
@@ -1023,38 +1034,41 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"{impl:.1f}%", f"{gap:+.1f}"]), "data_hr_strong"))
         rows.append((E[:], "spacer"))
 
-    # 🎯 CHALK STACK — 2 legs from the best zone (13+ | <=+300), best cash odds
-    # 🎯 CHALK STACK — 2 legs from the highest-score short-odds pool. Uses the
-    # same percentile "high" cutoff as the 3-legger so it self-recalibrates.
+    import hashlib as _hl
+    _day = str(timestamp_str)[:10]
+    def _rot(nm):
+        return int(_hl.md5(f"{nm}{_day}".encode()).hexdigest()[:6], 16) % 100 / 1000.0
+
+    # 🎯 CHALK STACK — biggest bats at short odds (score axis). Respects board cap.
     ch_scores = [c["sc"] for c in fun_pool if c["sc"] > 0]
     ch_cut = float(_np.percentile(ch_scores, 82)) if ch_scores else 13
     chalk = [c for c in fun_pool if c["sc"] >= ch_cut and c["od"] <= 300]
-    chalk.sort(key=lambda x: -x["blend"])
+    chalk.sort(key=lambda x: (-x["sc"], _rot(x["nm"])))
     ct, cteams = [], set()
     for c in chalk:
         if len(ct) >= 2: break
-        if c["team"] in cteams: continue
+        if c["team"] in cteams or not _avail(c["nm"]): continue
         ct.append(c); cteams.add(c["team"])
     emit_parlay("CHALK STACK — 2 safest from your 30% zone", "\U0001F3AF", ct,
                 "  (best real shot to cash)")
 
-    # 🔥 ALL HOT HANDS — 3 hottest bats by recent-form delta
+    # 🔥 ALL HOT HANDS — 3 hottest bats by recent-form delta. Respects board cap.
     hot = [c for c in fun_pool if c["hot"] > -99]
-    hot.sort(key=lambda x: -x["hot"])
+    hot.sort(key=lambda x: (-x["hot"], _rot(x["nm"])))
     ht, hteams = [], set()
     for c in hot:
         if len(ht) >= 3: break
-        if c["team"] in hteams: continue
+        if c["team"] in hteams or not _avail(c["nm"]): continue
         ht.append(c); hteams.add(c["team"])
     emit_parlay("ALL HOT HANDS — 3 bats barreling up lately", "\U0001F525", ht)
 
-    # 💣 MOONSHOT — 3 longshots (+600+) the MODEL likes most (blend vs implied)
+    # 💣 MOONSHOT — 3 longshots (+600+) the MODEL likes most. Respects board cap.
     moon = [c for c in fun_pool if c["od"] >= 600]
-    moon.sort(key=lambda x: -x["blend"])   # model's best longshots, not random
+    moon.sort(key=lambda x: (-x["blend"], _rot(x["nm"])))
     mt, mteams = [], set()
     for c in moon:
         if len(mt) >= 3: break
-        if c["team"] in mteams: continue
+        if c["team"] in mteams or not _avail(c["nm"]): continue
         mt.append(c); mteams.add(c["team"])
     emit_parlay("MOONSHOT — 3 longshots the model likes (Gap = edge)", "\U0001F4A3", mt,
                 "  \u00b7 lottery ticket, but model-picked")
