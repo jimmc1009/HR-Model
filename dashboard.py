@@ -114,6 +114,18 @@ def safe_float(val, default=0.0) -> float:
         return default
 
 
+def resolve_score(row, default=0.0) -> float:
+    """Single source of truth for a row's HR score. Prefers hr_score_recalc
+    (the faithful new-scale rescore of all history), then hr_score_corrected,
+    then raw hr_score. Everything in the dashboard scores off this so the whole
+    board runs on the new monotonic scale."""
+    for col in ("hr_score_recalc", "hr_score_corrected", "hr_score"):
+        v = str(row.get(col, "")).strip()
+        if v not in ("", "nan", "None"):
+            return safe_float(v, default)
+    return default
+
+
 def american_to_implied(odds: float) -> float:
     if odds >= 0:
         return 100.0 / (odds + 100.0)
@@ -159,12 +171,7 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
     if resolved.empty:
         return hit_rates
 
-    resolved["hr_score"] = resolved.apply(
-        lambda r: safe_float(r.get("hr_score_corrected"))
-        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
-        else safe_float(r.get("hr_score")),
-        axis=1,
-    )
+    resolved["hr_score"] = resolved.apply(resolve_score, axis=1)
     resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
     resolved["odds_num"] = resolved["consensus_odds"].apply(safe_float)
 
@@ -332,10 +339,7 @@ def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
     df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
     if df.empty:
         return []
-    df["score"] = df.apply(
-        lambda r: safe_float(r.get("hr_score_corrected"))
-        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
-        else safe_float(r.get("hr_score")), axis=1)
+    df["score"] = df.apply(resolve_score, axis=1)
     df["odds"] = df["consensus_odds"].apply(safe_float)
     df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
     df = df[(df["odds"] > 0) & (df["score"] > 0)]
@@ -473,10 +477,7 @@ def build_all_band_rates(hr_all_scores: pd.DataFrame, min_n: int = 20) -> dict:
     df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
     if df.empty:
         return {}
-    df["score"] = df.apply(
-        lambda r: safe_float(r.get("hr_score_corrected"))
-        if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
-        else safe_float(r.get("hr_score")), axis=1)
+    df["score"] = df.apply(resolve_score, axis=1)
     df["odds"] = df["consensus_odds"].apply(safe_float)
     df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
     df = df[(df["odds"] > 0) & (df["score"] > 0)]
@@ -531,13 +532,8 @@ def build_breakeven_lookup(hr_df):
     if d.empty:
         return out
     d["hit"] = (d["res"] == "Yes").astype(int)
-    # use corrected score when present (matches HR_Analysis + hit-rates builder)
-    def _score(r):
-        c = str(r.get("hr_score_corrected", "")).strip()
-        if c not in ("", "nan", "None"):
-            return safe_float(c)
-        return safe_float(r.get("hr_score", 0))
-    d["sc"] = d.apply(_score, axis=1) if "hr_score" in d.columns or "hr_score_corrected" in d.columns else np.nan
+    # use the unified resolver (prefers hr_score_recalc new scale)
+    d["sc"] = d.apply(resolve_score, axis=1)
     d["od"] = pd.to_numeric(d["consensus_odds"], errors="coerce") if "consensus_odds" in d.columns else np.nan
     d = d.dropna(subset=["sc", "od"])
     print(f"  [be_debug] resolved={len(d)}, "
@@ -606,7 +602,8 @@ def reconstruct_heater(hr_df, days_back=7):
     d["hit"] = (d["res"] == "Yes").astype(int)
     d["ps"] = pd.to_numeric(d.get("platoon_score", 0), errors="coerce").fillna(0)
     d["pm"] = pd.to_numeric(d.get("pitch_matchup_score", 0), errors="coerce").fillna(0)
-    d["sc"] = pd.to_numeric(d.get("hr_score", 0), errors="coerce").fillna(0)
+    d["sc"] = pd.to_numeric(d.get("hr_score_recalc", d.get("hr_score", 0)), errors="coerce").fillna(
+              pd.to_numeric(d.get("hr_score", 0), errors="coerce")).fillna(0)
     d["od"] = pd.to_numeric(d.get("consensus_odds", 0), errors="coerce").fillna(0)
     d["combo"] = d["ps"] + d["pm"]
     d["date_s"] = d["date"].astype(str).str.strip()
@@ -697,9 +694,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             if not batter or batter == "nan":
                 continue
             _diag["total"] += 1
-            _sc_corr = str(row.get("hr_score_corrected", "")).strip()
-            sc = safe_float(_sc_corr) if _sc_corr not in ("", "nan", "None") \
-                 else safe_float(row.get("hr_score", 0))
+            sc = resolve_score(row)
             # prefer the best available price across your books; fall back to
             # consensus if best_odds isn't present (older rows / no odds).
             _best = str(row.get("best_odds", "")).strip()
@@ -784,298 +779,69 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", str(c.get("bn","")),
                 f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
                 "data_hr_strong"))
-    # ── DAILY 3-LEGGER — the "cash a big ticket" play ────────────────────
-    # Rule: all 3 legs in the top score zones AND at most 1 leg <=+300 (best
-    # cash rate that isn't all chalk). Ranked by blended probability.
 
-    # Zones defined by PERCENTILE of today's score distribution, so they self-
-    # recalibrate when the scoring scale shifts (the power-composite fix
-    # compressed scores). "High" = top ~12% of today's slate, "pocket" = the
-    # 25th-40th pctile band (the old 9-10 underrated-hitter pocket). Fixed
-    # numeric cutoffs would starve as the scale changes; percentiles don't.
-    all_scores = []
-    if not hr_source.empty:
-        for _, row in hr_source.iterrows():
-            _s = str(row.get("hr_score_corrected", "")).strip()
-            s = safe_float(_s) if _s not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
-            if s > 0:
-                all_scores.append(s)
-    import numpy as _np
-    if all_scores:
-        hi_cut = float(_np.percentile(all_scores, 75))   # top ~25% = "high" (widened from 88)
-        pk_lo  = float(_np.percentile(all_scores, 20))   # pocket band low (widened)
-        pk_hi  = float(_np.percentile(all_scores, 45))   # pocket band high (widened)
-    else:
-        hi_cut, pk_lo, pk_hi = 12, 8.5, 10
-
-    def in_zone(sc, od):
-        # odds windows widened to +499 (was +400) to capture more legs
-        if sc >= hi_cut and od <= 300:            return "A"   # high | <=+300
-        if sc >= hi_cut and 301 <= od <= 499:     return "C"   # high | +301-499
-        if pk_lo <= sc < pk_hi and 301 <= od <= 499: return "D"  # pocket | +301-499
-        return None
-
-    rows.append((pad([f"\U0001F3AF  DAILY 3-LEGGER — proven zones (high\u2265{hi_cut:.0f}), not all chalk"]),
-                 "section_header_hr"))
-
-    leg_pool = []
-    if not hr_source.empty:
-        for _, row in hr_source.iterrows():
-            batter = str(row.get("player_name", "")).strip()
-            if not batter or batter == "nan":
-                continue
-            _sc = str(row.get("hr_score_corrected", "")).strip()
-            sc = safe_float(_sc) if _sc not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
-            _best = str(row.get("best_odds", "")).strip()
-            od = safe_float(_best) if _best not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
-            if od <= 0:
-                continue
-            z = in_zone(sc, od)
-            if not z:
-                continue
-            plat = safe_float(row.get("platoon_score", 0))
-            pitch = safe_float(row.get("pitch_matchup_score", 0))
-            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
-            leg_pool.append({"batter":batter,"team":str(row.get("team","")).strip(),
-                "pitcher":str(row.get("pitcher_name","")).strip(),
-                "sc":sc,"od":od,"zone":z,"blend":blend,"book":str(row.get("best_book","")).strip(),
-                "cheap":od <= 300})
-    # eligible = high-zone legs (A/C). Pocket (D) legs fill only if short on high.
-    elig = [c for c in leg_pool if c["zone"] in ("A", "C")]
-    if len(elig) < 3:
-        elig = elig + [c for c in leg_pool if c["zone"] == "D"]
-    elig.sort(key=lambda x: -x["blend"])
-
-    # ── BOARD-WIDE SPREAD CAP (shared across ALL parlays incl 3-legger &
-    # Rushmore) — no player anchors more than 2 tickets across the whole board.
-    _board_use = {}
-    _BOARD_CAP = 2
-    def _avail(nm):
-        return _board_use.get(nm, 0) < _BOARD_CAP
-    def _mark(nm):
-        _board_use[nm] = _board_use.get(nm, 0) + 1
-
-    # build one ticket: top blends, at most 1 cheap (<=+300) leg, 1 per team
-    ticket, teams, cheap_used = [], set(), 0
-    for c in elig:
-        if len(ticket) >= 3:
-            break
-        if c["team"] in teams or not _avail(c["batter"]):
-            continue
-        if c["cheap"] and cheap_used >= 1:
-            continue
-        ticket.append(c); teams.add(c["team"])
-        if c["cheap"]:
-            cheap_used += 1
-    # backfill if short (relax the 1-cheap cap before giving up)
-    if len(ticket) < 3:
-        for c in elig:
-            if len(ticket) >= 3: break
-            if c in ticket or c["team"] in teams: continue
-            ticket.append(c); teams.add(c["team"])
-    for c in ticket:
-        _mark(c["batter"])
-
-    if len(ticket) < 3:
-        rows.append((pad(["\u2014", "Not enough score\u226512 zone legs today for a 3-legger", ""]),
-                     "no_plays"))
-    else:
-        payout = combined_american([c["od"] for c in ticket])
-        # combined decimal = product of each leg's decimal odds
-        combo_dec = 1.0
-        for c in ticket:
-            o = c["od"]
-            combo_dec *= (1 + (o / 100 if o > 0 else 100 / abs(o)))
-        win_return = 0.25 * (combo_dec - 1)
-        rows.append((pad([f"  TICKET \u2014 pays {payout} \u00b7 25\u00a2 returns "
-                          f"${win_return:.2f} on a win"]),
-                     "col_header_parlay"))
-        rows.append((pad(["Batter","Team","Pitcher","Score","Odds","Book","Zone","Blend%"]),
-                     "col_header_hr"))
-        for c in ticket:
-            rows.append((pad([c["batter"], c["team"], c["pitcher"],
-                f"{c['sc']:.1f}", f"+{int(c['od'])}", c["book"] or "\u2014",
-                c["zone"], f"{c['blend']*100:.1f}%"]), "data_hr_strong"))
-    rows.append((E[:], "spacer"))
-
-    # ── 🗿 TODAY'S MOUNT RUSHMORE — 4 faces, 4 reasons ───────────────────
-    # Not the top 4 by score — the 4 hitters with main-character energy, each
-    # carved in for a DIFFERENT reason: hottest, strongest, best matchup, best
-    # launch pad. Swagger over EV. Pure fun.
-    rows.append((pad(["\U0001F5FF  TODAY'S MOUNT RUSHMORE — four faces, four reasons"]),
-                 "section_header_hr"))
-
-    cands = []
+    # ── 🔁 5-LEG ROUND ROBIN (by 2s) — always fills ────────────────────
+    # Picks the 5 highest blended-probability hitters at <=+499 (longshots
+    # excluded), then bets ALL ten 2-leg combos of them. You cash whenever any
+    # 2 of the 5 homer; 3+ homers cashes multiple tickets. Most forgiving
+    # structure. Always fills 5 by reaching down the board if needed.
+    import itertools as _it
+    rr_pool = []
     if not hr_source.empty:
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
                 continue
-            _sc = str(row.get("hr_score_corrected", "")).strip()
-            sc = safe_float(_sc) if _sc not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
-            if sc < 8:   # must at least be a real bat
-                continue
-            sb = safe_float(row.get("season_barrel_pct", 0))
-            b7 = safe_float(row.get("barrel_pct_7d", 0))
-            bbe7 = safe_float(row.get("bbe_7d", 0))
-            plat = safe_float(row.get("platoon_score", 0))
-            pitch = safe_float(row.get("pitch_matchup_score", 0))
-            pf = safe_float(row.get("park_hr_factor", 100))
-            _best = str(row.get("best_odds", "")).strip()
-            od = safe_float(_best) if _best not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
-            cands.append({
-                "nm": nm, "team": str(row.get("team", "")).strip(),
-                "pit": str(row.get("pitcher_name", "")).strip(),
-                "sc": sc, "od": od,
-                "hot": (b7 - sb) if bbe7 >= 8 else -99,   # recent form delta
-                "mash": sb,                                # raw power
-                "match": plat + pitch,                     # matchup edge
-                "pad": pf + sc * 3,                        # park + score combo
-                "book": str(row.get("best_book", "")).strip(),
-            })
-
-    faces = []
-    used = set()
-    def carve(title, emoji, keyfn, blurb_fn):
-        pool = [c for c in cands if c["nm"] not in used and _avail(c["nm"])]
-        if not pool:
-            return
-        best = max(pool, key=keyfn)
-        used.add(best["nm"]); _mark(best["nm"])
-        faces.append((emoji, title, best, blurb_fn(best)))
-
-    carve("The Hot Hand", "\U0001F525", lambda c: c["hot"],
-          lambda c: f"barreling +{c['hot']:.0f}% over baseline lately")
-    carve("The Masher", "\U0001F4AA", lambda c: c["mash"],
-          lambda c: f"{c['mash']:.0f}% season barrel \u2014 raw thump")
-    carve("The Matchup King", "\U0001F3AF", lambda c: c["match"],
-          lambda c: f"combined {c['match']:+.1f} platoon+pitch edge")
-    carve("The Launch Pad", "\U0001F3DF\uFE0F", lambda c: c["pad"],
-          lambda c: f"score {c['sc']:.1f} in a park that plays big")
-
-    if len(faces) < 4:
-        rows.append((pad(["\u2014", "Not enough bats on the slate to carve a monument today", ""]),
-                     "no_plays"))
-    else:
-        rows.append((pad(["Face", "Batter", "Team", "Pitcher", "Odds", "Book", "Why they're carved"]),
-                     "col_header_hr"))
-        for emoji, title, c, blurb in faces:
-            odds_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
-            rows.append((pad([f"{emoji} {title}", c["nm"], c["team"], c["pit"],
-                odds_s, c["book"] or "\u2014", blurb]), "data_hr_strong"))
-        # the monument parlay: all 4 faces
-        combo_dec = 1.0
-        ok = all(c["od"] > 0 for _, _, c, _ in faces)
-        if ok:
-            for _, _, c, _ in faces:
-                o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
-            payout = combined_american([c["od"] for _, _, c, _ in faces])
-            rows.append((pad([f"  \U0001F5FF ALL FOUR FACES parlay: {payout} \u00b7 "
-                              f"25\u00a2 \u2192 ${0.25*(combo_dec-1):.2f} if you carve a perfect monument"]),
-                         "col_header_parlay"))
-    rows.append((E[:], "spacer"))
-
-    # ── 🎯🔥💣 FUN PARLAYS — cash-shot, hot-hand, moonshot ────────────────
-    def leg_odds_book(row):
-        _b = str(row.get("best_odds", "")).strip()
-        od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
-        return od, str(row.get("best_book", "")).strip()
-
-    def build_leg_pool():
-        pool = []
-        if hr_source.empty:
-            return pool
-        for _, row in hr_source.iterrows():
-            nm = str(row.get("player_name", "")).strip()
-            if not nm or nm == "nan":
-                continue
-            _sc = str(row.get("hr_score_corrected", "")).strip()
-            sc = safe_float(_sc) if _sc not in ("", "nan", "None") else safe_float(row.get("hr_score", 0))
-            od, book = leg_odds_book(row)
-            if od <= 0 or sc < 8:
+            sc = resolve_score(row)
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if od <= 0 or od > 499:      # longshot cap
                 continue
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
-            sb = safe_float(row.get("season_barrel_pct", 0))
-            b7 = safe_float(row.get("barrel_pct_7d", 0))
-            bbe7 = safe_float(row.get("bbe_7d", 0))
             blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
-            pool.append({"nm":nm,"team":str(row.get("team","")).strip(),
-                "pit":str(row.get("pitcher_name","")).strip(),"sc":sc,"od":od,"book":book,
-                "plat":plat,"pitch":pitch,"blend":blend,
-                "hot":(b7-sb) if bbe7>=8 else -99})
-        return pool
+            rr_pool.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(), "blend": blend})
+    rr_pool.sort(key=lambda x: -x["blend"])
+    # take best 5, one per team; relax the team rule if needed to always fill 5
+    five, fteams = [], set()
+    for c in rr_pool:
+        if len(five) >= 5: break
+        if c["team"] in fteams: continue
+        five.append(c); fteams.add(c["team"])
+    if len(five) < 5:
+        for c in rr_pool:
+            if len(five) >= 5: break
+            if c in five: continue
+            five.append(c)
 
-    fun_pool = build_leg_pool()
-
-    # (board-wide cap _board_use/_avail/_mark defined earlier, shared across
-    # 3-legger, Rushmore, and these fun parlays)
-
-    def emit_parlay(title, emoji, legs, note=""):
-        if len(legs) < 2:
-            rows.append((pad([f"{emoji}  {title}"]), "section_header_hr"))
-            rows.append((pad(["\u2014", "Not enough qualifying legs today", ""]), "no_plays"))
-            rows.append((E[:], "spacer"))
-            return
-        for c in legs:
-            _mark(c["nm"])
-        combo_dec = 1.0
-        for c in legs:
-            o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
-        payout = combined_american([c["od"] for c in legs])
-        rows.append((pad([f"{emoji}  {title}"]), "section_header_hr"))
-        rows.append((pad([f"  {len(legs)} legs \u00b7 pays {payout} \u00b7 25\u00a2 \u2192 "
-                          f"${0.25*(combo_dec-1):.2f} on a win{note}"]), "col_header_parlay"))
-        rows.append((pad(["Batter","Team","Pitcher","Score","Odds","Book","Blend%","Impl%","Gap"]),
+    rows.append((pad(["🔁  5-LEG ROUND ROBIN — ten 2-leggers, cash if any 2 hit"]),
+                 "section_header_hr"))
+    if len(five) < 5:
+        rows.append((pad(["—", "Fewer than 5 eligible bats on the slate today", ""]), "no_plays"))
+    else:
+        # the 5 legs
+        rows.append((pad(["Leg", "Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Blend%"]),
                      "col_header_hr"))
-        for c in legs:
-            impl = (100/(c["od"]+100) if c["od"] > 0 else abs(c["od"])/(abs(c["od"])+100)) * 100
-            gap = c["blend"]*100 - impl
-            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
-                f"+{int(c['od'])}", c["book"] or "\u2014", f"{c['blend']*100:.1f}%",
-                f"{impl:.1f}%", f"{gap:+.1f}"]), "data_hr_strong"))
-        rows.append((E[:], "spacer"))
-
-    import hashlib as _hl
-    _day = str(timestamp_str)[:10]
-    def _rot(nm):
-        return int(_hl.md5(f"{nm}{_day}".encode()).hexdigest()[:6], 16) % 100 / 1000.0
-
-    # 🎯 CHALK STACK — biggest bats at short odds (score axis). Respects board cap.
-    ch_scores = [c["sc"] for c in fun_pool if c["sc"] > 0]
-    ch_cut = float(_np.percentile(ch_scores, 70)) if ch_scores else 12
-    chalk = [c for c in fun_pool if c["sc"] >= ch_cut and c["od"] <= 300]
-    chalk.sort(key=lambda x: (-x["sc"], _rot(x["nm"])))
-    ct, cteams = [], set()
-    for c in chalk:
-        if len(ct) >= 2: break
-        if c["team"] in cteams or not _avail(c["nm"]): continue
-        ct.append(c); cteams.add(c["team"])
-    emit_parlay("CHALK STACK — 2 safest from your 30% zone", "\U0001F3AF", ct,
-                "  (best real shot to cash)")
-
-    # 🔥 ALL HOT HANDS — 3 hottest bats by recent-form delta. Respects board cap.
-    hot = [c for c in fun_pool if c["hot"] > -99]
-    hot.sort(key=lambda x: (-x["hot"], _rot(x["nm"])))
-    ht, hteams = [], set()
-    for c in hot:
-        if len(ht) >= 3: break
-        if c["team"] in hteams or not _avail(c["nm"]): continue
-        ht.append(c); hteams.add(c["team"])
-    emit_parlay("ALL HOT HANDS — 3 bats barreling up lately", "\U0001F525", ht)
-
-    # 💣 MOONSHOT — 3 longshots (+600+) the MODEL likes most. Respects board cap.
-    moon = [c for c in fun_pool if c["od"] >= 600]
-    moon.sort(key=lambda x: (-x["blend"], _rot(x["nm"])))
-    mt, mteams = [], set()
-    for c in moon:
-        if len(mt) >= 3: break
-        if c["team"] in mteams or not _avail(c["nm"]): continue
-        mt.append(c); mteams.add(c["team"])
-    emit_parlay("MOONSHOT — 3 longshots the model likes (Gap = edge)", "\U0001F4A3", mt,
-                "  \u00b7 lottery ticket, but model-picked")
-
+        for i, c in enumerate(five, 1):
+            rows.append((pad([str(i), c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
+                "data_hr_strong"))
+        # ten 2-leg combos with payout each
+        rows.append((pad([""]), "spacer"))
+        rows.append((pad(["  Ten 2-leg parlays (25¢ each = $2.50 total):"]), "col_header_parlay"))
+        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins"]), "col_header_hr"))
+        for a, b in _it.combinations(five, 2):
+            dec = (1 + (a["od"]/100 if a["od"] > 0 else 100/abs(a["od"]))) * \
+                  (1 + (b["od"]/100 if b["od"] > 0 else 100/abs(b["od"])))
+            pay = combined_american([a["od"], b["od"]])
+            win = 0.25 * (dec - 1)
+            combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
+            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}"]),
+                "data_hr_strong"))
     rows.append((E[:], "spacer"))
+
     return rows, staging
 
 
