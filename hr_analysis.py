@@ -25,7 +25,7 @@ SCOPES = [
 # Updated from 2026-06-02 to 2026-06-09 to exclude early dates where
 # avg_ev_7d was missing for some players due to Statcast API gaps,
 # which was corrupting the 11-12 tier analysis.
-MODEL_START_DATE = "2026-08-09"
+MODEL_START_DATE = "2026-06-09"
 
 COLOR_BG        = {"red": 0.086, "green": 0.086, "blue": 0.086}
 COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
