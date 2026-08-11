@@ -125,17 +125,17 @@ def build_analysis(df: pd.DataFrame) -> dict:
         return {}
 
     scored["hit_bool"]    = scored["hit_hr"] == "Yes"
-    # Use corrected score (barrel-handedness fix) when present; old rescored
-    # rows and new rows both carry hr_score_corrected. Fall back to hr_score.
-    if "hr_score_corrected" in scored.columns:
-        scored["hr_score"] = scored.apply(
-            lambda r: safe_float(r.get("hr_score_corrected"))
-            if str(r.get("hr_score_corrected", "")).strip() not in ("", "nan", "None")
-            else safe_float(r.get("hr_score")),
-            axis=1,
-        )
-    else:
-        scored["hr_score"] = scored["hr_score"].apply(safe_float)
+    # Score priority: hr_score_recalc (faithful new-scale rescore of ALL
+    # history) -> hr_score_corrected -> raw hr_score. Everything downstream
+    # (all tier tables) reads this column, so the whole analysis runs on the
+    # new monotonic scale.
+    def _resolve(r):
+        for col in ("hr_score_recalc", "hr_score_corrected", "hr_score"):
+            v = str(r.get(col, "")).strip()
+            if v not in ("", "nan", "None"):
+                return safe_float(v)
+        return 0.0
+    scored["hr_score"] = scored.apply(_resolve, axis=1)
     scored["date_dt"]     = pd.to_datetime(scored["date"], errors="coerce")
     scored["odds_num"]    = scored["consensus_odds"].apply(lambda x: safe_float(x, 0))
     scored["wind_bucket"] = scored.get("wind_context", pd.Series("", index=scored.index)).apply(parse_wind)
@@ -173,17 +173,21 @@ def build_analysis(df: pd.DataFrame) -> dict:
     hit_rate     = round(hits / total * 100, 1) if total > 0 else 0.0
 
     # ── Score tiers ───────────────────────────────────────────────────────
+    # Tiers by PERCENTILE of the actual score distribution, so they fit
+    # whatever scale is in play (the rescore compressed scores ~2-3 pts; fixed
+    # 15+/14-15 cutoffs would now catch almost nobody). Self-adjusting.
+    _sv = scored["hr_score"].dropna()
+    _q = {p: _sv.quantile(p/100) for p in [98, 90, 80, 65, 50, 35, 20]}
     score_tiers = []
     for label, lo, hi in [
-        ("15+",   15, 999),
-        ("14-15", 14,  15),
-        ("13-14", 13,  14),
-        ("12-13", 12,  13),
-        ("11-12", 11,  12),
-        ("10-11", 10,  11),
-        ("9-10",   9,  10),
-        ("8.5-9",  8.5, 9),
-        ("Under 8.5", 0, 8.5),
+        (f"top 2% (\u2265{_q[98]:.1f})",   _q[98], 999),
+        (f"90-98 ({_q[90]:.1f}-{_q[98]:.1f})", _q[90], _q[98]),
+        (f"80-90 ({_q[80]:.1f}-{_q[90]:.1f})", _q[80], _q[90]),
+        (f"65-80 ({_q[65]:.1f}-{_q[80]:.1f})", _q[65], _q[80]),
+        (f"50-65 ({_q[50]:.1f}-{_q[65]:.1f})", _q[50], _q[65]),
+        (f"35-50 ({_q[35]:.1f}-{_q[50]:.1f})", _q[35], _q[50]),
+        (f"20-35 ({_q[20]:.1f}-{_q[35]:.1f})", _q[20], _q[35]),
+        (f"bot 20 (<{_q[20]:.1f})", -999, _q[20]),
     ]:
         sub = scored[(scored["hr_score"] >= lo) & (scored["hr_score"] < hi)]
         if sub.empty:
@@ -428,15 +432,17 @@ def build_analysis(df: pd.DataFrame) -> dict:
 
     # ── Score Tier × Odds Zone cross-tab ─────────────────────────────────
     tier_odds_rows = []
+    # percentile tiers (same _q computed above) so this cross-table fits the
+    # rescored scale too
     tier_defs = [
-        ("15+",    15,   999),
-        ("14-15",  14,    15),
-        ("13-14",  13,    14),
-        ("12-13",  12,    13),
-        ("11-12",  11,    12),
-        ("10-11",  10,    11),
-        ("9-10",    9,    10),
-        ("8.5-9",   8.5,   9),
+        (f"top 2%",  _q[98], 999),
+        (f"90-98",   _q[90], _q[98]),
+        (f"80-90",   _q[80], _q[90]),
+        (f"65-80",   _q[65], _q[80]),
+        (f"50-65",   _q[50], _q[65]),
+        (f"35-50",   _q[35], _q[50]),
+        (f"20-35",   _q[20], _q[35]),
+        (f"bot 20",  -999,   _q[20]),
     ]
     odds_defs = [
         ("≤ +300",       0,   301),
