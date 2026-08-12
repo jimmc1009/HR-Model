@@ -464,6 +464,13 @@ def build_analysis(df: pd.DataFrame) -> dict:
                 rate = round(h / n * 100, 1)
                 avg_odds = sub[sub["odds_num"] > 0]["odds_num"].mean()
                 avg_odds_s = f"+{int(round(avg_odds))}" if pd.notna(avg_odds) and avg_odds > 0 else "\u2014"
+                # avg odds of ONLY the ones that homered — reveals whether the
+                # hits inside this cell came at shorter or longer prices than the
+                # cell average (i.e. where the value actually lived within the
+                # tier). Shown with hitter count h so you know how much to trust it.
+                hit_sub = sub[(sub["hit_bool"]) & (sub["odds_num"] > 0)]
+                hit_odds = hit_sub["odds_num"].mean()
+                hit_odds_s = f"+{int(round(hit_odds))}" if pd.notna(hit_odds) and hit_odds > 0 else "\u2014"
                 # convert hit rate -> implied breakeven American odds (the price
                 # at which this hit rate is exactly fair; beat it to be +EV)
                 p = rate / 100.0
@@ -476,7 +483,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
                 tier_odds_rows.append({
                     "label": f"{odds_label} | {tier_label}",
                     "total": n, "hits": h, "rate": rate,
-                    "avg_odds": avg_odds_s, "breakeven": be_s,
+                    "avg_odds": avg_odds_s, "hit_odds": hit_odds_s, "breakeven": be_s,
                 })
 
     # ── Pooled decision rules (Wilson CI vs breakeven) ────────────────────
@@ -685,9 +692,9 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
     if analysis.get("tier_odds_rows"):
         add_section(
             "💰  SCORE TIER × ODDS ZONE",
-            ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "Avg Odds", "Breakeven Odds", "", ""],
+            ["Score Tier | Odds Zone", "Total Players", "Hit HR", "Hit Rate %", "Avg Odds", "Avg Odds (Hitters)", "Breakeven Odds", ""],
             analysis["tier_odds_rows"],
-            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r.get("avg_odds", "\u2014"), r.get("breakeven", "\u2014"), "", ""]
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r.get("avg_odds", "\u2014"), r.get("hit_odds", "\u2014"), r.get("breakeven", "\u2014"), ""]
         )
 
     # ── Pooled Decision Rules ─────────────────────────────────────────────
