@@ -523,6 +523,40 @@ def build_analysis(df: pd.DataFrame) -> dict:
             row["label"] = label
             pooled_rules.append(row)
 
+    # ── BLEND CALIBRATION ────────────────────────────────────────────────
+    # Recompute each resolved pick's blended_hit_prob from its stored inputs
+    # (score/odds/platoon/pitch) using the SAME formula the dashboard uses,
+    # then bucket by blend and compare PREDICTED vs ACTUAL hit rate. Tells you
+    # whether the blend is trustworthy or over/under-confident in each range.
+    blend_rows = []
+    try:
+        import dashboard as _dash
+        hit_rates = _dash.build_hr_hit_rates(scored.rename(columns={"odds_num": "consensus_odds"})
+                                             if "consensus_odds" not in scored.columns else scored)
+        def _blend(r):
+            return _dash.blended_hit_prob(
+                safe_float(r.get("hr_score", 0)), safe_float(r.get("odds_num", 0)),
+                safe_float(r.get("platoon_score", 0)), safe_float(r.get("pitch_matchup_score", 0)),
+                hit_rates)
+        scored["_blend"] = scored.apply(_blend, axis=1)
+        buckets = [("5-10%",0.05,0.10),("10-13%",0.10,0.13),("13-16%",0.13,0.16),
+                   ("16-20%",0.16,0.20),("20-25%",0.20,0.25),("25%+",0.25,1.01)]
+        for lab, lo, hi in buckets:
+            sub = scored[(scored["_blend"] >= lo) & (scored["_blend"] < hi)]
+            n = len(sub)
+            if n < 15:
+                continue
+            pred = sub["_blend"].mean() * 100
+            actual = sub["hit_bool"].mean() * 100
+            blend_rows.append({
+                "bucket": lab, "n": n,
+                "predicted": round(pred, 1), "actual": round(actual, 1),
+                "gap": round(actual - pred, 1),
+            })
+    except Exception as _e:
+        blend_rows = [{"bucket": f"(blend calc failed: {str(_e)[:40]})", "n": 0,
+                       "predicted": 0, "actual": 0, "gap": 0}]
+
     return {
         "days_of_data":       days_of_data,
         "total":              total,
@@ -540,6 +574,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "new_combined_rows":  new_combined_rows,
         "tier_odds_rows":     tier_odds_rows,
         "pooled_rules":       pooled_rules,
+        "blend_rows":         blend_rows,
     }
 
 
@@ -671,6 +706,15 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         ["Period", "Total Players", "Hit HR", "Hit Rate %", "", "", "", ""],
         analysis["roll_rows"],
         lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", "", "", "", ""]
+    )
+
+    # ── Blend Calibration ─────────────────────────────────────────────────
+    add_section(
+        "🎯  BLEND CALIBRATION — predicted vs actual (is the blend trustworthy?)",
+        ["Blend Bucket", "N", "Predicted %", "Actual %", "Gap (act-pred)", "", "", ""],
+        analysis.get("blend_rows", []),
+        lambda r: [r["bucket"], r["n"], f"{r['predicted']}%", f"{r['actual']}%",
+                   f"{r['gap']:+}", "", "", ""]
     )
 
     # ── Feature Separators ────────────────────────────────────────────────
