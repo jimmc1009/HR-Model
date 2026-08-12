@@ -114,6 +114,36 @@ def safe_float(val, default=0.0) -> float:
         return default
 
 
+# The 8 tier LABELS stay fixed (so all dict keys keep matching), but their
+# numeric cutoffs are remapped to PERCENTILES of the score distribution. The
+# rescore compressed scores ~2-3 pts, so the old fixed 15/14/13... boundaries
+# put everyone in the bottom tiers and capped the blend at ~17%. Percentile
+# cutoffs fix that: "15+" now means "top-tier score on WHATEVER scale is live."
+_TIER_LABELS = ["15+", "14-15", "13-14", "12-13", "11-12", "10-11", "9-10", "8.5-9"]
+_TIER_PCTS   = [98, 90, 80, 65, 50, 35, 20]   # 7 cutpoints -> 8 tiers
+_TIER_CUTS_CACHE = {"cuts": None}
+
+def compute_tier_cuts(scores):
+    """Return the 7 percentile cutpoints (high->low) that define the 8 tiers."""
+    s = pd.Series([x for x in scores if x is not None and not pd.isna(x) and x > -50])
+    if len(s) < 50:
+        # fallback to old fixed scale if too little data
+        return [15, 14, 13, 12, 11, 10, 9]
+    return [float(s.quantile(p / 100)) for p in _TIER_PCTS]
+
+def tier_defs_from_cuts(cuts):
+    """Build (label, lo, hi) tuples from the 7 cutpoints, matching _TIER_LABELS."""
+    bounds = [999] + list(cuts) + [-999]   # 9 boundaries -> 8 tiers
+    return [(_TIER_LABELS[i], bounds[i + 1], bounds[i]) for i in range(8)]
+
+def tier_key_from_cuts(score, cuts):
+    """Return the tier label for a score given the 7 cutpoints."""
+    for label, lo, hi in tier_defs_from_cuts(cuts):
+        if lo <= score < hi:
+            return label
+    return None
+
+
 def resolve_score(row, default=0.0) -> float:
     """Single source of truth for a row's HR score. Prefers hr_score_recalc
     (the faithful new-scale rescore of all history), then hr_score_corrected,
@@ -191,11 +221,9 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
 
     # 13+ split into 13-14 / 14-15 / 15+ so each leg is credited with its own
     # observed rate (15+ underperforms the tiers beneath it).
-    tier_defs = [
-        ("15+", 15, 999), ("14-15", 14, 15), ("13-14", 13, 14),
-        ("12-13", 12, 13), ("11-12", 11, 12),
-        ("10-11", 10, 11), ("9-10", 9, 10), ("8.5-9", 8.5, 9),
-    ]
+    _cuts = compute_tier_cuts(resolved["hr_score"].tolist())
+    _TIER_CUTS_CACHE["cuts"] = _cuts
+    tier_defs = tier_defs_from_cuts(_cuts)
     zone_keys = ["le300", "301-499", "500-699", "700plus"]
     for tier_label, lo, hi in tier_defs:
         tier_sub = resolved[(resolved["hr_score"] >= lo) & (resolved["hr_score"] < hi)]
@@ -232,6 +260,7 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
         if len(sub) >= 10:
             hit_rates[key] = shrunk_rate(sub)
     hit_rates["_base"] = base_rate
+    hit_rates["_tier_cuts"] = _cuts
 
     print(f"  HR hit rate lookup: {len(hit_rates)} entries from {len(resolved)} resolved picks "
           f"(base {base_rate*100:.1f}%, shrink k={SHRINK_K:.0f})")
@@ -239,15 +268,9 @@ def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
 
 
 def get_hr_score_tier(score: float) -> str:
-    if score >= 15:  return "15+"
-    if score >= 14:  return "14-15"
-    if score >= 13:  return "13-14"
-    if score >= 12:  return "12-13"
-    if score >= 11:  return "11-12"
-    if score >= 10:  return "10-11"
-    if score >= 9:   return "9-10"
-    if score >= 8.5: return "8.5-9"
-    return "below-8.5"
+    cuts = _TIER_CUTS_CACHE.get("cuts") or [15, 14, 13, 12, 11, 10, 9]
+    k = tier_key_from_cuts(score, cuts)
+    return k if k else "below-8.5"
 
 
 def calc_hr_value(score: float, odds: float, hit_rates: dict) -> tuple:
@@ -388,13 +411,10 @@ def blended_hit_prob(hr_score, odds, plat, pitch, hit_rates):
     base = hr_rates_get(hit_rates, "_base", 0.12)
     combo = plat + pitch
 
+    _cuts = hr_rates_get(hit_rates, "_tier_cuts", None) or _TIER_CUTS_CACHE.get("cuts") \
+            or [15, 14, 13, 12, 11, 10, 9]
     def score_tier_key(s):
-        for lab, lo, hi in [("15+",15,999),("14-15",14,15),("13-14",13,14),
-                            ("12-13",12,13),("11-12",11,12),("10-11",10,11),
-                            ("9-10",9,10),("8.5-9",8.5,9)]:
-            if lo <= s < hi:
-                return lab
-        return None
+        return tier_key_from_cuts(s, _cuts)
 
     def zone_key(o):
         if o <= 0:      return None
@@ -541,8 +561,8 @@ def build_breakeven_lookup(hr_df):
           f"sc range={d['sc'].min():.1f}..{d['sc'].max():.1f}, "
           f"od<=499={int((d['od']<=499).sum())}, od>0={int((d['od']>0).sum())}")
 
-    tier_defs = [("15+",15,999),("14-15",14,15),("13-14",13,14),("12-13",12,13),
-                 ("11-12",11,12),("10-11",10,11),("9-10",9,10),("8.5-9",8.5,9)]
+    _bcuts = _TIER_CUTS_CACHE.get("cuts") or compute_tier_cuts(d["sc"].tolist())
+    tier_defs = tier_defs_from_cuts(_bcuts)
     zone_defs = [("le300",0,301),("301-499",301,500),("500-699",500,700),("700plus",700,99999)]
 
     for zl, zlo, zhi in zone_defs:
@@ -565,11 +585,8 @@ def build_breakeven_lookup(hr_df):
 
 
 def _tier_key(s):
-    for lab, lo, hi in [("15+",15,999),("14-15",14,15),("13-14",13,14),("12-13",12,13),
-                        ("11-12",11,12),("10-11",10,11),("9-10",9,10),("8.5-9",8.5,9)]:
-        if lo <= s < hi:
-            return lab
-    return None
+    cuts = _TIER_CUTS_CACHE.get("cuts") or [15, 14, 13, 12, 11, 10, 9]
+    return tier_key_from_cuts(s, cuts)
 
 
 def _zone_key(o):
