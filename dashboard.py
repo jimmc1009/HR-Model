@@ -797,11 +797,12 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
                 "data_hr_strong"))
 
-    # ── 🔁 5-LEG ROUND ROBIN (by 2s) — always fills ────────────────────
-    # Picks the 5 highest blended-probability hitters at <=+499 (longshots
-    # excluded), then bets ALL ten 2-leg combos of them. You cash whenever any
-    # 2 of the 5 homer; 3+ homers cashes multiple tickets. Most forgiving
-    # structure. Always fills 5 by reaching down the board if needed.
+    # ── 🔁 5-LEG ROUND ROBINS (by 2s) — always fill ───────────────────────
+    # Two versions from the same <=+499 pool:
+    #  A) ranked by SCORE×ODDS CELL HIT RATE (the validated monotonic table) —
+    #     the sharpest probability estimate, with a sample floor: if a guy's
+    #     cell is too thin to trust, fall back to ranking him by score.
+    #  B) ranked by BLEND (the current blend) — kept for fun / comparison.
     import itertools as _it
     rr_pool = []
     if not hr_source.empty:
@@ -817,35 +818,42 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             plat = safe_float(row.get("platoon_score", 0))
             pitch = safe_float(row.get("pitch_matchup_score", 0))
             blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            # cell hit rate from the validated score×odds table + its sample size
+            cell = player_band(sc, od, band_rates) or {}
+            cell_rate = cell.get("hit", None)     # % or None if no/thin cell
+            cell_n = cell.get("n", 0)
             rr_pool.append({"nm": nm, "team": str(row.get("team", "")).strip(),
                 "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
-                "book": str(row.get("best_book", "")).strip(), "blend": blend})
-    rr_pool.sort(key=lambda x: -x["blend"])
-    # take best 5, one per team; relax the team rule if needed to always fill 5
-    five, fteams = [], set()
-    for c in rr_pool:
-        if len(five) >= 5: break
-        if c["team"] in fteams: continue
-        five.append(c); fteams.add(c["team"])
-    if len(five) < 5:
-        for c in rr_pool:
-            if len(five) >= 5: break
-            if c in five: continue
-            five.append(c)
+                "book": str(row.get("best_book", "")).strip(), "blend": blend,
+                "cell_rate": cell_rate, "cell_n": cell_n})
 
-    rows.append((pad(["🔁  5-LEG ROUND ROBIN — ten 2-leggers, cash if any 2 hit"]),
-                 "section_header_hr"))
-    if len(five) < 5:
-        rows.append((pad(["—", "Fewer than 5 eligible bats on the slate today", ""]), "no_plays"))
-    else:
-        # the 5 legs
-        rows.append((pad(["Leg", "Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Blend%"]),
+    _CELL_FLOOR = 25   # need >=25 resolved in the cell to trust its rate
+
+    def _pick_five(rank_key):
+        pool = sorted(rr_pool, key=rank_key)
+        five, fteams = [], set()
+        for c in pool:
+            if len(five) >= 5: break
+            if c["team"] in fteams: continue
+            five.append(c); fteams.add(c["team"])
+        if len(five) < 5:
+            for c in pool:
+                if len(five) >= 5: break
+                if c in five: continue
+                five.append(c)
+        return five
+
+    def _emit_rr(title, five, prob_col_label, prob_fn):
+        rows.append((pad([title]), "section_header_hr"))
+        if len(five) < 5:
+            rows.append((pad(["—", "Fewer than 5 eligible bats today", ""]), "no_plays"))
+            rows.append((E[:], "spacer"))
+            return
+        rows.append((pad(["Leg", "Batter", "Team", "Pitcher", "Score", "Odds", "Book", prob_col_label]),
                      "col_header_hr"))
         for i, c in enumerate(five, 1):
             rows.append((pad([str(i), c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
-                f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
-                "data_hr_strong"))
-        # ten 2-leg combos with payout each
+                f"+{int(c['od'])}", c["book"] or "—", prob_fn(c)]), "data_hr_strong"))
         rows.append((pad([""]), "spacer"))
         rows.append((pad(["  Ten 2-leg parlays (25¢ each = $2.50 total):"]), "col_header_parlay"))
         rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins"]), "col_header_hr"))
@@ -857,7 +865,28 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
             rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}"]),
                 "data_hr_strong"))
-    rows.append((E[:], "spacer"))
+        rows.append((E[:], "spacer"))
+
+    # A) PRIMARY — rank by cell hit rate (trusted cells first), score as the
+    #    fallback for thin/absent cells so a noisy small-sample rate never wins.
+    def _cell_key(c):
+        trusted = c["cell_rate"] is not None and c["cell_n"] >= _CELL_FLOOR
+        # sort: trusted cells first (by rate desc), then everyone else by score
+        return (0 if trusted else 1,
+                -(c["cell_rate"] if trusted else -999),
+                -c["sc"])
+    five_cell = _pick_five(_cell_key)
+    def _cell_prob(c):
+        if c["cell_rate"] is not None and c["cell_n"] >= _CELL_FLOOR:
+            return f"{c['cell_rate']:.0f}% (n{c['cell_n']})"
+        return f"sc {c['sc']:.1f}"
+    _emit_rr("🔁  5-LEG RR — ranked by score×odds hit rate (sharp)",
+             five_cell, "Cell Hit%", _cell_prob)
+
+    # B) FUN — rank by blend
+    five_blend = _pick_five(lambda c: -c["blend"])
+    _emit_rr("🔁  5-LEG RR — ranked by blend (for fun)",
+             five_blend, "Blend%", lambda c: f"{c['blend']*100:.1f}%")
 
     return rows, staging
 
