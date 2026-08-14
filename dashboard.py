@@ -888,6 +888,59 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     _emit_rr("🔁  5-LEG RR — ranked by blend (for fun)",
              five_blend, "Blend%", lambda c: f"{c['blend']*100:.1f}%")
 
+    # ── 💥 VALUE BOMB 3-LEGGER — +400-600, ranked by blend ────────────────
+    # The "model likes them, market prices them long" swing. Tested: no signal
+    # clears breakeven here, so this is an honest LOTTERY ticket, not +EV —
+    # ranked by blend to at least favor the model's best in the range. RR it
+    # yourself if you want more coverage.
+    bomb = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if not (400 <= od <= 600):      # the target zone only
+                continue
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            bomb.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(), "blend": blend})
+    bomb.sort(key=lambda x: -x["blend"])
+    b3, bteams = [], set()
+    for c in bomb:
+        if len(b3) >= 3: break
+        if c["team"] in bteams: continue
+        b3.append(c); bteams.add(c["team"])
+    if len(b3) < 3:
+        for c in bomb:
+            if len(b3) >= 3: break
+            if c in b3: continue
+            b3.append(c)
+
+    rows.append((pad(["💥  VALUE BOMB 3-LEGGER — +400-600, model's best (lottery, RR it yourself)"]),
+                 "section_header_hr"))
+    if len(b3) < 3:
+        rows.append((pad(["—", "Fewer than 3 bats in the +400-600 range today", ""]), "no_plays"))
+    else:
+        combo_dec = 1.0
+        for c in b3:
+            o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
+        payout = combined_american([c["od"] for c in b3])
+        rows.append((pad([f"  pays {payout} · 25¢ → ${0.25*(combo_dec-1):.2f} on a win"]),
+                     "col_header_parlay"))
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Blend%"]),
+                     "col_header_hr"))
+        for c in b3:
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
     return rows, staging
 
 
