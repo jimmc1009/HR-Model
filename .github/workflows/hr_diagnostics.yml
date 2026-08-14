@@ -32,6 +32,7 @@ on:
           - test_monotonic.py
           - test_pocket_and_inversion.py
           - rescore_all.py
+          - test_platoon_split.py
 
 
 jobs:
@@ -215,4 +216,12 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python rescore_all.py
+
+      - name: Platoon split test
+        if: github.event.inputs.script == 'test_platoon_split.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_platoon_split.py
+
 
