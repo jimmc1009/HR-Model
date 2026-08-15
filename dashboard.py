@@ -189,6 +189,105 @@ def _hr_odds_zone_key(odds: float) -> str:
     return "700plus"
 
 
+# ── K's (strikeout prop) strong-bucket cross-reference ──────────────────────
+# Mirrors the HR "Score Tier x Odds Zone" idea but for the K's model: bucket
+# resolved pitchers by (ks_score tier, k_line, Over/Under), compute each
+# cell's live hit rate from KS_All_Scores, flag the STRONG ones, then surface
+# today's K's picks that land in a strong cell. Self-updating (no hardcoded
+# table) so it can't go stale the way a pasted snapshot would.
+KS_TIER_DEFS = [
+    ("Under 0", -99, 0), ("0-2", 0, 2), ("2-4", 2, 4),
+    ("4-6", 4, 6), ("6-8", 6, 8), ("8+", 8, 99),
+]
+KS_STRONG_MIN_N = 25
+KS_STRONG_MIN_HIT = 55.0   # hit% floor to call a cell "strong" (comfortable
+                            # buffer above the ~52.4% no-vig -110 breakeven)
+
+
+def ks_tier_of(score):
+    for lab, lo, hi in KS_TIER_DEFS:
+        if lo <= score < hi:
+            return lab
+    return None
+
+
+def _be_odds_from_rate(p):
+    """American odds at which hit-rate p is exactly breakeven (for display)."""
+    if p <= 0 or p >= 1:
+        return "\u2014"
+    if p >= 0.5:
+        return f"-{round(p / (1 - p) * 100)}"
+    return f"+{round((1 - p) / p * 100)}"
+
+
+def build_ks_strong_cells(ks_all_scores: pd.DataFrame) -> dict:
+    """Returns {(tier, line, side): {'n':, 'hit':, 'strong':, 'be':}} computed
+    live from resolved KS_All_Scores rows."""
+    cells = {}
+    if ks_all_scores is None or ks_all_scores.empty:
+        return cells
+    d = ks_all_scores.copy()
+    d["ks_score"] = d.get("ks_score", "").apply(lambda v: safe_float(v, np.nan))
+    d["k_line"] = d.get("k_line", "").apply(lambda v: safe_float(v, np.nan))
+    d["tier"] = d["ks_score"].apply(lambda s: ks_tier_of(s) if not pd.isna(s) else None)
+    d = d.dropna(subset=["ks_score", "k_line"])
+    d = d[d["tier"].notna()]
+
+    for side, hitcol in (("Over", "over_hit"), ("Under", "under_hit")):
+        if hitcol not in d.columns:
+            continue
+        sub = d[d[hitcol].astype(str).str.strip().isin(["Yes", "No"])].copy()
+        if sub.empty:
+            continue
+        sub["hit_bool"] = (sub[hitcol].astype(str).str.strip() == "Yes").astype(int)
+        for (tier, line), g in sub.groupby(["tier", "k_line"]):
+            n = len(g)
+            if n < 10:
+                continue
+            hit = g["hit_bool"].mean() * 100
+            strong = n >= KS_STRONG_MIN_N and hit >= KS_STRONG_MIN_HIT
+            cells[(tier, line, side)] = {
+                "n": n, "hit": round(hit, 1), "strong": strong,
+                "be": _be_odds_from_rate(hit / 100.0),
+            }
+    return cells
+
+
+def build_ks_strong_picks(ks_all_scores: pd.DataFrame, today_str: str) -> list:
+    """Today's K's picks whose (tier, line, side) cell is flagged STRONG."""
+    cells = build_ks_strong_cells(ks_all_scores)
+    out = []
+    if ks_all_scores is None or ks_all_scores.empty or not cells:
+        return out
+    d = ks_all_scores.copy()
+    if "date" in d.columns:
+        d = d[d["date"].astype(str).str.strip() == today_str]
+    if d.empty:
+        return out
+    for _, row in d.iterrows():
+        score = safe_float(row.get("ks_score", ""), np.nan)
+        line = safe_float(row.get("k_line", ""), np.nan)
+        if pd.isna(score) or pd.isna(line):
+            continue
+        tier = ks_tier_of(score)
+        if not tier:
+            continue
+        for side in ("Over", "Under"):
+            cell = cells.get((tier, line, side))
+            if cell and cell["strong"]:
+                out.append({
+                    "pitcher": str(row.get("pitcher_name", "")).strip(),
+                    "team": str(row.get("team", "")).strip(),
+                    "opp": str(row.get("opposing_team", "")).strip(),
+                    "line": line, "side": side, "tier": tier,
+                    "n": cell["n"], "hit": cell["hit"], "be": cell["be"],
+                    "over_odds": str(row.get("over_odds", "")).strip(),
+                    "under_odds": str(row.get("under_odds", "")).strip(),
+                })
+    out.sort(key=lambda x: -x["hit"])
+    return out
+
+
 def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
     hit_rates = {}
     if hr_all_scores.empty:
@@ -675,7 +774,7 @@ def reconstruct_heater(hr_df, days_back=7):
     }
 
 
-def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr_all_scores=None):
+def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr_all_scores=None, ks_all_scores=None):
     staging = []   # collected slate legs/tickets for the Bet_Staging tab
     def pad(row):
         return list(row) + [""] * (N_COLS - len(row))
@@ -975,6 +1074,29 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for c in b3:
             rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
+    # ── ⚾ K's PICKS IN STRONG BUCKETS ────────────────────────────────────
+    # Today's strikeout-prop picks whose (score tier, line, side) cell has a
+    # live-computed hit rate >=55% on n>=25 resolved. Cells are recalculated
+    # from KS_All_Scores every run — self-updating, not a frozen snapshot.
+    _today_ymd = _date.today().strftime("%Y-%m-%d")
+    ks_picks = build_ks_strong_picks(ks_all_scores, _today_ymd) if ks_all_scores is not None else []
+    rows.append((pad([f"\u26BE  K's PICKS IN STRONG BUCKETS \u2265{int(KS_STRONG_MIN_HIT)}% hit (n\u2265{KS_STRONG_MIN_N})"]),
+                 "section_header_hr"))
+    if ks_all_scores is None or ks_all_scores.empty:
+        rows.append((pad(["\u2014", "No KS_All_Scores data available", ""]), "no_plays"))
+    elif not ks_picks:
+        rows.append((pad(["\u2014", "No today's K's picks landed in a strong bucket", ""]), "no_plays"))
+    else:
+        rows.append((pad(["Pitcher", "Team", "Opp", "Line", "Bet", "Tier", "Hit%", "N", "Breakeven"]),
+                     "col_header_hr"))
+        for c in ks_picks:
+            odds_s = c["over_odds"] if c["side"] == "Over" else c["under_odds"]
+            bet_s = c["side"] + (f" ({odds_s})" if odds_s and odds_s not in ("", "nan") else "")
+            rows.append((pad([c["pitcher"], c["team"], c["opp"], f"O/U {c['line']}",
+                bet_s, c["tier"], f"{c['hit']:.1f}%", str(c["n"]), c["be"]]),
                 "data_hr_strong"))
     rows.append((E[:], "spacer"))
 
@@ -1333,6 +1455,11 @@ def main() -> None:
     time.sleep(2)
     hr_all_scores = read_sheet_raw(gc, sheet_id, scores_tab)
     time.sleep(2)
+    # KS (strikeout prop) scores — optional; missing tab returns empty df and
+    # the K's section just shows "no data" rather than breaking anything.
+    ks_all_scores = read_sheet_raw(gc, sheet_id, "KS_All_Scores")
+    time.sleep(2)
+    print(f"KS All Scores: {len(ks_all_scores)} rows")
 
     print(f"HR picks: {len(hr_df)} rows | HR All Scores: {len(hr_all_scores)} rows")
     hr_hit_rates = build_hr_hit_rates(hr_all_scores)
@@ -1351,7 +1478,7 @@ def main() -> None:
     et = pytz.timezone("America/New_York")
     ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
 
-    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands, hr_all_scores=hr_all_scores)
+    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands, hr_all_scores=hr_all_scores, ks_all_scores=ks_all_scores)
     write_dashboard(gc, sheet_id, rows)
     # dashboard is top-15 matchup only now; no tickets to stage, so the
     # Bet_Staging write is skipped to avoid overwriting it with blanks.
