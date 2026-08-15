@@ -797,6 +797,43 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
                 "data_hr_strong"))
 
+    # ── ⭐ TOP 2% SCORE TIER — every one of today's guys above the historical
+    # 98th-pctile cutoff. The cutoff is FIXED from all history (~13.2); this
+    # lists however many of today's players clear it (all odds included).
+    _cuts = _TIER_CUTS_CACHE.get("cuts") or [13.2]
+    top2_cut = _cuts[0] if _cuts else 13.2
+    elite = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            if sc < top2_cut:
+                continue
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            elite.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(),
+                "plat": plat, "pitch": pitch})
+    elite.sort(key=lambda x: -x["sc"])
+    rows.append((pad([f"\u2B50  TOP 2% SCORE TIER — today's guys scoring \u2265{top2_cut:.1f} (all odds)"]),
+                 "section_header_hr"))
+    if not elite:
+        rows.append((pad(["\u2014", f"No players above {top2_cut:.1f} on today's slate", ""]), "no_plays"))
+    else:
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Plat", "Pitch"]),
+                     "col_header_hr"))
+        for c in elite:
+            od_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                od_s, c["book"] or "\u2014", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
     # ── 🔁 5-LEG ROUND ROBINS (by 2s) — always fill ───────────────────────
     # Two versions from the same <=+499 pool:
     #  A) ranked by SCORE×ODDS CELL HIT RATE (the validated monotonic table) —
