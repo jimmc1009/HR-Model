@@ -797,6 +797,43 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
                 "data_hr_strong"))
 
+    # ── ⭐ TOP 2% SCORE TIER — every one of today's guys above the historical
+    # 98th-pctile cutoff. The cutoff is FIXED from all history (~13.2); this
+    # lists however many of today's players clear it (all odds included).
+    _cuts = _TIER_CUTS_CACHE.get("cuts") or [13.2]
+    top2_cut = _cuts[0] if _cuts else 13.2
+    elite = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            if sc < top2_cut:
+                continue
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            elite.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(),
+                "plat": plat, "pitch": pitch})
+    elite.sort(key=lambda x: -x["sc"])
+    rows.append((pad([f"\u2B50  TOP 2% SCORE TIER — today's guys scoring \u2265{top2_cut:.1f} (all odds)"]),
+                 "section_header_hr"))
+    if not elite:
+        rows.append((pad(["\u2014", f"No players above {top2_cut:.1f} on today's slate", ""]), "no_plays"))
+    else:
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Plat", "Pitch"]),
+                     "col_header_hr"))
+        for c in elite:
+            od_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                od_s, c["book"] or "\u2014", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
     # ── 🔁 5-LEG ROUND ROBINS (by 2s) — always fill ───────────────────────
     # Two versions from the same <=+499 pool:
     #  A) ranked by SCORE×ODDS CELL HIT RATE (the validated monotonic table) —
@@ -887,6 +924,59 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     five_blend = _pick_five(lambda c: -c["blend"])
     _emit_rr("🔁  5-LEG RR — ranked by blend (for fun)",
              five_blend, "Blend%", lambda c: f"{c['blend']*100:.1f}%")
+
+    # ── 💥 VALUE BOMB 3-LEGGER — +400-600, ranked by blend ────────────────
+    # The "model likes them, market prices them long" swing. Tested: no signal
+    # clears breakeven here, so this is an honest LOTTERY ticket, not +EV —
+    # ranked by blend to at least favor the model's best in the range. RR it
+    # yourself if you want more coverage.
+    bomb = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if not (400 <= od <= 600):      # the target zone only
+                continue
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            bomb.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(), "blend": blend})
+    bomb.sort(key=lambda x: -x["blend"])
+    b3, bteams = [], set()
+    for c in bomb:
+        if len(b3) >= 3: break
+        if c["team"] in bteams: continue
+        b3.append(c); bteams.add(c["team"])
+    if len(b3) < 3:
+        for c in bomb:
+            if len(b3) >= 3: break
+            if c in b3: continue
+            b3.append(c)
+
+    rows.append((pad(["💥  VALUE BOMB 3-LEGGER — +400-600, model's best (lottery, RR it yourself)"]),
+                 "section_header_hr"))
+    if len(b3) < 3:
+        rows.append((pad(["—", "Fewer than 3 bats in the +400-600 range today", ""]), "no_plays"))
+    else:
+        combo_dec = 1.0
+        for c in b3:
+            o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
+        payout = combined_american([c["od"] for c in b3])
+        rows.append((pad([f"  pays {payout} · 25¢ → ${0.25*(combo_dec-1):.2f} on a win"]),
+                     "col_header_parlay"))
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Blend%"]),
+                     "col_header_hr"))
+        for c in b3:
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
 
     return rows, staging
 
