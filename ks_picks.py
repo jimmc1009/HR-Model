@@ -1,59 +1,56 @@
 """
-ks_picks.py
-Pitcher strikeout prop model.
-Reads from KS_Statcast, Pitcher_Statcast_2026, Team_K_Rates, Park_Factors,
-KS_Odds, Projected_Lineups, Batter_Statcast_2026.
-Outputs Top_KS_Picks + KS_Picks_Log + KS_Scorecard.
-"""
+dashboard.py — HR-only build of "Today's Top Picks".
 
+This is a clean rewrite:
+  • Timestamp is now the FIRST row, written and formatted in a single pass
+    (previously it was inserted after formatting, which shifted every row
+    down by one and corrupted the first data row + header).
+  • Every run starts with a full unmerge + format reset so leftover cells
+    from the old KS/HRRBI layout can't bleed into the new one.
+  • KS and HR+RBI sections are gone (not being bet right now).
+  • Score tier lookup splits 13+ into 13-14 / 14-15 / 15+ so each leg is
+    credited with its own observed hit rate (15+ underperforms).
+  • "Why" shows baseball reasons only — power, barrel, form, platoon,
+    park, weather. It no longer repeats the Edge column.
+  • Both parlays show individual leg odds AND the combined parlay price.
+"""
 import os
 import json
 import time
-import unicodedata
-from datetime import date, datetime
-from typing import Dict, Optional
-
+from datetime import datetime, date as _date
 import pandas as pd
 import numpy as np
 import gspread
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 import pytz
-import requests
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+DASHBOARD_SHEET = "Today's Top Picks"
 
-MIN_IP             = 10
-MIN_GS             = 2
-MAX_PER_TEAM       = 1
-TOP_N              = 10
-MIN_LINEUP_BATTERS = 5
+COLOR_BG        = {"red": 0.086, "green": 0.086, "blue": 0.086}
+COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
+COLOR_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
+COLOR_GOLD      = {"red": 1.000, "green": 0.843, "blue": 0.000}
+COLOR_GREEN     = {"red": 0.180, "green": 0.800, "blue": 0.443}
+COLOR_PURPLE    = {"red": 0.541, "green": 0.165, "blue": 0.557}
+COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
+COLOR_SUBTEXT   = {"red": 0.600, "green": 0.600, "blue": 0.600}
+COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
 
-# Signal thresholds
-OVER_SCORE      = 6.0   # lowered from 8.0 — data shows 6-8 tier hitting 64.7%
-OVER_EDGE       = 0.4
-LEAN_OVER_SCORE = 4.0   # lowered from 5.0
-LEAN_OVER_EDGE  = 0.15
-# UNDER signal now combo-specific (score tier + line) — see calc_prop_signal
-# Under2|4.5: 69.6% (n=46), Under2|5.5: 80.0% (n=15), 4-6|6.5: 100% (small sample)
-
-COLOR_BG     = {"red": 0.086, "green": 0.086, "blue": 0.086}
-COLOR_BG_ALT = {"red": 0.118, "green": 0.118, "blue": 0.118}
-COLOR_HEADER = {"red": 0.055, "green": 0.318, "blue": 0.580}
-COLOR_WHITE  = {"red": 1.000, "green": 1.000, "blue": 1.000}
-COLOR_GREEN  = {"red": 0.180, "green": 0.800, "blue": 0.443}
-COLOR_RED    = {"red": 0.910, "green": 0.259, "blue": 0.259}
-COLOR_GOLD   = {"red": 1.000, "green": 0.843, "blue": 0.000}
-COLOR_TEAL   = {"red": 0.000, "green": 0.588, "blue": 0.533}
+N_COLS = 15
+RESET_ROWS = 400
+RESET_COLS = 26
 
 
+# ── Sheets plumbing ─────────────────────────────────────────────────────────
 def get_gspread_client() -> gspread.Client:
     raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    info     = json.loads(raw_json)
-    creds    = Credentials.from_service_account_info(info, scopes=SCOPES)
+    info = json.loads(raw_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
 
 
@@ -63,28 +60,31 @@ def with_retry(func, retries: int = 4, wait: int = 25):
             return func()
         except APIError as e:
             if "429" in str(e) and attempt < retries - 1:
-                print(f"  Rate limit hit — waiting {wait}s (attempt {attempt + 1}/{retries})...")
+                print(f"  Rate limit hit — waiting {wait}s...")
                 time.sleep(wait)
             else:
                 raise
-        except Exception as e:
+        except Exception:
             if attempt < retries - 1:
-                print(f"  API error: {e} — retrying in {wait}s...")
                 time.sleep(wait)
             else:
                 raise
 
 
-def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
+def read_sheet(gc, sheet_id, name) -> pd.DataFrame:
     try:
-        sh         = with_retry(lambda: gc.open_by_key(sheet_id))
-        ws         = sh.worksheet(name)
+        sh = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws = sh.worksheet(name)
         all_values = with_retry(lambda: ws.get_all_values())
-        if not all_values or len(all_values) < 2:
+        if not all_values:
             return pd.DataFrame()
-        headers = all_values[0]
-        rows    = all_values[1:]
-        return pd.DataFrame(rows, columns=headers)
+        start = 1 if "Last Run" in str(all_values[0]) else 0
+        if start >= len(all_values):
+            return pd.DataFrame()
+        headers = all_values[start]
+        rows = all_values[start + 1:]
+        df = pd.DataFrame(rows, columns=headers)
+        return df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
     except gspread.WorksheetNotFound:
         print(f"WARNING: Sheet '{name}' not found.")
         return pd.DataFrame()
@@ -93,1031 +93,1399 @@ def read_sheet(gc: gspread.Client, sheet_id: str, name: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def read_sheet_raw(gc, sheet_id, name) -> pd.DataFrame:
+    try:
+        sh = with_retry(lambda: gc.open_by_key(sheet_id))
+        ws = sh.worksheet(name)
+        all_values = with_retry(lambda: ws.get_all_values())
+        if not all_values or len(all_values) < 2:
+            return pd.DataFrame()
+        df = pd.DataFrame(all_values[1:], columns=all_values[0])
+        return df[df.apply(lambda r: any(str(v).strip() for v in r), axis=1)]
+    except Exception:
+        return pd.DataFrame()
+
+
 def safe_float(val, default=0.0) -> float:
     try:
         f = float(val)
-        return default if (pd.isna(f) or np.isinf(f)) else f
+        return default if (np.isnan(f) or np.isinf(f)) else f
     except (ValueError, TypeError):
         return default
 
 
-def normalize_name(name: str) -> str:
-    name = unicodedata.normalize("NFD", str(name))
-    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
-    return name.lower().strip()
-
-
-def get_todays_game_times() -> dict:
-    game_times = {}
-    try:
-        today = date.today().strftime("%Y-%m-%d")
-        url   = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=team"
-        resp  = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        for d in resp.json().get("dates", []):
-            for game in d.get("games", []):
-                home_abbr = game.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "")
-                game_time = game.get("gameDate", "")
-                if home_abbr and game_time:
-                    try:
-                        gt = datetime.strptime(game_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-                        game_times[home_abbr.upper()] = gt
-                    except Exception:
-                        pass
-    except Exception as e:
-        print(f"  WARNING: Could not fetch game times: {e}")
-    return game_times
-
-
-# ── Scoring functions ─────────────────────────────────────────────────────
-
-def score_k_pct(v: float, ip: float) -> float:
-    # K% is neutral per analysis — reduced max from 3.0 to 1.5
-    if ip < MIN_IP: return 0.0
-    if v >= 32.0: return 1.5
-    if v >= 28.0: return 1.2
-    if v >= 25.0: return 0.9
-    if v >= 22.0: return 0.6
-    if v >= 19.0: return 0.3
-    if v >= 16.0: return 0.1
-    return 0.0
-
-
-def score_swstr(v: float, ip: float) -> float:
-    # SwStr% is neutral per analysis — reduced max from 2.5 to 1.0
-    if ip < MIN_IP: return 0.0
-    if v >= 16.0: return 1.0
-    if v >= 14.0: return 0.7
-    if v >= 12.0: return 0.5
-    if v >= 10.0: return 0.3
-    if v >= 8.0:  return 0.1
-    return 0.0
-
-
-def score_chase(v: float, ip: float) -> float:
-    if ip < MIN_IP: return 0.0
-    if v >= 38.0: return 1.5
-    if v >= 34.0: return 1.0
-    if v >= 30.0: return 0.5
-    return 0.0
-
-
-def score_k_per_9(v: float, ip: float) -> float:
-    if ip < MIN_IP: return 0.0
-    if v >= 12.0: return 1.5
-    if v >= 10.0: return 1.0
-    if v >= 8.5:  return 0.5
-    if v >= 7.0:  return 0.2
-    return 0.0
-
-
-def score_velo(v: float, ip: float) -> float:
-    if ip < MIN_IP: return 0.0
-    if v >= 97.0: return 1.0
-    if v >= 95.0: return 0.6
-    if v >= 93.0: return 0.3
-    return 0.0
-
-
-def score_k_per_start_21d(v: float) -> float:
-    if v >= 9.0: return 1.5
-    if v >= 7.0: return 1.0
-    if v >= 5.5: return 0.5
-    if v <= 3.0: return -1.0
-    if v <= 4.0: return -0.5
-    return 0.0
-
-
-def score_avg_ip(v: float) -> float:
-    # IP/Start +8.6% separator — increased max from 1.0 to 1.3
-    if v >= 6.5: return  1.3
-    if v >= 6.0: return  0.9
-    if v >= 5.5: return  0.5
-    if v >= 5.0: return  0.1
-    if v <= 4.0: return -1.3
-    if v <= 4.5: return -0.6
-    return 0.0
-
-
-def score_opp_team_k_pct(v: float) -> float:
-    if v >= 28.0: return  1.5
-    if v >= 25.0: return  1.0
-    if v >= 22.0: return  0.5
-    if v >= 20.0: return  0.2
-    if v <= 16.0: return -1.0
-    if v <= 18.0: return -0.5
-    return 0.0
-
-
-def score_opp_team_chase(v: float) -> float:
-    if v <= 0: return 0.0
-    if v >= 34.0: return  1.0
-    if v >= 31.0: return  0.5
-    if v <= 26.0: return -0.5
-    if v <= 28.0: return -0.2
-    return 0.0
-
-
-def score_opp_team_whiff(v: float) -> float:
-    if v <= 0: return 0.0
-    if v >= 27.0: return  1.0
-    if v >= 24.0: return  0.5
-    if v <= 18.0: return -0.5
-    if v <= 21.0: return -0.2
-    return 0.0
-
-
-def score_opp_lineup_k_pct(avg_k_pct: float, num_batters: int) -> float:
-    if num_batters < MIN_LINEUP_BATTERS or avg_k_pct <= 0:
-        return 0.0
-    if avg_k_pct >= 28.0: return  2.0
-    if avg_k_pct >= 25.0: return  1.5
-    if avg_k_pct >= 23.0: return  1.0
-    if avg_k_pct >= 21.0: return  0.5
-    if avg_k_pct >= 19.0: return  0.1
-    if avg_k_pct <= 14.0: return -1.5
-    if avg_k_pct <= 16.0: return -1.0
-    if avg_k_pct <= 18.0: return -0.5
-    return 0.0
-
-
-def score_park(v: float) -> float:
-    if v >= 115: return -0.3
-    if v <= 80:  return  0.2
-    return 0.0
-
-
-def score_trends(swstr_trend: str, velo_trend: str) -> float:
-    s = 0.0
-    if "up" in str(swstr_trend).lower():   s += 0.5
-    if "down" in str(swstr_trend).lower(): s -= 0.5
-    if "up" in str(velo_trend).lower():    s += 0.3
-    if "down" in str(velo_trend).lower():  s -= 0.3
-    return s
-
-
-def score_opener_risk(v: float) -> float:
-    if v >= 0.5: return -2.0
-    return 0.0
-
-
-def score_pitcher_whip(v: float) -> float:
-    # WHIP -8.4% separator (lower=better) — increased max from 0.8 to 1.2
-    if v <= 0: return 0.0
-    if v <= 0.90: return  1.2
-    if v <= 1.00: return  0.8
-    if v <= 1.10: return  0.3
-    if v >= 1.50: return -1.2
-    if v >= 1.35: return -0.6
-    if v >= 1.20: return -0.3
-    return 0.0
-
-
-def score_pitcher_bb_pct(v: float) -> float:
-    # BB% strongest separator at -15.9% (lower=better) — increased max from 0.8 to 1.5
-    if v <= 0: return 0.0
-    if v <= 4.0:  return  1.5
-    if v <= 6.0:  return  0.8
-    if v <= 8.0:  return  0.2
-    if v >= 12.0: return -1.5
-    if v >= 10.0: return -0.8
-    if v >= 9.0:  return -0.3
-    return 0.0
-
-
-# ── Lineup K% builder ─────────────────────────────────────────────────────
-
-def build_opp_lineup_k_stats(
-    projected_lineups: pd.DataFrame,
-    batters_df: pd.DataFrame,
-) -> Dict[str, dict]:
-    result: Dict[str, dict] = {}
-
-    if projected_lineups.empty or batters_df.empty:
-        return result
-
-    if "k_pct" not in batters_df.columns:
-        print("  WARNING: k_pct not in Batter_Statcast_2026 — lineup K% skipped")
-        return result
-
-    batters_df = batters_df.copy()
-
-    id_to_k: Dict[int, float] = {}
-    if "batter_id" in batters_df.columns:
-        for _, row in batters_df.iterrows():
-            try:
-                pid   = int(float(str(row["batter_id"])))
-                k_pct = safe_float(row.get("k_pct", 0))
-                if k_pct > 0:
-                    id_to_k[pid] = k_pct
-            except (ValueError, TypeError):
-                pass
-
-    name_to_k: Dict[str, float] = {}
-    if "player_name" in batters_df.columns:
-        for _, row in batters_df.iterrows():
-            norm  = normalize_name(str(row.get("player_name", "")))
-            k_pct = safe_float(row.get("k_pct", 0))
-            if norm and k_pct > 0:
-                name_to_k[norm] = k_pct
-
-    for team, group in projected_lineups.groupby("team"):
-        group       = group.sort_values("batting_order") if "batting_order" in group.columns else group
-        k_pcts      = []
-        k_pcts_top6 = []
-
-        for _, row in group.iterrows():
-            order = safe_float(row.get("batting_order", 9))
-            k_pct = 0.0
-
-            player_id = row.get("player_id", "")
-            if player_id and str(player_id).strip() not in ("", "nan", "0"):
-                try:
-                    pid   = int(float(str(player_id)))
-                    k_pct = id_to_k.get(pid, 0.0)
-                except (ValueError, TypeError):
-                    pass
-
-            if k_pct == 0.0:
-                name_norm = normalize_name(str(row.get("player_name", "")))
-                k_pct     = name_to_k.get(name_norm, 0.0)
-
-            if k_pct > 0:
-                k_pcts.append(k_pct)
-                if order <= 6:
-                    k_pcts_top6.append(k_pct)
-
-        if k_pcts:
-            result[str(team)] = {
-                "avg_k_pct":      round(float(np.mean(k_pcts)), 1),
-                "top6_avg_k_pct": round(float(np.mean(k_pcts_top6)), 1) if k_pcts_top6 else round(float(np.mean(k_pcts)), 1),
-                "num_batters":    len(k_pcts),
-            }
-
-    print(f"  Lineup K% computed for {len(result)} opposing teams")
-    return result
-
-
-# ── Main scoring ──────────────────────────────────────────────────────────
-
-def compute_ks_score(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> tuple:
-    ip = safe_float(row.get("ip", 0))
-    gs = safe_float(row.get("games_started", 0))
-    if ip < MIN_IP or gs < MIN_GS:
-        return 0.0, ""
-
-    s_k_pct  = score_k_pct(safe_float(row.get("k_pct_season")), ip)
-    s_swstr  = score_swstr(safe_float(row.get("swstr_pct")), ip)
-    s_chase  = score_chase(safe_float(row.get("chase_rate")), ip)
-    s_k9     = score_k_per_9(safe_float(row.get("k_per_9")), ip)
-    s_velo   = score_velo(safe_float(row.get("fastball_velo")), ip)
-    s_k21    = score_k_per_start_21d(safe_float(row.get("k_per_start_21d")))
-    s_avg_ip = score_avg_ip(safe_float(row.get("avg_ip_per_start")))
-    s_park   = score_park(safe_float(row.get("park_hr_factor", 100), 100))
-    s_trends = score_trends(row.get("swstr_trend", ""), row.get("velo_trend", ""))
-    s_opener = score_opener_risk(safe_float(row.get("opener_risk", 0)))
-    s_whip   = score_pitcher_whip(safe_float(row.get("whip_proxy", 1.2), 1.2))
-    s_bb_pct = score_pitcher_bb_pct(safe_float(row.get("bb_pct_season", 8.0), 8.0))
-
-    opposing_team = str(row.get("opposing_team", "")).strip()
-    lineup_data   = lineup_k_stats.get(opposing_team, {})
-    num_batters   = lineup_data.get("num_batters", 0)
-
-    s_opp_k     = 0.0
-    s_opp_chase = 0.0
-    s_opp_whiff = 0.0
-
-    if num_batters >= MIN_LINEUP_BATTERS:
-        avg_k_pct = lineup_data.get("avg_k_pct", 0.0)
-        s_opp_k   = score_opp_lineup_k_pct(avg_k_pct, num_batters)
-    else:
-        s_opp_k     = score_opp_team_k_pct(safe_float(row.get("opp_team_k_pct", 22.0), 22.0))
-        s_opp_chase = score_opp_team_chase(safe_float(row.get("opp_chase_rate", 0.0), 0.0))
-        s_opp_whiff = score_opp_team_whiff(safe_float(row.get("opp_whiff_rate", 0.0), 0.0))
-
-    total = round(
-        s_k_pct + s_swstr + s_chase + s_k9 + s_velo +
-        s_k21 + s_avg_ip + s_opp_k + s_opp_chase + s_opp_whiff +
-        s_park + s_trends + s_opener + s_whip + s_bb_pct,
-        2
-    )
-
-    parts = []
-    if s_k_pct:      parts.append(f"K%:{s_k_pct:+.1f}")
-    if s_swstr:      parts.append(f"SwStr:{s_swstr:+.1f}")
-    if s_chase:      parts.append(f"Chase:{s_chase:+.1f}")
-    if s_k9:         parts.append(f"K/9:{s_k9:+.1f}")
-    if s_velo:       parts.append(f"Velo:{s_velo:+.1f}")
-    if s_k21:        parts.append(f"21d:{s_k21:+.1f}")
-    if s_avg_ip:     parts.append(f"IP:{s_avg_ip:+.1f}")
-    if s_whip:       parts.append(f"WHIP:{s_whip:+.1f}")
-    if s_bb_pct:     parts.append(f"BB%:{s_bb_pct:+.1f}")
-    if s_opp_k:      parts.append(f"OppK%:{s_opp_k:+.1f}")
-    if s_opp_chase:  parts.append(f"OppChase:{s_opp_chase:+.1f}")
-    if s_opp_whiff:  parts.append(f"OppWhiff:{s_opp_whiff:+.1f}")
-    if s_park:       parts.append(f"Park:{s_park:+.1f}")
-    if s_trends:     parts.append(f"Trend:{s_trends:+.1f}")
-    if s_opener:     parts.append(f"Opener:{s_opener:+.1f}")
-
-    return total, " | ".join(parts)
-
-
-def project_ks(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> float:
-    ip      = safe_float(row.get("avg_ip_per_start", 5.5), 5.5)
-    k_per_9 = safe_float(row.get("k_per_9", 7.0), 7.0)
-    k_pct   = safe_float(row.get("k_pct_season", 22.0), 22.0)
-
-    opposing_team = str(row.get("opposing_team", "")).strip()
-    lineup_data   = lineup_k_stats.get(opposing_team, {})
-    num_batters   = lineup_data.get("num_batters", 0)
-
-    if num_batters >= MIN_LINEUP_BATTERS:
-        lineup_k_pct  = lineup_data.get("avg_k_pct", k_pct)
-        blended_k_pct = (k_pct * 0.70) + (lineup_k_pct * 0.30)
-    else:
-        blended_k_pct = k_pct
-
-    method1 = (k_per_9 / 9.0) * ip
-    method2 = (blended_k_pct / 100.0) * ip * 3.0
-    return round((method1 + method2) / 2, 1)
-
-
-def calc_prop_signal(row: pd.Series) -> str:
-    line  = safe_float(row.get("k_line", 0))
-    score = safe_float(row.get("ks_score", 0))
-    proj  = safe_float(row.get("projected_k_calc", 0))
-
-    if line <= 0:
+# The 8 tier LABELS stay fixed (so all dict keys keep matching), but their
+# numeric cutoffs are remapped to PERCENTILES of the score distribution. The
+# rescore compressed scores ~2-3 pts, so the old fixed 15/14/13... boundaries
+# put everyone in the bottom tiers and capped the blend at ~17%. Percentile
+# cutoffs fix that: "15+" now means "top-tier score on WHATEVER scale is live."
+_TIER_LABELS = ["15+", "14-15", "13-14", "12-13", "11-12", "10-11", "9-10", "8.5-9"]
+_TIER_PCTS   = [98, 90, 80, 65, 50, 35, 20]   # 7 cutpoints -> 8 tiers
+_TIER_CUTS_CACHE = {"cuts": None}
+
+def compute_tier_cuts(scores):
+    """Return the 7 percentile cutpoints (high->low) that define the 8 tiers."""
+    s = pd.Series([x for x in scores if x is not None and not pd.isna(x) and x > -50])
+    if len(s) < 50:
+        # fallback to old fixed scale if too little data
+        return [15, 14, 13, 12, 11, 10, 9]
+    return [float(s.quantile(p / 100)) for p in _TIER_PCTS]
+
+def tier_defs_from_cuts(cuts):
+    """Build (label, lo, hi) tuples from the 7 cutpoints, matching _TIER_LABELS."""
+    bounds = [999] + list(cuts) + [-999]   # 9 boundaries -> 8 tiers
+    return [(_TIER_LABELS[i], bounds[i + 1], bounds[i]) for i in range(8)]
+
+def tier_key_from_cuts(score, cuts):
+    """Return the tier label for a score given the 7 cutpoints."""
+    for label, lo, hi in tier_defs_from_cuts(cuts):
+        if lo <= score < hi:
+            return label
+    return None
+
+
+def resolve_score(row, default=0.0) -> float:
+    """Single source of truth for a row's HR score. Prefers hr_score_recalc
+    (the faithful new-scale rescore of all history), then hr_score_corrected,
+    then raw hr_score. Everything in the dashboard scores off this so the whole
+    board runs on the new monotonic scale."""
+    for col in ("hr_score_recalc", "hr_score_corrected", "hr_score"):
+        v = str(row.get(col, "")).strip()
+        if v not in ("", "nan", "None"):
+            return safe_float(v, default)
+    return default
+
+
+def american_to_implied(odds: float) -> float:
+    if odds >= 0:
+        return 100.0 / (odds + 100.0)
+    return abs(odds) / (abs(odds) + 100.0)
+
+
+def implied_to_american(prob: float) -> str:
+    if prob <= 0 or prob >= 1:
         return "—"
-
-    edge = proj - line
-
-    # UNDER signal — combo-specific score tier + line, based on resolved data
-    if score < 2.0 and line in (4.5, 5.5):
-        return f"UNDER {line} 🔻"
-    if score < 6.0 and line == 6.5:
-        return f"UNDER {line} 🔻"
-
-    if score >= OVER_SCORE and edge >= OVER_EDGE:
-        return f"OVER {line} ✅"
-    # LEAN OVER removed — market over-pricing makes lean signals unprofitable
-    return "—"
+    if prob >= 0.5:
+        return str(int(-round((prob / (1 - prob)) * 100)))
+    return f"+{int(round(((1 - prob) / prob) * 100))}"
 
 
-def assign_confidence(row: pd.Series) -> str:
-    ip = safe_float(row.get("ip", 0))
-    gs = safe_float(row.get("games_started", 0))
-    if ip >= 40 and gs >= 7: return "High"
-    if ip >= 20 and gs >= 4: return "Medium"
-    return "Low"
+def combined_american(odds_list) -> str:
+    """Multiply decimal odds of the legs, return the parlay price in American."""
+    dec = 1.0
+    for o in odds_list:
+        dec *= (1 + o / 100.0)  # legs are positive American here
+    return f"+{int(round((dec - 1) * 100))}"
 
 
-def build_reason(row: pd.Series, lineup_k_stats: Dict[str, dict]) -> str:
-    reasons = []
-
-    k_pct = safe_float(row.get("k_pct_season"))
-    if k_pct >= 28:
-        reasons.append(f"🔥 {k_pct:.1f}% K rate — elite strikeout pitcher")
-    elif k_pct >= 24:
-        reasons.append(f"⚡ {k_pct:.1f}% K rate — above average")
-
-    swstr = safe_float(row.get("swstr_pct"))
-    if swstr >= 14:
-        reasons.append(f"💫 SwStr% {swstr:.1f}% — elite swing and miss")
-    elif swstr >= 12:
-        reasons.append(f"🎯 SwStr% {swstr:.1f}% — above average swing and miss")
-
-    chase = safe_float(row.get("chase_rate"))
-    if chase >= 34:
-        reasons.append(f"🏃 Chase rate {chase:.1f}% — batters chasing off zone")
-
-    velo = safe_float(row.get("fastball_velo"))
-    if velo >= 96:
-        reasons.append(f"🔥 {velo:.1f} mph fastball")
-    elif velo >= 94:
-        reasons.append(f"💨 {velo:.1f} mph fastball")
-
-    k21 = safe_float(row.get("k_per_start_21d"))
-    if k21 >= 7:
-        reasons.append(f"📈 {k21:.1f} K/start last 21 days — hot streak")
-    elif k21 <= 4 and k21 > 0:
-        reasons.append(f"📉 {k21:.1f} K/start last 21 days — cold stretch")
-
-    avg_ip = safe_float(row.get("avg_ip_per_start"))
-    if avg_ip >= 6.0:
-        reasons.append(f"⏱️ {avg_ip:.1f} avg IP/start — goes deep")
-
-    whip = safe_float(row.get("whip_proxy"))
-    if whip > 0 and whip <= 1.00:
-        reasons.append(f"✅ WHIP {whip:.2f} — very efficient")
-    elif whip >= 1.40:
-        reasons.append(f"⚠️ WHIP {whip:.2f} — gets into trouble")
-
-    bb_pct = safe_float(row.get("bb_pct_season"))
-    if bb_pct > 0 and bb_pct <= 5.0:
-        reasons.append(f"🎯 BB% {bb_pct:.1f}% — excellent command")
-    elif bb_pct >= 11.0:
-        reasons.append(f"⚠️ BB% {bb_pct:.1f}% — command issues")
-
-    opposing_team = str(row.get("opposing_team", "")).strip()
-    lineup_data   = lineup_k_stats.get(opposing_team, {})
-    num_batters   = lineup_data.get("num_batters", 0)
-
-    if num_batters >= MIN_LINEUP_BATTERS:
-        avg_k = lineup_data.get("avg_k_pct", 0.0)
-        if avg_k >= 25:
-            reasons.append(f"✅ Opp lineup K% {avg_k:.1f}% ({num_batters} batters) — high K lineup")
-        elif avg_k >= 22:
-            reasons.append(f"📊 Opp lineup K% {avg_k:.1f}% ({num_batters} batters)")
-        elif avg_k <= 16:
-            reasons.append(f"⚠️ Opp lineup K% {avg_k:.1f}% ({num_batters} batters) — contact lineup")
-    else:
-        opp_k = safe_float(row.get("opp_team_k_pct", 22.0), 22.0)
-        if opp_k >= 26:
-            reasons.append(f"✅ Opp team K% {opp_k:.1f}% — high strikeout lineup")
-        elif opp_k <= 17:
-            reasons.append(f"⚠️ Opp team K% {opp_k:.1f}% — contact-heavy lineup")
-
-        opp_chase = safe_float(row.get("team_chase_rate", 0.0))
-        if opp_chase >= 34:
-            reasons.append(f"🏃 Opp team chase rate {opp_chase:.1f}% — chases off zone")
-        elif opp_chase > 0 and opp_chase <= 26:
-            reasons.append(f"⚠️ Opp team chase rate {opp_chase:.1f}% — disciplined lineup")
-
-        opp_whiff = safe_float(row.get("team_whiff_rate", 0.0))
-        if opp_whiff >= 27:
-            reasons.append(f"💫 Opp team whiff rate {opp_whiff:.1f}% — swings and misses a lot")
-
-    swstr_trend = str(row.get("swstr_trend", ""))
-    if "up" in swstr_trend.lower():
-        reasons.append("📈 SwStr% trending up")
-    velo_trend = str(row.get("velo_trend", ""))
-    if "up" in velo_trend.lower():
-        reasons.append("💪 Velo trending up")
-    elif "down" in velo_trend.lower():
-        reasons.append("📉 Velo trending down")
-
-    if not reasons:
-        reasons.append("Solid across multiple K factors")
-
-    return " | ".join(reasons)
+# ── HR hit-rate lookup ──────────────────────────────────────────────────────
+def _hr_odds_zone_key(odds: float) -> str:
+    if odds <= 300:
+        return "le300"
+    if 301 <= odds <= 499:
+        return "301-499"
+    if 500 <= odds <= 699:
+        return "500-699"
+    return "700plus"
 
 
-def prepare_picks(
-    ks_df: pd.DataFrame,
-    pitchers_df: pd.DataFrame,
-    team_k_rates: pd.DataFrame,
-    parks_df: pd.DataFrame,
-    odds_df: pd.DataFrame,
-    game_times: dict,
-    lineup_k_stats: Dict[str, dict],
-) -> pd.DataFrame:
-
-    if ks_df.empty:
-        print("No KS Statcast data.")
-        return pd.DataFrame()
-
-    df = ks_df.copy()
-    df.columns = [c.strip() for c in df.columns]
-
-    if "ks_ip" in df.columns:
-        df["ip"] = df["ks_ip"].apply(safe_float)
-
-    if not pitchers_df.empty:
-        pitchers_df = pitchers_df.copy()
-        pitchers_df.columns = [c.strip() for c in pitchers_df.columns]
-
-        if "pitcher_id" in pitchers_df.columns and "pitcher_id" in df.columns:
-            try:
-                df["pitcher_id"]          = df["pitcher_id"].astype("int64")
-                pitchers_df["pitcher_id"] = pitchers_df["pitcher_id"].astype("int64")
-            except Exception:
-                pass
-            today_ids = set(pitchers_df["pitcher_id"].dropna().unique())
-            before    = len(df)
-            df        = df[df["pitcher_id"].isin(today_ids)].copy()
-            print(f"Probable starter filter: {before - len(df)} removed, {len(df)} today's starters")
-
-    if df.empty:
-        return pd.DataFrame()
-
-    if game_times and "home_team" in df.columns:
-        import pytz as _pytz
-        now_utc = datetime.now(_pytz.utc)
-        before  = len(df)
-
-        def game_started(team):
-            gt = game_times.get(str(team).upper())
-            return gt is not None and now_utc >= gt
-
-        df = df[~df["home_team"].apply(game_started)].copy()
-        removed = before - len(df)
-        if removed > 0:
-            print(f"Game time filter: {removed} removed, {len(df)} remaining")
-
-    if df.empty:
-        return pd.DataFrame()
-
-    if not team_k_rates.empty and "opposing_team" in df.columns:
-        team_k_rates = team_k_rates.copy()
-        team_k_rates.columns = [c.strip() for c in team_k_rates.columns]
-
-        merge_cols = ["team"]
-        if "team_k_pct" in team_k_rates.columns:
-            merge_cols.append("team_k_pct")
-        if "team_chase_rate" in team_k_rates.columns:
-            merge_cols.append("team_chase_rate")
-        if "team_whiff_rate" in team_k_rates.columns:
-            merge_cols.append("team_whiff_rate")
-
-        rename_map = {
-            "team_k_pct":      "opp_team_k_pct",
-            "team_chase_rate": "opp_chase_rate",
-            "team_whiff_rate": "opp_whiff_rate",
-            "team":            "opposing_team",
-        }
-
-        df = df.merge(
-            team_k_rates[merge_cols].rename(columns=rename_map),
-            on="opposing_team", how="left"
-        )
-
-    if not parks_df.empty and "home_team" in df.columns:
-        parks_df = parks_df.copy()
-        parks_df.columns = [c.strip() for c in parks_df.columns]
-        park_cols = [c for c in ["team", "park_hr_factor", "park_name"] if c in parks_df.columns]
-        if park_cols:
-            df = df.merge(
-                parks_df[park_cols],
-                left_on="home_team", right_on="team", how="left"
-            )
-
-    defaults = {
-        "opp_team_k_pct":   22.0,
-        "opp_chase_rate":   30.0,
-        "opp_whiff_rate":   22.0,
-        "park_hr_factor":   100.0,
-        "swstr_trend":      "",
-        "velo_trend":       "",
-        "opener_risk":      0.0,
-        "k_per_start_21d":  0.0,
-        "avg_ip_per_start": 5.5,
-        "fastball_velo":    93.0,
-        "chase_rate":       30.0,
-        "whip_proxy":       1.2,
-        "bb_pct_season":    8.0,
-    }
-    for col, val in defaults.items():
-        if col not in df.columns:
-            df[col] = val
-        else:
-            if isinstance(val, float):
-                df[col] = df[col].apply(lambda x: safe_float(x, val))
-
-    score_results          = df.apply(lambda r: compute_ks_score(r, lineup_k_stats), axis=1)
-    df["ks_score"]         = score_results.apply(lambda x: x[0])
-    df["score_breakdown"]  = score_results.apply(lambda x: x[1])
-    df["projected_k_calc"] = df.apply(lambda r: project_ks(r, lineup_k_stats), axis=1)
-    df["confidence"]       = df.apply(assign_confidence, axis=1)
-    df["reason"]           = df.apply(lambda r: build_reason(r, lineup_k_stats), axis=1)
-
-    def get_lineup_k_display(row):
-        opposing_team = str(row.get("opposing_team", "")).strip()
-        data          = lineup_k_stats.get(opposing_team, {})
-        if data.get("num_batters", 0) >= MIN_LINEUP_BATTERS:
-            return f"{data['avg_k_pct']:.1f}% ({data['num_batters']} batters)"
-        return ""
-
-    df["opp_lineup_k_pct"] = df.apply(get_lineup_k_display, axis=1)
-
-    if not odds_df.empty:
-        odds_df = odds_df.copy()
-        odds_df.columns = [c.strip() for c in odds_df.columns]
-
-        if "pitcher_name" in odds_df.columns:
-            odds_df["pitcher_name_norm"] = odds_df["pitcher_name"].apply(normalize_name)
-
-        if "pitcher_name" in df.columns:
-            df["pitcher_name_norm"] = df["pitcher_name"].apply(normalize_name)
-
-        odds_cols = [c for c in ["pitcher_name_norm", "k_line", "over_odds", "under_odds"] if c in odds_df.columns]
-        if "pitcher_name_norm" in odds_cols:
-            odds_slim = odds_df[odds_cols].rename(columns={
-                "over_odds":  "ks_over_odds",
-                "under_odds": "ks_under_odds",
-            })
-            df = df.merge(odds_slim, on="pitcher_name_norm", how="left")
-    else:
-        df["k_line"]        = np.nan
-        df["ks_over_odds"]  = np.nan
-        df["ks_under_odds"] = np.nan
-
-    df["prop_signal"] = df.apply(calc_prop_signal, axis=1)
-
-    return df
+# ── K's (strikeout prop) strong-bucket cross-reference ──────────────────────
+# Mirrors the HR "Score Tier x Odds Zone" idea but for the K's model: bucket
+# resolved pitchers by (ks_score tier, k_line, Over/Under), compute each
+# cell's live hit rate from KS_All_Scores, flag the STRONG ones, then surface
+# today's K's picks that land in a strong cell. Self-updating (no hardcoded
+# table) so it can't go stale the way a pasted snapshot would.
+KS_TIER_DEFS = [
+    ("Under 0", -99, 0), ("0-2", 0, 2), ("2-4", 2, 4),
+    ("4-6", 4, 6), ("6-8", 6, 8), ("8+", 8, 99),
+]
+KS_STRONG_MIN_N = 25
+KS_STRONG_MIN_HIT = 55.0   # hit% floor to call a cell "strong" (comfortable
+                            # buffer above the ~52.4% no-vig -110 breakeven)
 
 
-def apply_diversity_cap(df: pd.DataFrame) -> pd.DataFrame:
-    df = df[df["ks_score"] > 0].copy()
-    df = df.sort_values("ks_score", ascending=False).reset_index(drop=True)
+def ks_tier_of(score):
+    for lab, lo, hi in KS_TIER_DEFS:
+        if lo <= score < hi:
+            return lab
+    return None
 
-    selected    = []
-    team_counts = {}
 
-    for _, row in df.iterrows():
-        if len(selected) >= TOP_N:
-            break
-        team = str(row.get("pitcher_team", row.get("pitching_team", row.get("team", "UNK"))))
-        if team_counts.get(team, 0) >= MAX_PER_TEAM:
+def _be_odds_from_rate(p):
+    """American odds at which hit-rate p is exactly breakeven (for display)."""
+    if p <= 0 or p >= 1:
+        return "\u2014"
+    if p >= 0.5:
+        return f"-{round(p / (1 - p) * 100)}"
+    return f"+{round((1 - p) / p * 100)}"
+
+
+def build_ks_strong_cells(ks_all_scores: pd.DataFrame) -> dict:
+    """Returns {(tier, line, side): {'n':, 'hit':, 'strong':, 'be':}} computed
+    live from resolved KS_All_Scores rows."""
+    cells = {}
+    if ks_all_scores is None or ks_all_scores.empty:
+        return cells
+    d = ks_all_scores.copy()
+    d["ks_score"] = d.get("ks_score", "").apply(lambda v: safe_float(v, np.nan))
+    d["k_line"] = d.get("k_line", "").apply(lambda v: safe_float(v, np.nan))
+    d["tier"] = d["ks_score"].apply(lambda s: ks_tier_of(s) if not pd.isna(s) else None)
+    d = d.dropna(subset=["ks_score", "k_line"])
+    d = d[d["tier"].notna()]
+
+    for side, hitcol in (("Over", "over_hit"), ("Under", "under_hit")):
+        if hitcol not in d.columns:
             continue
-        selected.append(row)
-        team_counts[team] = team_counts.get(team, 0) + 1
+        sub = d[d[hitcol].astype(str).str.strip().isin(["Yes", "No"])].copy()
+        if sub.empty:
+            continue
+        sub["hit_bool"] = (sub[hitcol].astype(str).str.strip() == "Yes").astype(int)
+        for (tier, line), g in sub.groupby(["tier", "k_line"]):
+            n = len(g)
+            if n < 10:
+                continue
+            hit = g["hit_bool"].mean() * 100
+            strong = n >= KS_STRONG_MIN_N and hit >= KS_STRONG_MIN_HIT
+            cells[(tier, line, side)] = {
+                "n": n, "hit": round(hit, 1), "strong": strong,
+                "be": _be_odds_from_rate(hit / 100.0),
+            }
+    return cells
 
-    if not selected:
-        return pd.DataFrame()
 
-    result = pd.DataFrame(selected).reset_index(drop=True)
-    result["rank"] = range(1, len(result) + 1)
-    return result
+def build_ks_strong_picks(ks_all_scores: pd.DataFrame, today_str: str) -> list:
+    """Today's K's picks whose (tier, line, side) cell is flagged STRONG."""
+    cells = build_ks_strong_cells(ks_all_scores)
+    out = []
+    if ks_all_scores is None or ks_all_scores.empty or not cells:
+        return out
+    d = ks_all_scores.copy()
+    if "date" in d.columns:
+        d = d[d["date"].astype(str).str.strip() == today_str]
+    if d.empty:
+        return out
+    for _, row in d.iterrows():
+        score = safe_float(row.get("ks_score", ""), np.nan)
+        line = safe_float(row.get("k_line", ""), np.nan)
+        if pd.isna(score) or pd.isna(line):
+            continue
+        tier = ks_tier_of(score)
+        if not tier:
+            continue
+        for side in ("Over", "Under"):
+            cell = cells.get((tier, line, side))
+            if cell and cell["strong"]:
+                out.append({
+                    "pitcher": str(row.get("pitcher_name", "")).strip(),
+                    "team": str(row.get("team", "")).strip(),
+                    "opp": str(row.get("opposing_team", "")).strip(),
+                    "line": line, "side": side, "tier": tier,
+                    "n": cell["n"], "hit": cell["hit"], "be": cell["be"],
+                    "over_odds": str(row.get("over_odds", "")).strip(),
+                    "under_odds": str(row.get("under_odds", "")).strip(),
+                })
+    out.sort(key=lambda x: -x["hit"])
+    return out
 
 
-def write_picks_to_sheet(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
+def build_hr_hit_rates(hr_all_scores: pd.DataFrame) -> dict:
+    hit_rates = {}
+    if hr_all_scores.empty:
+        return hit_rates
+    MODEL_START_DATE = "2026-06-09"
+    df = hr_all_scores.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)]
+    resolved = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    if resolved.empty:
+        return hit_rates
+
+    resolved["hr_score"] = resolved.apply(resolve_score, axis=1)
+    resolved["hit_bool"] = resolved["hit_hr"].astype(str).str.strip() == "Yes"
+    resolved["odds_num"] = resolved["consensus_odds"].apply(safe_float)
+
+    # Global base HR rate — the anchor we shrink small/extreme cells toward.
+    base_rate = resolved["hit_bool"].mean()
+    # Shrinkage strength: a cell needs ~SHRINK_K samples to earn half its
+    # distance from base. Calibration (out-of-sample) showed the high-confidence
+    # cells (32%+ predicted) hit ~18% — overrated because a thin, hot cell was
+    # trusted at face value. Shrinking pulls those back toward reality without
+    # hand-picking which tiers to punish; big stable cells barely move.
+    SHRINK_K = 40.0
+
+    def shrunk_rate(sub):
+        n = len(sub)
+        raw = sub["hit_bool"].mean()
+        return (n * raw + SHRINK_K * base_rate) / (n + SHRINK_K)
+
+    # 13+ split into 13-14 / 14-15 / 15+ so each leg is credited with its own
+    # observed rate (15+ underperforms the tiers beneath it).
+    _cuts = compute_tier_cuts(resolved["hr_score"].tolist())
+    _TIER_CUTS_CACHE["cuts"] = _cuts
+    tier_defs = tier_defs_from_cuts(_cuts)
+    zone_keys = ["le300", "301-499", "500-699", "700plus"]
+    for tier_label, lo, hi in tier_defs:
+        tier_sub = resolved[(resolved["hr_score"] >= lo) & (resolved["hr_score"] < hi)]
+        if len(tier_sub) >= 5:
+            hit_rates[tier_label] = shrunk_rate(tier_sub)
+        for zk in zone_keys:
+            zsub = tier_sub[tier_sub["odds_num"].apply(_hr_odds_zone_key) == zk]
+            if len(zsub) >= 15:
+                hit_rates[(tier_label, zk)] = shrunk_rate(zsub)
+
+    # ── regressed rates for platoon / pitch / combined tiers (for the blended
+    # card ranker). Same shrinkage — small/extreme buckets pulled toward base.
+    resolved["ps_val"] = pd.to_numeric(resolved.get("platoon_score", 0), errors="coerce").fillna(0)
+    resolved["pm_val"] = pd.to_numeric(resolved.get("pitch_matchup_score", 0), errors="coerce").fillna(0)
+    resolved["cb_val"] = resolved["ps_val"] + resolved["pm_val"]
+    plat_defs = [("plat_elite", 4, 99), ("plat_strong", 2, 4), ("plat_mild", 0.5, 2),
+                 ("plat_neu", -0.5, 0.5), ("plat_mdis", -2, -0.5),
+                 ("plat_sdis", -4, -2), ("plat_edis", -99, -4)]
+    pitch_defs = [("pit_good", 0.8, 99), ("pit_mild", 0.2, 0.8),
+                  ("pit_neu", -0.2, 0.2), ("pit_weak", -99, -0.2)]
+    combo_defs = [("cb_elitep", 5, 99), ("cb_elite", 4, 5), ("cb_great", 3, 4),
+                  ("cb_good", 1, 3), ("cb_neu", -1, 1), ("cb_bad", -3, -1),
+                  ("cb_terrible", -99, -3)]
+    for key, lo, hi in plat_defs:
+        sub = resolved[(resolved["ps_val"] >= lo) & (resolved["ps_val"] < hi)]
+        if len(sub) >= 10:
+            hit_rates[key] = shrunk_rate(sub)
+    for key, lo, hi in pitch_defs:
+        sub = resolved[(resolved["pm_val"] >= lo) & (resolved["pm_val"] < hi)]
+        if len(sub) >= 10:
+            hit_rates[key] = shrunk_rate(sub)
+    for key, lo, hi in combo_defs:
+        sub = resolved[(resolved["cb_val"] >= lo) & (resolved["cb_val"] < hi)]
+        if len(sub) >= 10:
+            hit_rates[key] = shrunk_rate(sub)
+    hit_rates["_base"] = base_rate
+    hit_rates["_tier_cuts"] = _cuts
+
+    print(f"  HR hit rate lookup: {len(hit_rates)} entries from {len(resolved)} resolved picks "
+          f"(base {base_rate*100:.1f}%, shrink k={SHRINK_K:.0f})")
+    return hit_rates
+
+
+def get_hr_score_tier(score: float) -> str:
+    cuts = _TIER_CUTS_CACHE.get("cuts") or [15, 14, 13, 12, 11, 10, 9]
+    k = tier_key_from_cuts(score, cuts)
+    return k if k else "below-8.5"
+
+
+def calc_hr_value(score: float, odds: float, hit_rates: dict) -> tuple:
+    tier = get_hr_score_tier(score)
+    zk = _hr_odds_zone_key(odds)
+    hit_rate = hit_rates.get((tier, zk))
+    if hit_rate is None or odds <= 0:
+        return 0.0, "—", False, "No zone data"
+    implied = american_to_implied(odds)
+    edge = hit_rate - implied
+    edge_pct = round(edge * 100, 1)
+    edge_str = f"+{edge_pct}%" if edge_pct >= 0 else f"{edge_pct}%"
+    return round(hit_rate * 100, 1), implied_to_american(hit_rate), edge > 0, edge_str
+
+
+# ── Why — baseball reasons only ─────────────────────────────────────────────
+def build_why(row) -> str:
+    """
+    Baseball reasons a pick stands out — power, barrel, form, platoon, park,
+    weather. Deliberately does NOT include zone edge (that's the Edge column).
+    """
+    bits = []
+
+    hr_fb = safe_float(row.get("hr_per_fb", 0))
+    if hr_fb >= 18:
+        bits.append(f"elite power ({hr_fb:.0f}% HR/FB)")
+    elif hr_fb >= 13:
+        bits.append(f"strong power ({hr_fb:.0f}% HR/FB)")
+    elif hr_fb >= 9:
+        bits.append(f"avg power ({hr_fb:.0f}% HR/FB)")
+
+    sb = safe_float(row.get("season_barrel_pct", 0))
+    if sb >= 12:
+        bits.append(f"elite barrel ({sb:.0f}%)")
+    elif sb >= 9:
+        bits.append(f"good barrel ({sb:.0f}%)")
+
+    b7 = safe_float(row.get("barrel_pct_7d", 0))
+    if b7 >= 18:
+        bits.append(f"hot barrel 7d ({b7:.0f}%)")
+
+    mom = str(row.get("momentum_desc", "")).lower()
+    if "surging" in mom:
+        bits.append("surging form")
+    elif "trending up" in mom:
+        bits.append("heating up")
+    elif "cold" in mom or "trending down" in mom:
+        bits.append("cold streak")
+
+    plat = safe_float(row.get("platoon_score", 0))
+    if plat >= 1.0:
+        bits.append("platoon edge")
+    elif plat <= -1.0:
+        bits.append("platoon down")
+
+    pf = safe_float(row.get("park_hr_factor", 100))
+    if pf >= 110:
+        bits.append(f"HR park ({pf:.0f})")
+    elif 0 < pf <= 90:
+        bits.append(f"tough park ({pf:.0f})")
+
+    wb = safe_float(row.get("hr_weather_boost", 0))
+    if wb >= 1.5:
+        bits.append("wind out")
+    elif wb <= -1.0:
+        bits.append("wind in")
+
+    if not bits:
+        return f"avg power ({hr_fb:.0f}% HR/FB)" if hr_fb > 0 else "value on odds only"
+    return "   ·   ".join(bits[:4])
+
+
+# ── Row builder (HR only) ───────────────────────────────────────────────────
+def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
+    """Compute score×odds bands whose RESOLVED hit rate beats implied
+    breakeven, live from HR_All_Scores. Returns a ranked list (best edge
+    first) of dicts: {band, s_lo, s_hi, o_lo, o_hi, edge_pp, n, hit}.
+
+    Replaces the old hardcoded band table so the slate reflects current
+    resolved data every run instead of a frozen snapshot. Same math as
+    test_edge_bands.py. Only bands with n>=min_n AND positive edge qualify.
+    """
+    if hr_all_scores.empty:
+        return []
+    MODEL_START_DATE = "2026-06-09"
+    df = hr_all_scores.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)]
+    df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    if df.empty:
+        return []
+    df["score"] = df.apply(resolve_score, axis=1)
+    df["odds"] = df["consensus_odds"].apply(safe_float)
+    df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
+    df = df[(df["odds"] > 0) & (df["score"] > 0)]
+
+    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
+                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
+                   (8.5, 10, "8.5-10")]
+    odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
+                  (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
+                  (501, 600, "+501-600"), (601, 9999, "+601+")]
+
+    def implied(o):
+        return 100/(o+100) if o >= 0 else abs(o)/(abs(o)+100)
+
+    bands = []
+    for slo, shi, slab in score_bands:
+        for olo, ohi, olab in odds_bands:
+            sub = df[(df["score"] >= slo) & (df["score"] < shi) &
+                     (df["odds"] >= olo) & (df["odds"] <= ohi)]
+            n = len(sub)
+            if n < min_n:
+                continue
+            hit = sub["hit"].mean()
+            be = sub["odds"].apply(implied).mean()
+            edge = hit - be
+            if edge > 0:
+                bands.append({
+                    "band": f"{slab} @ {olab}", "s_lo": slo, "s_hi": shi,
+                    "o_lo": olo, "o_hi": ohi, "edge_pp": edge * 100,
+                    "n": n, "hit": hit * 100,
+                })
+    bands.sort(key=lambda b: -b["edge_pp"])
+    return bands
+
+
+def blended_hit_prob(hr_score, odds, plat, pitch, hit_rates):
+    """Blend the regressed hit rates from every validated dimension into one
+    expected hit probability for a leg. Overlap-aware: the combined tier
+    already contains platoon+pitch, so those get low weight to avoid triple-
+    counting the same signal; score×odds is the independent backbone.
+
+    All rates are already shrunk toward base by sample in build_hr_hit_rates,
+    so thin/extreme buckets (n=20-something) are automatically pulled toward
+    reality — this same code just trusts them more as the samples grow.
+    """
+    base = hr_rates_get(hit_rates, "_base", 0.12)
+    combo = plat + pitch
+
+    _cuts = hr_rates_get(hit_rates, "_tier_cuts", None) or _TIER_CUTS_CACHE.get("cuts") \
+            or [15, 14, 13, 12, 11, 10, 9]
+    def score_tier_key(s):
+        return tier_key_from_cuts(s, _cuts)
+
+    def zone_key(o):
+        if o <= 0:      return None
+        if o <= 300:    return "le300"
+        if o < 500:     return "301-499"
+        if o < 700:     return "500-699"
+        return "700plus"
+
+    def plat_key(p):
+        for k, lo, hi in [("plat_elite",4,99),("plat_strong",2,4),("plat_mild",0.5,2),
+                          ("plat_neu",-0.5,0.5),("plat_mdis",-2,-0.5),
+                          ("plat_sdis",-4,-2),("plat_edis",-99,-4)]:
+            if lo <= p < hi: return k
+        return None
+
+    def pitch_key(p):
+        for k, lo, hi in [("pit_good",0.8,99),("pit_mild",0.2,0.8),
+                          ("pit_neu",-0.2,0.2),("pit_weak",-99,-0.2)]:
+            if lo <= p < hi: return k
+        return None
+
+    def combo_key(c):
+        for k, lo, hi in [("cb_elitep",5,99),("cb_elite",4,5),("cb_great",3,4),
+                          ("cb_good",1,3),("cb_neu",-1,1),("cb_bad",-3,-1),
+                          ("cb_terrible",-99,-3)]:
+            if lo <= c < hi: return k
+        return None
+
+    # gather available component rates with weights. score×odds crosstab is the
+    # strongest independent cell; fall back to score-tier alone if the crosstab
+    # cell is thin/absent.
+    st = score_tier_key(hr_score); zk = zone_key(odds)
+    comps = []  # (rate, weight)
+    cross = hr_rates_get(hit_rates, (st, zk), None) if st and zk else None
+    if cross is not None:
+        comps.append((cross, 3.0))
+    elif st:
+        r = hr_rates_get(hit_rates, st, None)
+        if r is not None:
+            comps.append((r, 2.0))
+    # combined tier — the validated backbone of the card
+    ck = combo_key(combo)
+    rc = hr_rates_get(hit_rates, ck, None) if ck else None
+    if rc is not None:
+        comps.append((rc, 2.5))
+    # platoon & pitch — low weight, already inside combined (avoid triple count)
+    pk = plat_key(plat); rp = hr_rates_get(hit_rates, pk, None) if pk else None
+    if rp is not None:
+        comps.append((rp, 0.6))
+    qk = pitch_key(pitch); rq = hr_rates_get(hit_rates, qk, None) if qk else None
+    if rq is not None:
+        comps.append((rq, 0.6))
+
+    if not comps:
+        return base
+    wsum = sum(w for _, w in comps)
+    return sum(r * w for r, w in comps) / wsum
+
+
+def hr_rates_get(hit_rates, key, default):
+    try:
+        v = hit_rates.get(key, default)
+        return v if v is not None else default
+    except Exception:
+        return default
+
+
+def build_all_band_rates(hr_all_scores: pd.DataFrame, min_n: int = 20) -> dict:
+    """Like build_edge_bands but returns EVERY band's hit rate (not only the
+    +EV ones), keyed by (s_lo, s_hi, o_lo, o_hi). Used to check each player's
+    OWN odds against their band's breakeven — a player priced long enough is
+    +EV for himself even if his band averages -EV. Same score/odds/date logic
+    as the working edge-bands so it can't diverge."""
+    if hr_all_scores.empty:
+        return {}
+    MODEL_START_DATE = "2026-06-09"
+    df = hr_all_scores.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df[df["date_dt"] >= pd.Timestamp(MODEL_START_DATE)]
+    df = df[df["hit_hr"].astype(str).str.strip().isin(["Yes", "No"])].copy()
+    if df.empty:
+        return {}
+    df["score"] = df.apply(resolve_score, axis=1)
+    df["odds"] = df["consensus_odds"].apply(safe_float)
+    df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
+    df = df[(df["odds"] > 0) & (df["score"] > 0)]
+
+    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
+                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
+                   (8.5, 10, "8.5-10")]
+    odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
+                  (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
+                  (501, 600, "+501-600"), (601, 9999, "+601+")]
+    out = {}
+    for slo, shi, slab in score_bands:
+        for olo, ohi, olab in odds_bands:
+            sub = df[(df["score"] >= slo) & (df["score"] < shi) &
+                     (df["odds"] >= olo) & (df["odds"] <= ohi)]
+            n = len(sub)
+            if n < min_n:
+                continue
+            hit = sub["hit"].mean()
+            if hit <= 0:
+                continue
+            # breakeven American odds from the band's hit rate
+            be = -(hit / (1 - hit) * 100) if hit >= 0.5 else ((1 - hit) / hit * 100)
+            out[(slo, shi, olo, ohi)] = {
+                "band": f"{slab} @ {olab}", "hit": hit * 100, "be": be, "n": n,
+            }
+    return out
+
+
+def player_band(score, odds, band_rates):
+    """Find the band a player falls into and return its rate/breakeven/n."""
+    for (slo, shi, olo, ohi), v in band_rates.items():
+        if slo <= score < shi and olo <= odds <= ohi:
+            return v
+    return None
+
+
+def build_breakeven_lookup(hr_df):
+    """Compute the live breakeven odds for each score-tier x odds-zone cell
+    from resolved history — same logic as HR_Analysis, so it auto-updates
+    daily as hit rates change. Returns {(tier_label, zone_label): breakeven_am}
+    plus the raw hit rate per cell. A leg is +EV if its odds beat its cell's
+    breakeven."""
+    out = {}
+    if hr_df is None or hr_df.empty:
+        return out
+    d = hr_df.copy()
+    if "hit_hr" not in d.columns:
+        return out
+    d["res"] = d["hit_hr"].astype(str).str.strip()
+    d = d[d["res"].isin(["Yes", "No"])]
+    if d.empty:
+        return out
+    d["hit"] = (d["res"] == "Yes").astype(int)
+    # use the unified resolver (prefers hr_score_recalc new scale)
+    d["sc"] = d.apply(resolve_score, axis=1)
+    d["od"] = pd.to_numeric(d["consensus_odds"], errors="coerce") if "consensus_odds" in d.columns else np.nan
+    d = d.dropna(subset=["sc", "od"])
+    print(f"  [be_debug] resolved={len(d)}, "
+          f"od range={d['od'].min():.0f}..{d['od'].max():.0f} "
+          f"sc range={d['sc'].min():.1f}..{d['sc'].max():.1f}, "
+          f"od<=499={int((d['od']<=499).sum())}, od>0={int((d['od']>0).sum())}")
+
+    _bcuts = _TIER_CUTS_CACHE.get("cuts") or compute_tier_cuts(d["sc"].tolist())
+    tier_defs = tier_defs_from_cuts(_bcuts)
+    zone_defs = [("le300",0,301),("301-499",301,500),("500-699",500,700),("700plus",700,99999)]
+
+    for zl, zlo, zhi in zone_defs:
+        zsub = d[(d["od"] >= zlo) & (d["od"] < zhi)]
+        for tl, tlo, thi in tier_defs:
+            cell = zsub[(zsub["sc"] >= tlo) & (zsub["sc"] < thi)]
+            n = len(cell)
+            if n < 8:            # need a minimum sample to trust the breakeven
+                continue
+            p = cell["hit"].mean()
+            if p <= 0:
+                continue
+            # breakeven American odds from hit rate p
+            if p >= 0.5:
+                be = -(p / (1 - p) * 100)
+            else:
+                be = (1 - p) / p * 100
+            out[(tl, zl)] = {"be": be, "rate": p * 100, "n": n}
+    return out
+
+
+def _tier_key(s):
+    cuts = _TIER_CUTS_CACHE.get("cuts") or [15, 14, 13, 12, 11, 10, 9]
+    return tier_key_from_cuts(s, cuts)
+
+
+def _zone_key(o):
+    if o <= 0:    return None
+    if o < 301:   return "le300"
+    if o < 500:   return "301-499"
+    if o < 700:   return "500-699"
+    return "700plus"
+
+
+def american_to_implied(o):
+    """Convert American odds to implied win probability (for edge calc)."""
+    if o > 0:
+        return 100.0 / (o + 100.0)
+    return -o / (-o + 100.0)
+
+
+def reconstruct_heater(hr_df, days_back=7):
+    """Rebuild what the Dinger Card would have been each past day from
+    HR_All_Scores history and tally how it did. A 'card day' = the top-6
+    Great+ legs (combined platoon+pitch >= 3, hr_score >= 10, odds <= 499)
+    for that date. Returns a summary dict for a fun streak/heater display."""
+    if hr_df is None or hr_df.empty or "date" not in hr_df.columns:
+        return None
+    d = hr_df.copy()
+    d["res"] = d["hit_hr"].astype(str).str.strip()
+    d = d[d["res"].isin(["Yes", "No"])]
+    if d.empty:
+        return None
+    d["hit"] = (d["res"] == "Yes").astype(int)
+    d["ps"] = pd.to_numeric(d.get("platoon_score", 0), errors="coerce").fillna(0)
+    d["pm"] = pd.to_numeric(d.get("pitch_matchup_score", 0), errors="coerce").fillna(0)
+    d["sc"] = pd.to_numeric(d.get("hr_score_recalc", d.get("hr_score", 0)), errors="coerce").fillna(
+              pd.to_numeric(d.get("hr_score", 0), errors="coerce")).fillna(0)
+    d["od"] = pd.to_numeric(d.get("consensus_odds", 0), errors="coerce").fillna(0)
+    d["combo"] = d["ps"] + d["pm"]
+    d["date_s"] = d["date"].astype(str).str.strip()
+
+    dates = sorted(d["date_s"].unique())[-days_back:]
+    night_results = []   # (date, legs_hit, legs_total, best_pair_hit)
+    for dt in dates:
+        day = d[d["date_s"] == dt]
+        card = day[(day["combo"] >= 3) & (day["sc"] >= 10) &
+                   (day["od"] > 0) & (day["od"] <= 499)]
+        card = card.sort_values("combo", ascending=False).head(6)
+        if card.empty:
+            continue
+        hits = int(card["hit"].sum())
+        total = len(card)
+        # a "pair cashes" if 2+ legs hit
+        pair_cashed = hits >= 2
+        night_results.append((dt, hits, total, pair_cashed))
+
+    if not night_results:
+        return None
+
+    nights = len(night_results)
+    pair_nights = sum(1 for _, _, _, p in night_results if p)
+    total_legs = sum(t for _, _, t, _ in night_results)
+    total_hits = sum(h for _, h, _, _ in night_results)
+    best = max(night_results, key=lambda x: x[1])
+
+    # current streak of pair-cashing nights (from most recent backward)
+    streak = 0
+    for _, _, _, p in reversed(night_results):
+        if p:
+            streak += 1
+        else:
+            break
+    cold = 0
+    if streak == 0:
+        for _, h, _, _ in reversed(night_results):
+            if h == 0:
+                cold += 1
+            else:
+                break
+
+    return {
+        "nights": nights,
+        "pair_nights": pair_nights,
+        "leg_rate": round(total_hits / total_legs * 100, 1) if total_legs else 0.0,
+        "best_night": best,          # (date, hits, total, pair)
+        "streak": streak,
+        "cold": cold,
+        "recent": night_results[-5:],
+    }
+
+
+def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr_all_scores=None, ks_all_scores=None):
+    staging = []   # collected slate legs/tickets for the Bet_Staging tab
+    def pad(row):
+        return list(row) + [""] * (N_COLS - len(row))
+
+    E = pad([])
+    rows = []
+
+    rows.append((pad([f"⏱  Last Updated: {timestamp_str}"]), "timestamp"))
+
+    hr_source = hr_today if (hr_today is not None and not hr_today.empty) else hr_df
+
+    # ── +EV SELECTIONS — each player's odds vs THEIR band's breakeven ─────
+    # For every player, find their score x odds BAND (same logic as the
+    # working edge-bands), get that band's historical hit rate -> breakeven,
+    # and show the player if HIS odds beat it. A player priced long enough is
+    # +EV for himself even if the band averages -EV. Bands computed fresh from
+    # HR_All_Scores each run, so it tracks the data daily.
+    # bands need the full HR_All_Scores (with dates); hr_df is the small picks
+    # tab. Fall back to hr_df only if hr_all_scores wasn't passed.
+    band_source = hr_all_scores if hr_all_scores is not None and not hr_all_scores.empty else hr_df
+    band_rates = build_all_band_rates(band_source)
+
+    rows.append((pad(["\U0001F4B0  +EV SELECTIONS — odds beat their band breakeven (live)"]),
+                 "section_header_hr"))
+    rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book",
+                      "Band BE", "Edge", "Band Hit%", "N", "Comb", "Plat", "Form", "Band", "Info"]), "col_header_hr"))
+
+    picks = []
+    _diag = {"total": 0, "no_odds": 0, "no_band": 0, "neg_edge": 0, "kept": 0}
+    if not hr_source.empty and band_rates:
+        for _, row in hr_source.iterrows():
+            batter = str(row.get("player_name", "")).strip()
+            if not batter or batter == "nan":
+                continue
+            _diag["total"] += 1
+            sc = resolve_score(row)
+            # prefer the best available price across your books; fall back to
+            # consensus if best_odds isn't present (older rows / no odds).
+            _best = str(row.get("best_odds", "")).strip()
+            od = safe_float(_best) if _best not in ("", "nan", "None") \
+                 else safe_float(row.get("consensus_odds", 0))
+            best_book = str(row.get("best_book", "")).strip()
+            cons_od = safe_float(row.get("consensus_odds", 0))
+            if od <= 0:
+                _diag["no_odds"] += 1
+                continue
+            # DATA-PROVEN GUARDRAILS (test_pocket_and_inversion, test_monotonic):
+            # 1) Hard cap at +499. At +500 and longer the model's "value" picks
+            #    are anti-predictive (10.4% in the 9-10 pocket, +val 4-6% at
+            #    +700). The longshots are a black hole — never bet them.
+            # 2) Cap score at 15. corr(score,HR) within 15+ = ~0 — above 15 is
+            #    saturation the book overprices, not real edge.
+            if od > 499:
+                _diag["no_odds"] += 1
+                continue
+            if sc > 15:
+                sc = 15.0
+            band = player_band(sc, od, band_rates)
+            if not band:
+                _diag["no_band"] += 1
+                continue
+            # +EV for this player if his odds imply LESS than the band's rate
+            leg_impl = (100 / (od + 100) if od >= 0 else abs(od) / (abs(od) + 100)) * 100
+            edge = band["hit"] - leg_impl        # pp edge of his price vs band rate
+            if edge <= 0:
+                _diag["neg_edge"] += 1
+                continue
+            _diag["kept"] += 1
+            bh = str(row.get("batter_hand", "")).strip().upper()[:1]
+            ph = str(row.get("pitcher_hand", "")).strip().upper()[:1]
+            eff = ("R" if ph == "L" else "L") if bh == "S" else bh
+            p_bbl = safe_float(row.get(f"pitcher_barrel_vs_{'lhh' if eff=='L' else 'rhh'}", 0))
+            b_bbl = safe_float(row.get("season_barrel_pct", 0))
+            b_iso = safe_float(row.get(f"vs_{'lhp' if ph=='L' else 'rhp'}_iso", 0))
+            info = f"P:{p_bbl:.0f}%bbl \u00b7 B:{b_bbl:.0f}%bbl \u00b7 {b_iso:.3f}v{ph or '?'}HP"
+            be = band["be"]
+            be_s = f"+{int(round(be))}" if be > 0 else f"-{int(round(abs(be)))}"
+            # matchup tier + form for ranking/layering on top of edge
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            combo = plat + pitch
+            season_bbl = b_bbl
+            form = "\u2796"
+            for win, bc, blc in [("7d","bbe_7d","barrel_pct_7d"),
+                                 ("10d","bbe_10d","barrel_pct_10d"),
+                                 ("14d","bbe_14d","barrel_pct_14d")]:
+                wbbe = safe_float(row.get(bc, 0)); wbbl = safe_float(row.get(blc, 0))
+                if wbbe >= 8:
+                    diff = wbbl - season_bbl
+                    form = "\U0001F525" if diff >= 4 else "\U0001F9CA" if diff <= -4 else "\u2796"
+                    break
+            # proven-zone tag: +301-499 value bucket hit 27.8% (model beats
+            # market there); short-odds 9-10 pocket hit 21-26%. Float these up.
+            in_prime = (301 <= od <= 499) or (9 <= sc < 10 and od <= 499)
+            picks.append({"batter":batter,"team":str(row.get("team","")).strip(),
+                "pitcher":str(row.get("pitcher_name","")).strip(),
+                "sc":sc,"od":od,"be_s":be_s,"edge":edge,"rate":band["hit"],
+                "band":band["band"],"info":info,"bn":band.get("n",0),
+                "combo":combo,"plat":plat,"form":form,
+                "book":best_book,"cons":cons_od,"prime":in_prime})
+
+    # rank: proven-zone plays first (the +301-499 value bucket & 9-10 short-odds
+    # pocket, where the model genuinely beats the market), then by edge, then by
+    # matchup tier. Longshots already filtered out (+499 cap).
+    picks.sort(key=lambda x: (0 if x["prime"] else 1,
+                              -round(x["edge"] * 2) / 2, -x["combo"]))
+    print(f"  +EV selections: {_diag['kept']} kept of {_diag['total']} legs "
+          f"(no_odds={_diag['no_odds']}, no_band={_diag['no_band']}, "
+          f"neg_edge={_diag['neg_edge']}); bands={len(band_rates)}")
+    if not picks:
+        rows.append((pad(["\u2014", "No +EV selections today "
+                          "(no player's odds beat their band breakeven)", ""]), "no_plays"))
+    else:
+        for c in picks:
+            rows.append((pad([
+                c["batter"], c["team"], c["pitcher"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c.get("book","") or "\u2014", c["be_s"],
+                f"+{c['edge']:.1f}pp", f"{c['rate']:.1f}%", str(c.get("bn","")),
+                f"{c['combo']:+.1f}", f"{c['plat']:+.1f}", c["form"], c["band"], c["info"]]),
+                "data_hr_strong"))
+
+    # ── ⭐ TOP 2% SCORE TIER — every one of today's guys above the historical
+    # 98th-pctile cutoff. The cutoff is FIXED from all history (~13.2); this
+    # lists however many of today's players clear it (all odds included).
+    _cuts = _TIER_CUTS_CACHE.get("cuts") or [13.2]
+    top2_cut = _cuts[0] if _cuts else 13.2
+    elite = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            if sc < top2_cut:
+                continue
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            elite.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(),
+                "plat": plat, "pitch": pitch})
+    elite.sort(key=lambda x: -x["sc"])
+    rows.append((pad([f"\u2B50  TOP 2% SCORE TIER — today's guys scoring \u2265{top2_cut:.1f} (all odds)"]),
+                 "section_header_hr"))
+    if not elite:
+        rows.append((pad(["\u2014", f"No players above {top2_cut:.1f} on today's slate", ""]), "no_plays"))
+    else:
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Plat", "Pitch"]),
+                     "col_header_hr"))
+        for c in elite:
+            od_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                od_s, c["book"] or "\u2014", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
+    # ── 🔁 5-LEG ROUND ROBINS (by 2s) — always fill ───────────────────────
+    # Two versions from the same <=+499 pool:
+    #  A) ranked by SCORE×ODDS CELL HIT RATE (the validated monotonic table) —
+    #     the sharpest probability estimate, with a sample floor: if a guy's
+    #     cell is too thin to trust, fall back to ranking him by score.
+    #  B) ranked by BLEND (the current blend) — kept for fun / comparison.
+    import itertools as _it
+    rr_pool = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if od <= 0 or od > 499:      # longshot cap
+                continue
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            # cell hit rate from the validated score×odds table + its sample size
+            cell = player_band(sc, od, band_rates) or {}
+            cell_rate = cell.get("hit", None)     # % or None if no/thin cell
+            cell_n = cell.get("n", 0)
+            rr_pool.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(), "blend": blend,
+                "cell_rate": cell_rate, "cell_n": cell_n})
+
+    _CELL_FLOOR = 25   # need >=25 resolved in the cell to trust its rate
+
+    def _pick_five(rank_key):
+        pool = sorted(rr_pool, key=rank_key)
+        five, fteams = [], set()
+        for c in pool:
+            if len(five) >= 5: break
+            if c["team"] in fteams: continue
+            five.append(c); fteams.add(c["team"])
+        if len(five) < 5:
+            for c in pool:
+                if len(five) >= 5: break
+                if c in five: continue
+                five.append(c)
+        return five
+
+    def _emit_rr(title, five, prob_col_label, prob_fn):
+        rows.append((pad([title]), "section_header_hr"))
+        if len(five) < 5:
+            rows.append((pad(["—", "Fewer than 5 eligible bats today", ""]), "no_plays"))
+            rows.append((E[:], "spacer"))
+            return
+        rows.append((pad(["Leg", "Batter", "Team", "Pitcher", "Score", "Odds", "Book", prob_col_label]),
+                     "col_header_hr"))
+        for i, c in enumerate(five, 1):
+            rows.append((pad([str(i), c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c["book"] or "—", prob_fn(c)]), "data_hr_strong"))
+        rows.append((pad([""]), "spacer"))
+        rows.append((pad(["  Ten 2-leg parlays (25¢ each = $2.50 total):"]), "col_header_parlay"))
+        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins"]), "col_header_hr"))
+        for a, b in _it.combinations(five, 2):
+            dec = (1 + (a["od"]/100 if a["od"] > 0 else 100/abs(a["od"]))) * \
+                  (1 + (b["od"]/100 if b["od"] > 0 else 100/abs(b["od"])))
+            pay = combined_american([a["od"], b["od"]])
+            win = 0.25 * (dec - 1)
+            combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
+            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}"]),
+                "data_hr_strong"))
+        rows.append((E[:], "spacer"))
+
+    # A) PRIMARY — rank by cell hit rate (trusted cells first), score as the
+    #    fallback for thin/absent cells so a noisy small-sample rate never wins.
+    def _cell_key(c):
+        trusted = c["cell_rate"] is not None and c["cell_n"] >= _CELL_FLOOR
+        # sort: trusted cells first (by rate desc), then everyone else by score
+        return (0 if trusted else 1,
+                -(c["cell_rate"] if trusted else -999),
+                -c["sc"])
+    five_cell = _pick_five(_cell_key)
+    def _cell_prob(c):
+        if c["cell_rate"] is not None and c["cell_n"] >= _CELL_FLOOR:
+            return f"{c['cell_rate']:.0f}% (n{c['cell_n']})"
+        return f"sc {c['sc']:.1f}"
+    _emit_rr("🔁  5-LEG RR — ranked by score×odds hit rate (sharp)",
+             five_cell, "Cell Hit%", _cell_prob)
+
+    # B) FUN — rank by blend
+    five_blend = _pick_five(lambda c: -c["blend"])
+    _emit_rr("🔁  5-LEG RR — ranked by blend (for fun)",
+             five_blend, "Blend%", lambda c: f"{c['blend']*100:.1f}%")
+
+    # ── 💥 VALUE BOMB 3-LEGGER — +400-600, ranked by blend ────────────────
+    # The "model likes them, market prices them long" swing. Tested: no signal
+    # clears breakeven here, so this is an honest LOTTERY ticket, not +EV —
+    # ranked by blend to at least favor the model's best in the range. RR it
+    # yourself if you want more coverage.
+    bomb = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if not (400 <= od <= 600):      # the target zone only
+                continue
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
+            bomb.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(), "blend": blend})
+    bomb.sort(key=lambda x: -x["blend"])
+    b3, bteams = [], set()
+    for c in bomb:
+        if len(b3) >= 3: break
+        if c["team"] in bteams: continue
+        b3.append(c); bteams.add(c["team"])
+    if len(b3) < 3:
+        for c in bomb:
+            if len(b3) >= 3: break
+            if c in b3: continue
+            b3.append(c)
+
+    rows.append((pad(["💥  VALUE BOMB 3-LEGGER — +400-600, model's best (lottery, RR it yourself)"]),
+                 "section_header_hr"))
+    if len(b3) < 3:
+        rows.append((pad(["—", "Fewer than 3 bats in the +400-600 range today", ""]), "no_plays"))
+    else:
+        combo_dec = 1.0
+        for c in b3:
+            o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
+        payout = combined_american([c["od"] for c in b3])
+        rows.append((pad([f"  pays {payout} · 25¢ → ${0.25*(combo_dec-1):.2f} on a win"]),
+                     "col_header_parlay"))
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Blend%"]),
+                     "col_header_hr"))
+        for c in b3:
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
+    # ── ⚾ K's PICKS IN STRONG BUCKETS ────────────────────────────────────
+    # Today's strikeout-prop picks whose (score tier, line, side) cell has a
+    # live-computed hit rate >=55% on n>=25 resolved. Cells are recalculated
+    # from KS_All_Scores every run — self-updating, not a frozen snapshot.
+    _today_ymd = _date.today().strftime("%Y-%m-%d")
+    ks_picks = build_ks_strong_picks(ks_all_scores, _today_ymd) if ks_all_scores is not None else []
+    rows.append((pad([f"\u26BE  K's PICKS IN STRONG BUCKETS \u2265{int(KS_STRONG_MIN_HIT)}% hit (n\u2265{KS_STRONG_MIN_N})"]),
+                 "section_header_hr"))
+    if ks_all_scores is None or ks_all_scores.empty:
+        rows.append((pad(["\u2014", "No KS_All_Scores data available", ""]), "no_plays"))
+    elif not ks_picks:
+        rows.append((pad(["\u2014", "No today's K's picks landed in a strong bucket", ""]), "no_plays"))
+    else:
+        rows.append((pad(["Pitcher", "Team", "Opp", "Line", "Bet", "Tier", "Hit%", "N", "Breakeven"]),
+                     "col_header_hr"))
+        for c in ks_picks:
+            odds_s = c["over_odds"] if c["side"] == "Over" else c["under_odds"]
+            bet_s = c["side"] + (f" ({odds_s})" if odds_s and odds_s not in ("", "nan") else "")
+            rows.append((pad([c["pitcher"], c["team"], c["opp"], f"O/U {c['line']}",
+                bet_s, c["tier"], f"{c['hit']:.1f}%", str(c["n"]), c["be"]]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
+    return rows, staging
+
+
+# ── Dashboard writer ────────────────────────────────────────────────────────
+def write_dashboard(gc, sheet_id, rows) -> None:
     sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
-        ws = sh.worksheet("Top_KS_Picks")
-        ws.clear()
+        ws = sh.worksheet(DASHBOARD_SHEET)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title="Top_KS_Picks", rows=100, cols=20)
+        ws = sh.add_worksheet(title=DASHBOARD_SHEET, rows=max(RESET_ROWS, len(rows) + 10), cols=RESET_COLS)
+    ws_id = ws.id
 
-    if "pitching_team" in picks.columns and "team" not in picks.columns:
-        picks = picks.copy()
-        picks["team"] = picks["pitching_team"]
-    elif "pitcher_team" in picks.columns and "team" not in picks.columns:
-        picks = picks.copy()
-        picks["team"] = picks["pitcher_team"]
-
-    output_cols = {
-        "rank":             "Rank",
-        "pitcher_name":     "Pitcher",
-        "team":             "Team",
-        "ks_score":         "KS Score",
-        "score_breakdown":  "Score Breakdown",
-        "k_pct_season":     "K%",
-        "swstr_pct":        "SwStr%",
-        "chase_rate":       "Chase%",
-        "whip_proxy":       "WHIP",
-        "bb_pct_season":    "BB%",
-        "avg_ip_per_start": "Avg IP/Start",
-        "opp_lineup_k_pct": "Opp Lineup K%",
-        "opp_team_k_pct":   "Opp Team K%",
-        "team_chase_rate":  "Opp Chase Rate",
-        "team_whiff_rate":  "Opp Whiff Rate",
-        "k_line":           "K Line",
-        "ks_over_odds":     "Over Odds",
-        "projected_k_calc": "Proj K",
-        "prop_signal":      "Signal",
-        "reason":           "Key Reasons",
-        "confidence":       "Confidence",
-    }
-
-    available = {k: v for k, v in output_cols.items() if k in picks.columns}
-    out_df    = picks[list(available.keys())].rename(columns=available)
-    out_df    = out_df.copy().replace([np.inf, -np.inf], np.nan).fillna("")
-
-    with_retry(lambda: ws.update([out_df.columns.tolist()] + out_df.astype(str).values.tolist()))
-
-    ws_id  = ws.id
-    n_cols = len(out_df.columns)
-    reqs   = []
-
-    reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": len(out_df) + 2,
-                  "startColumnIndex": 0, "endColumnIndex": n_cols},
-        "cell": {"userEnteredFormat": {
-            "backgroundColor": COLOR_BG,
-            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
-            "verticalAlignment": "MIDDLE",
-            "wrapStrategy": "CLIP",
+    # Full reset: unmerge everything + blanket default format so no stale
+    # cell (old KS/HRRBI colors, merges, wraps) survives into the new layout.
+    reset_reqs = [
+        {"unmergeCells": {"range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": RESET_ROWS,
+                                    "startColumnIndex": 0, "endColumnIndex": RESET_COLS}}},
+        {"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": RESET_ROWS,
+                      "startColumnIndex": 0, "endColumnIndex": RESET_COLS},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": COLOR_BG,
+                "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
+                "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "CLIP",
+            }},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
         }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
-    }})
+    ]
+    try:
+        with_retry(lambda: sh.batch_update({"requests": reset_reqs}))
+    except Exception:
+        pass
 
-    reqs.append({"repeatCell": {
-        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
-                  "startColumnIndex": 0, "endColumnIndex": n_cols},
-        "cell": {"userEnteredFormat": {
-            "backgroundColor": COLOR_HEADER,
-            "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True,
-                           "fontFamily": "Roboto", "fontSize": 11},
-            "horizontalAlignment": "CENTER",
-            "verticalAlignment": "MIDDLE",
-            "wrapStrategy": "CLIP",
-        }},
-        "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
-    }})
+    with_retry(lambda: ws.clear())
+    data = [row_data for row_data, _ in rows]
+    with_retry(lambda: ws.update(data, value_input_option="RAW"))
 
-    for i in range(len(out_df)):
-        bg = COLOR_BG if i % 2 == 0 else COLOR_BG_ALT
-        reqs.append({"repeatCell": {
-            "range": {"sheetId": ws_id, "startRowIndex": i + 1, "endRowIndex": i + 2,
-                      "startColumnIndex": 0, "endColumnIndex": n_cols},
-            "cell": {"userEnteredFormat": {"backgroundColor": bg}},
-            "fields": "userEnteredFormat(backgroundColor)",
-        }})
-
-    signal_col_idx = list(available.keys()).index("prop_signal") if "prop_signal" in available else -1
-    if signal_col_idx >= 0:
-        for i, row in enumerate(out_df.itertuples(), 1):
-            sig = str(getattr(row, "Signal", ""))
-            if "OVER" in sig and "✅" in sig:
-                bg = {"red": 0.039, "green": 0.180, "blue": 0.098}
-                fg = COLOR_GREEN
-            elif "LEAN" in sig:
-                bg = {"red": 0.039, "green": 0.118, "blue": 0.118}
-                fg = COLOR_TEAL
-            elif "UNDER" in sig:
-                bg = {"red": 0.200, "green": 0.039, "blue": 0.039}
-                fg = COLOR_RED
-            else:
-                continue
+    reqs = []
+    data_counts = {}
+    for r, (row_data, rtype) in enumerate(rows):
+        if rtype == "timestamp":
             reqs.append({"repeatCell": {
-                "range": {"sheetId": ws_id, "startRowIndex": i, "endRowIndex": i + 1,
-                          "startColumnIndex": signal_col_idx, "endColumnIndex": signal_col_idx + 1},
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
                 "cell": {"userEnteredFormat": {
-                    "backgroundColor": bg,
-                    "textFormat": {"foregroundColor": fg, "bold": True},
-                }},
-                "fields": "userEnteredFormat(backgroundColor,textFormat)",
+                    "backgroundColor": COLOR_HEADER_BG,
+                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "italic": True,
+                                   "fontFamily": "Roboto", "fontSize": 11},
+                    "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)",
+            }})
+            reqs.append({"mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "mergeType": "MERGE_ALL"}})
+
+        elif rtype.startswith("section_header"):
+            color = COLOR_PURPLE if "parlay" in rtype else COLOR_GOLD
+            text_color = COLOR_WHITE if "parlay" in rtype else COLOR_BLACK
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": color,
+                    "textFormat": {"foregroundColor": text_color, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 12},
+                    "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
+            }})
+            reqs.append({"mergeCells": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "mergeType": "MERGE_ALL"}})
+
+        elif rtype.startswith("col_header"):
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_HEADER_BG,
+                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 9},
+                    "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP"}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)",
             }})
 
-    score_col_idx = list(available.keys()).index("ks_score") if "ks_score" in available else -1
-    if score_col_idx >= 0:
-        for i, row in enumerate(out_df.itertuples(), 1):
-            try:
-                score = float(str(getattr(row, "KS_Score", 0)).replace(",", ""))
-            except Exception:
-                continue
-            if score >= OVER_SCORE:
-                fg = COLOR_GREEN
-            elif score >= LEAN_OVER_SCORE:
-                fg = COLOR_TEAL
-            else:
-                fg = COLOR_WHITE
+        elif rtype.startswith("data"):
+            key = "parlay" if rtype == "data_parlay" else "hr"
+            c = data_counts.get(key, 0)
+            data_counts[key] = c + 1
+            bg = COLOR_BG if c % 2 == 0 else COLOR_BG_ALT
+            # whole row: bg + CLIP (names/values stay on one line, no wrapping)
             reqs.append({"repeatCell": {
-                "range": {"sheetId": ws_id, "startRowIndex": i, "endRowIndex": i + 1,
-                          "startColumnIndex": score_col_idx, "endColumnIndex": score_col_idx + 1},
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
                 "cell": {"userEnteredFormat": {
-                    "textFormat": {"foregroundColor": fg, "bold": score >= LEAN_OVER_SCORE},
-                }},
+                    "backgroundColor": bg,
+                    "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 11},
+                    "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "CLIP"}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
+            }})
+            # col 0 (Rank/Leg/Ticket) centered dim
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": 1},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 11},
+                    "horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }})
+            # col 3 (Score) colored by tier
+            score_color = COLOR_GREEN if "strong" in rtype else (
+                COLOR_GOLD if ("moderate" in rtype or rtype == "data_parlay") else COLOR_WHITE)
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 3, "endColumnIndex": 4},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": score_color, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 11},
+                    "horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+            }})
+            # col 6 = Edge (singles) / Payout (parlays) — green accent
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 6, "endColumnIndex": 7},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                                   "fontFamily": "Roboto", "fontSize": 11}}},
                 "fields": "userEnteredFormat(textFormat)",
             }})
 
-    col_widths = [45, 160, 55, 65, 300, 55, 65, 65, 60, 55, 90, 120, 80, 90, 90, 65, 90, 60, 150, 300, 90]
-    for i, w in enumerate(col_widths[:n_cols]):
+        elif rtype == "no_plays":
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                          "startColumnIndex": 0, "endColumnIndex": N_COLS},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COLOR_BG_ALT,
+                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "italic": True,
+                                   "fontFamily": "Roboto", "fontSize": 11}}},
+                "fields": "userEnteredFormat(backgroundColor,textFormat)",
+            }})
+
+    # Column widths matched to the +EV layout:
+    # Batter Team Pitcher Score Odds Book BandBE Edge BandHit% N Comb Plat Form Band Info
+    col_widths = [110, 60, 100, 52, 60, 88, 72, 64, 74, 44, 52, 52, 46, 118, 150]
+    for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "COLUMNS",
-                      "startIndex": i, "endIndex": i + 1},
-            "properties": {"pixelSize": w},
-            "fields": "pixelSize",
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize",
         }})
 
-    for i in range(len(out_df) + 1):
+    # Row heights
+    for r, (_, rtype) in enumerate(rows):
+        if rtype == "timestamp":
+            h = 30
+        elif rtype.startswith("section_header"):
+            h = 38
+        elif rtype == "spacer":
+            h = 12
+        elif rtype.startswith("col_header"):
+            h = 24
+        else:
+            h = 44
         reqs.append({"updateDimensionProperties": {
-            "range": {"sheetId": ws_id, "dimension": "ROWS",
-                      "startIndex": i, "endIndex": i + 1},
-            "properties": {"pixelSize": 32},
-            "fields": "pixelSize",
+            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": r, "endIndex": r + 1},
+            "properties": {"pixelSize": h}, "fields": "pixelSize",
         }})
 
     reqs.append({"updateSheetProperties": {
-        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1},
-                       "tabColorStyle": {"rgbColor": COLOR_HEADER}},
+        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 0},
+                       "tabColorStyle": {"rgbColor": COLOR_GOLD}},
         "fields": "gridProperties.frozenRowCount,tabColorStyle",
     }})
 
     try:
         with_retry(lambda: sh.batch_update({"requests": reqs}))
+        print("Dashboard formatting applied.")
     except APIError as e:
-        print(f"KS formatting failed: {e}")
-
-    print(f"Written {len(out_df)} K picks to Top_KS_Picks")
+        print(f"Dashboard formatting failed: {e}")
 
 
-def log_picks(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
-    today_str = date.today().strftime("%Y-%m-%d")
-    sh        = with_retry(lambda: gc.open_by_key(sheet_id))
-
+# ── Scorecard (HR only) ─────────────────────────────────────────────────────
+def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
-        ws         = sh.worksheet("KS_Picks_Log")
-        all_values = with_retry(lambda: ws.get_all_values())
-        if all_values and len(all_values) > 1:
-            headers  = all_values[0]
-            rows     = all_values[1:]
-            existing = pd.DataFrame(rows, columns=headers)
-        else:
-            existing = pd.DataFrame()
+        ws = sh.worksheet("Scorecard")
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="KS_Picks_Log", rows=5000, cols=10)
-        existing = pd.DataFrame()
+        ws = sh.add_worksheet(title="Scorecard", rows=1000, cols=11)
+    ws_id = ws.id
 
-    if not existing.empty and "date" in existing.columns:
-        existing = existing[existing["date"] != today_str].copy()
+    existing = with_retry(lambda: ws.get_all_values())
+    headers = ["Date", "Model", "Player / Pitcher", "Team", "Score",
+               "Direction / Line", "Suggested Odds", "Your Odds", "Stake", "Result", "P&L"]
+    if not existing or existing[0] != headers:
+        existing = [headers]
+    kept = [r for r in existing[1:] if r and str(r[0]).strip() != today_str]
 
-    new_rows = []
-    for _, row in picks.iterrows():
-        team = str(row.get("pitching_team", row.get("team", "")))
-        new_rows.append({
-            "date":         today_str,
-            "rank":         str(row.get("rank", "")),
-            "pitcher_name": str(row.get("pitcher_name", "")),
-            "team":         team,
-            "k_line":       str(row.get("k_line", "")),
-            "prop_signal":  str(row.get("prop_signal", "")),
-            "over_odds":    str(row.get("ks_over_odds", "")),
-            "confidence":   str(row.get("confidence", "")),
-            "ks_score":     str(row.get("ks_score", "")),
-            "win":          "",
-        })
+    today_rows = []
+    current_model = ""
+    for row_data, rtype in rows_data:
+        if rtype == "section_header_hr":
+            current_model = "HR Single"
+        elif rtype == "section_header_parlay":
+            current_model = "HR Parlay 2-leg" if "2-LEG" in str(row_data[0]) else "HR Parlay 3-leg"
 
-    if not new_rows:
-        print("No KS picks to log.")
+        if rtype in ("data_hr_strong", "data_hr_moderate", "data_hr_light"):
+            name = str(row_data[1]).strip()
+            if name and name != "—":
+                today_rows.append([today_str, "HR Single", name, str(row_data[2]).strip(),
+                                   str(row_data[3]).strip(), "HR", str(row_data[4]).strip(),
+                                   "", "", "", ""])
+        elif rtype == "data_parlay":
+            name = str(row_data[1]).strip()
+            if name and name != "—":
+                today_rows.append([today_str, current_model, name, str(row_data[2]).strip(),
+                                   str(row_data[3]).strip(), "HR", str(row_data[4]).strip(),
+                                   "", "", "", ""])
+
+    if not today_rows:
+        print("Scorecard: no plays to write today.")
         return
 
-    new_df    = pd.DataFrame(new_rows)
-    col_order = [
-        "date", "rank", "pitcher_name", "team", "k_line",
-        "prop_signal", "over_odds", "confidence", "ks_score", "win",
+    all_rows = [headers] + kept + today_rows
+    with_retry(lambda: ws.clear())
+    with_retry(lambda: ws.update(all_rows, value_input_option="USER_ENTERED"))
+
+    total = len(all_rows)
+    reqs = [{"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": total,
+                  "startColumnIndex": 0, "endColumnIndex": 11},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": COLOR_BG,
+            "textFormat": {"foregroundColor": COLOR_WHITE, "fontFamily": "Roboto Mono", "fontSize": 10},
+            "verticalAlignment": "MIDDLE", "wrapStrategy": "CLIP", "horizontalAlignment": "LEFT"}},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy,horizontalAlignment)"}},
+        {"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": 11},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": COLOR_HEADER_BG,
+                "textFormat": {"foregroundColor": COLOR_GOLD, "bold": True,
+                               "fontFamily": "Roboto", "fontSize": 10},
+                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"}},
     ]
-
-    if not existing.empty and "win" not in existing.columns:
-        existing["win"] = ""
-    if not existing.empty and "ks_score" not in existing.columns:
-        existing["ks_score"] = ""
-
-    combined = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
-    combined = combined.fillna("").replace([np.inf, -np.inf], "")
-
-    for col in col_order:
-        if col not in combined.columns:
-            combined[col] = ""
-    combined = combined[col_order]
-
-    time.sleep(5)
-    with_retry(lambda: ws.clear())
-    with_retry(lambda: ws.update([combined.columns.tolist()] + combined.astype(str).values.tolist()))
-    print(f"Logged {len(new_rows)} KS picks to KS_Picks_Log")
-
-
-def write_timestamp(gc: gspread.Client, sheet_id: str) -> None:
-    et     = pytz.timezone("America/New_York")
-    now_et = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
-    sh     = with_retry(lambda: gc.open_by_key(sheet_id))
+    model_colors = {
+        "HR Single": COLOR_GOLD,
+        "HR Parlay 3-leg": COLOR_PURPLE,
+        "HR Parlay 2-leg": {"red": 0.451, "green": 0.227, "blue": 0.620},
+    }
+    for idx, row in enumerate(all_rows[1:], start=1):
+        if len(row) < 2:
+            continue
+        bg = COLOR_BG if idx % 2 == 0 else COLOR_BG_ALT
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": idx, "endRowIndex": idx + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 11},
+            "cell": {"userEnteredFormat": {"backgroundColor": bg}},
+            "fields": "userEnteredFormat(backgroundColor)"}})
+        color = model_colors.get(str(row[1]).strip())
+        if color:
+            reqs.append({"repeatCell": {
+                "range": {"sheetId": ws_id, "startRowIndex": idx, "endRowIndex": idx + 1,
+                          "startColumnIndex": 1, "endColumnIndex": 2},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"foregroundColor": color, "bold": True},
+                    "horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat(textFormat,horizontalAlignment)"}})
+    for ci in (7, 8, 9):
+        reqs.append({"repeatCell": {
+            "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total,
+                      "startColumnIndex": ci, "endColumnIndex": ci + 1},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.10, "green": 0.10, "blue": 0.15},
+                "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True},
+                "horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"}})
+    col_widths = [90, 130, 180, 60, 70, 120, 100, 90, 70, 70, 80]
+    for i, w in enumerate(col_widths):
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
+            "properties": {"pixelSize": w}, "fields": "pixelSize"}})
+    reqs.append({"updateSheetProperties": {
+        "properties": {"sheetId": ws_id, "gridProperties": {"frozenRowCount": 1},
+                       "tabColorStyle": {"rgbColor": COLOR_GREEN}},
+        "fields": "gridProperties.frozenRowCount,tabColorStyle"}})
     try:
-        ws        = sh.worksheet("Top_KS_Picks")
-        first_row = ws.row_values(1)
-        if first_row and "Last Run" in str(first_row[0]):
-            ws.delete_rows(1)
-        with_retry(lambda: ws.insert_row([f"⏱  Last Run: {now_et}"], index=1))
-    except Exception as e:
-        print(f"KS timestamp failed: {e}")
-    print(f"KS timestamp written: {now_et}")
+        with_retry(lambda: sh.batch_update({"requests": reqs}))
+        print(f"Scorecard written: {len(today_rows)} plays for {today_str}")
+    except APIError as e:
+        print(f"Scorecard formatting failed: {e}")
 
 
-def log_all_scores(gc: gspread.Client, sheet_id: str, picks: pd.DataFrame) -> None:
-    today_str = date.today().strftime("%Y-%m-%d")
-    sh        = with_retry(lambda: gc.open_by_key(sheet_id))
-
+# ── Main ────────────────────────────────────────────────────────────────────
+def write_bet_staging(gc, sheet_id, staging, today_str) -> None:
+    """Pre-write today's DISPLAYED picks (singles + edge-slate legs) to a
+    clean Bet_Staging tab: one row per leg, consensus_at_bet filled, odds_taken
+    blank for the user to fill when they place a bet. Combined consensus and
+    implied breakeven appear once per parlay ticket (on its first leg),
+    computed correctly from the legs' decimal odds. Model_Bet_Tracker is left
+    untouched. Today's rows are replaced each run; other dates preserved."""
+    header = ["date", "ticket_type", "ticket_id", "player", "team", "score",
+              "consensus_at_bet", "odds_taken", "combined_consensus",
+              "breakeven_pct", "band", "result"]
+    sh = with_retry(lambda: gc.open_by_key(sheet_id))
     try:
-        ws         = sh.worksheet("KS_All_Scores")
-        all_values = with_retry(lambda: ws.get_all_values())
-        if all_values and len(all_values) > 1:
-            headers  = all_values[0]
-            rows     = all_values[1:]
-            existing = pd.DataFrame(rows, columns=headers)
-        else:
-            existing = pd.DataFrame()
+        ws = sh.worksheet("Bet_Staging")
+        existing = pd.DataFrame(ws.get_all_records())
     except gspread.WorksheetNotFound:
-        ws       = sh.add_worksheet(title="KS_All_Scores", rows=10000, cols=25)
+        ws = sh.add_worksheet(title="Bet_Staging", rows=2000, cols=len(header))
         existing = pd.DataFrame()
 
+    # preserve prior dates (and any odds_taken/result the user already filled)
     if not existing.empty and "date" in existing.columns:
-        existing = existing[existing["date"] != today_str].copy()
-
-    if picks.empty:
-        print("No scored pitchers to log to KS_All_Scores.")
-        return
-
-    sorted_df = picks.sort_values("ks_score", ascending=False).reset_index(drop=True)
-    sorted_df["all_scores_rank"] = range(1, len(sorted_df) + 1)
+        existing = existing[existing["date"].astype(str).str.strip() != today_str]
+    else:
+        existing = pd.DataFrame(columns=header)
 
     new_rows = []
-    for _, row in sorted_df.iterrows():
-        team = str(row.get("pitching_team", row.get("pitcher_team", row.get("team", ""))))
+    for s in staging:
         new_rows.append({
-            "date":             today_str,
-            "rank":             str(row.get("all_scores_rank", "")),
-            "pitcher_name":     str(row.get("pitcher_name", "")),
-            "team":             team,
-            "opposing_team":    str(row.get("opposing_team", "")),
-            "ks_score":         str(row.get("ks_score", "")),
-            "score_breakdown":  str(row.get("score_breakdown", "")),
-            "k_line":           str(row.get("k_line", "")),
-            "over_odds":        str(row.get("ks_over_odds", "")),
-            "under_odds":       str(row.get("ks_under_odds", "")),
-            "projected_ks":     str(row.get("projected_k_calc", "")),
-            "prop_signal":      str(row.get("prop_signal", "")),
-            "k_pct_season":     str(row.get("k_pct_season", "")),
-            "swstr_pct":        str(row.get("swstr_pct", "")),
-            "chase_rate":       str(row.get("chase_rate", "")),
-            "k_per_9":          str(row.get("k_per_9", "")),
-            "fastball_velo":    str(row.get("fastball_velo", "")),
-            "avg_ip_per_start": str(row.get("avg_ip_per_start", "")),
-            "k_per_start_21d":  str(row.get("k_per_start_21d", "")),
-            "whip_proxy":       str(row.get("whip_proxy", "")),
-            "bb_pct_season":    str(row.get("bb_pct_season", "")),
-            "opp_team_k_pct":   str(row.get("opp_team_k_pct", "")),
-            "opp_chase_rate":   str(row.get("opp_chase_rate", "")),
-            "opp_whiff_rate":   str(row.get("opp_whiff_rate", "")),
-            "confidence":       str(row.get("confidence", "")),
-            "actual_ks":        "Pending",
-            "over_hit":         "Pending",
-            "under_hit":        "Pending",
+            "date": today_str, "ticket_type": s["ticket_type"],
+            "ticket_id": s["ticket_id"], "player": s["player"], "team": s["team"],
+            "score": s["score"], "consensus_at_bet": s["consensus_at_bet"],
+            "odds_taken": "", "combined_consensus": s["combined_consensus"],
+            "breakeven_pct": s["breakeven_pct"], "band": s["band"], "result": "",
         })
-
-    if not new_rows:
-        print("No rows to log to KS_All_Scores.")
-        return
-
-    new_df = pd.DataFrame(new_rows)
-
-    if not existing.empty:
-        for col in new_df.columns:
-            if col not in existing.columns:
-                existing[col] = ""
-
-    combined_log = pd.concat([existing, new_df], ignore_index=True) if not existing.empty else new_df
-    combined_log = combined_log.fillna("").replace([np.inf, -np.inf], "")
+    new_df = pd.DataFrame(new_rows, columns=header)
+    out = pd.concat([existing.reindex(columns=header), new_df], ignore_index=True) \
+        if not existing.empty else new_df
+    out = out.fillna("")
 
     with_retry(lambda: ws.clear())
-    with_retry(lambda: ws.update([combined_log.columns.tolist()] + combined_log.astype(str).values.tolist()))
-    print(f"Logged {len(new_rows)} scored pitchers to KS_All_Scores")
+    with_retry(lambda: ws.update([header] + out.astype(str).values.tolist()))
+    print(f"Bet_Staging: wrote {len(new_rows)} legs for {today_str}")
 
 
 def main() -> None:
-    time.sleep(10)
+    time.sleep(5)
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    gc       = get_gspread_client()
-    print("Reading KS data from Google Sheets...")
-    ks_df             = read_sheet(gc, sheet_id, "KS_Statcast")
+    gc = get_gspread_client()
+
+    print("Reading HR picks + scores for dashboard...")
+    # Tab names default to MAIN's tabs. To test in dev against v1/v2 tabs, set
+    # HR_SCORES_TAB / HR_PICKS_TAB env vars in the dev workflow — main runs with
+    # neither set and reads the regular tabs, so merging can't break main.
+    scores_tab = os.environ.get("HR_SCORES_TAB", "HR_All_Scores")
+    picks_tab  = os.environ.get("HR_PICKS_TAB", "Top_HR_Picks")
+    print(f"Reading picks from '{picks_tab}', scores from '{scores_tab}'")
+    hr_df = read_sheet(gc, sheet_id, picks_tab)
     time.sleep(2)
-    pitchers_df       = read_sheet(gc, sheet_id, "Pitcher_Statcast_2026")
+    hr_all_scores = read_sheet_raw(gc, sheet_id, scores_tab)
     time.sleep(2)
-    team_k_rates      = read_sheet(gc, sheet_id, "Team_K_Rates")
+    # KS (strikeout prop) scores — optional; missing tab returns empty df and
+    # the K's section just shows "no data" rather than breaking anything.
+    ks_all_scores = read_sheet_raw(gc, sheet_id, "KS_All_Scores")
     time.sleep(2)
-    parks_df          = read_sheet(gc, sheet_id, "Park_Factors")
-    time.sleep(2)
-    odds_df           = read_sheet(gc, sheet_id, "KS_Odds")
-    time.sleep(2)
-    projected_lineups = read_sheet(gc, sheet_id, "Projected_Lineups")
-    time.sleep(2)
-    batters_df        = read_sheet(gc, sheet_id, "Batter_Statcast_2026")
-    print(f"KS_Statcast: {len(ks_df)} pitchers")
-    print(f"Today's probables: {len(pitchers_df)} pitchers")
-    print(f"Team K Rates: {len(team_k_rates)} rows")
-    print(f"Parks: {len(parks_df)} rows")
-    print(f"KS Odds: {len(odds_df)} rows")
-    print(f"Projected Lineups: {len(projected_lineups)} rows")
-    print(f"Batter Statcast: {len(batters_df)} rows")
-    print("Building opposing lineup K% stats...")
-    lineup_k_stats = build_opp_lineup_k_stats(projected_lineups, batters_df)
-    if lineup_k_stats:
-        print(f"  Lineup K% available for {len(lineup_k_stats)} opposing teams")
+    print(f"KS All Scores: {len(ks_all_scores)} rows")
+
+    print(f"HR picks: {len(hr_df)} rows | HR All Scores: {len(hr_all_scores)} rows")
+    hr_hit_rates = build_hr_hit_rates(hr_all_scores)
+    edge_bands = build_edge_bands(hr_all_scores)
+    print(f"Edge bands live: {len(edge_bands)} qualifying (+edge, n>=30)")
+    for b in edge_bands[:12]:
+        print(f"  {b['band']:<20} edge +{b['edge_pp']:.1f}pp  hit {b['hit']:.1f}%  n={b['n']}")
+
+    today_str = _date.today().strftime("%Y-%m-%d")
+    if not hr_all_scores.empty and "date" in hr_all_scores.columns:
+        hr_today = hr_all_scores[hr_all_scores["date"].astype(str).str.strip() == today_str].copy()
     else:
-        print("  No lineup K% data — falling back to team K rates")
-    print("Fetching game start times...")
-    game_times = get_todays_game_times()
-    print(f"  Found {len(game_times)} game times")
-    picks = prepare_picks(
-        ks_df, pitchers_df, team_k_rates, parks_df,
-        odds_df, game_times, lineup_k_stats,
-    )
-    if picks.empty:
-        print("WARNING: No KS picks generated.")
-        return
-    log_all_scores(gc, sheet_id, picks)
-    time.sleep(5)
-    picks = apply_diversity_cap(picks)
-    if picks.empty:
-        print("WARNING: No KS picks after diversity cap.")
-        return
-    print(f"\nTop {len(picks)} Pitcher K Picks:")
-    print(picks[["rank", "pitcher_name", "ks_score", "score_breakdown",
-                 "projected_k_calc", "k_line", "prop_signal", "confidence"]].to_string(index=False))
-    write_picks_to_sheet(gc, sheet_id, picks)
-    time.sleep(5)
-    log_picks(gc, sheet_id, picks)
-    time.sleep(5)
-    write_timestamp(gc, sheet_id)
+        hr_today = pd.DataFrame()
+    print(f"HR today's scores: {len(hr_today)} players")
+
+    et = pytz.timezone("America/New_York")
+    ts = datetime.now(et).strftime("%B %d, %Y at %I:%M %p ET")
+
+    rows, staging = build_rows(hr_df, hr_hit_rates, hr_today, ts, edge_bands=edge_bands, hr_all_scores=hr_all_scores, ks_all_scores=ks_all_scores)
+    write_dashboard(gc, sheet_id, rows)
+    # dashboard is top-15 matchup only now; no tickets to stage, so the
+    # Bet_Staging write is skipped to avoid overwriting it with blanks.
+    # write_bet_staging(gc, sheet_id, staging, today_str)
+    time.sleep(3)
+    write_scorecard(gc, sheet_id, rows, today_str)
+    print("Dashboard written to 'Today's Top Picks'")
 
 
 if __name__ == "__main__":
