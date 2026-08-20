@@ -933,6 +933,39 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 "data_hr_strong"))
     rows.append((E[:], "spacer"))
 
+    # ── 🎯 HR SCORE ≥9.5 — every player today at or above a flat 9.5 cutoff
+    HR_SCORE_FLOOR = 9.5
+    over95 = []
+    if not hr_source.empty:
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            sc = resolve_score(row)
+            if sc < HR_SCORE_FLOOR:
+                continue
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            plat = safe_float(row.get("platoon_score", 0))
+            pitch = safe_float(row.get("pitch_matchup_score", 0))
+            over95.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(), "plat": plat, "pitch": pitch})
+    over95.sort(key=lambda x: -x["sc"])
+    rows.append((pad([f"\U0001F3AF  HR SCORE \u2265{HR_SCORE_FLOOR} — every player today (all odds)"]),
+                 "section_header_hr"))
+    if not over95:
+        rows.append((pad(["\u2014", f"No players \u2265{HR_SCORE_FLOOR} on today's slate", ""]), "no_plays"))
+    else:
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Plat", "Pitch"]),
+                     "col_header_hr"))
+        for c in over95:
+            od_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                od_s, c["book"] or "\u2014", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
+                "data_hr_strong"))
+    rows.append((E[:], "spacer"))
+
     # ── 🔁 5-LEG ROUND ROBINS (by 2s) — always fill ───────────────────────
     # Two versions from the same <=+499 pool:
     #  A) ranked by SCORE×ODDS CELL HIT RATE (the validated monotonic table) —
