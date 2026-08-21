@@ -740,6 +740,16 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
             lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r.get("avg_odds", "\u2014"), r.get("hit_odds", "\u2014"), r.get("breakeven", "\u2014"), ""]
         )
 
+    # ── Score Tier × FINE Odds Zone — matches the RR's ranking grid ────────
+    if analysis.get("fine_tier_odds_rows"):
+        add_section(
+            "🔬  SCORE TIER × FINE ODDS ZONE (matches RR's cell grid, n≥25=trusted)",
+            ["Score Tier | Odds Band", "Total Players", "Hit HR", "Hit Rate %", "Avg Odds", "Avg Odds (Hitters)", "Breakeven Odds", "Trust"],
+            analysis["fine_tier_odds_rows"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r.get("avg_odds", "\u2014"),
+                       r.get("hit_odds", "\u2014"), r.get("breakeven", "\u2014"), r.get("trust", "")]
+        )
+
     # ── Pooled Decision Rules ─────────────────────────────────────────────
     if analysis.get("pooled_rules"):
         add_section(
@@ -853,6 +863,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         "🆕  NEW PITCH-MATCHUP SCORE × HR (since 07-27)":  (COLOR_BLUE, COLOR_BLUE_DIM),
         "🆕  PLATOON + PITCH COMBINED × HR (since 07-27)": (COLOR_BLUE, COLOR_BLUE_DIM),
         "💰  SCORE TIER × ODDS ZONE": (COLOR_GOLD,      COLOR_GOLD_DIM),
+        "🔬  SCORE TIER × FINE ODDS ZONE (matches RR's cell grid, n≥25=trusted)": (COLOR_GOLD, COLOR_GOLD_DIM),
         "🎰  POOLED DECISION RULES (95% CI vs breakeven)": (COLOR_GREEN, COLOR_GREEN_DIM),
         "📈  ROLLING TRENDS":       (COLOR_GREEN,     COLOR_GREEN_DIM),
         "features":                  (COLOR_PURPLE,    COLOR_PURPLE_DIM),
