@@ -450,6 +450,48 @@ def build_analysis(df: pd.DataFrame) -> dict:
         ("+500 to +699", 500, 700),
         ("+700+",        700, 9999),
     ]
+    # FINE odds bands — the same 8-band grid the dashboard RR ranks against
+    # (build_all_band_rates), so this table shows exactly what the RR sees:
+    # same tiers x these narrower zones instead of the 4 broad ones above.
+    fine_odds_defs = [
+        ("≤+250",     0,   251),
+        ("+251-300",  251, 301),
+        ("+301-350",  301, 351),
+        ("+351-400",  351, 401),
+        ("+401-450",  401, 451),
+        ("+451-500",  451, 501),
+        ("+501-600",  501, 601),
+        ("+601+",     601, 9999),
+    ]
+    fine_tier_odds_rows = []
+    if "odds_num" in scored.columns:
+        for odds_label, o_lo, o_hi in fine_odds_defs:
+            odds_sub = scored[(scored["odds_num"] >= o_lo) & (scored["odds_num"] < o_hi)]
+            if odds_sub.empty:
+                continue
+            for tier_label, t_lo, t_hi in tier_defs:
+                sub = odds_sub[(odds_sub["hr_score"] >= t_lo) & (odds_sub["hr_score"] < t_hi)]
+                n = len(sub)
+                if n < 10:
+                    continue
+                h = int(sub["hit_bool"].sum())
+                rate = round(h / n * 100, 1)
+                avg_odds = sub[sub["odds_num"] > 0]["odds_num"].mean()
+                avg_odds_s = f"+{int(round(avg_odds))}" if pd.notna(avg_odds) and avg_odds > 0 else "\u2014"
+                hit_sub = sub[(sub["hit_bool"]) & (sub["odds_num"] > 0)]
+                hit_odds = hit_sub["odds_num"].mean()
+                hit_odds_s = f"+{int(round(hit_odds))}" if pd.notna(hit_odds) and hit_odds > 0 else "\u2014"
+                p = rate / 100.0
+                be_s = "\u2014"
+                if 0 < p < 1:
+                    be_s = f"-{round(p/(1-p)*100)}" if p >= 0.5 else f"+{round((1-p)/p*100)}"
+                trust = "\u2713" if n >= 25 else "thin"
+                fine_tier_odds_rows.append({
+                    "label": f"{odds_label} | {tier_label}",
+                    "total": n, "hits": h, "rate": rate,
+                    "avg_odds": avg_odds_s, "hit_odds": hit_odds_s, "breakeven": be_s,
+                    "trust": trust,
+                })
     if "odds_num" in scored.columns:
         for odds_label, o_lo, o_hi in odds_defs:
             odds_sub = scored[(scored["odds_num"] >= o_lo) & (scored["odds_num"] < o_hi)]
@@ -580,6 +622,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "new_pitch_rows":     new_pitch_rows,
         "new_combined_rows":  new_combined_rows,
         "tier_odds_rows":     tier_odds_rows,
+        "fine_tier_odds_rows": fine_tier_odds_rows,
         "pooled_rules":       pooled_rules,
         "blend_rows":         blend_rows,
     }
