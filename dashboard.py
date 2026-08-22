@@ -114,12 +114,12 @@ def safe_float(val, default=0.0) -> float:
         return default
 
 
-# The 8 tier LABELS stay fixed (so all dict keys keep matching), but their
-# numeric cutoffs are remapped to PERCENTILES of the score distribution. The
-# rescore compressed scores ~2-3 pts, so the old fixed 15/14/13... boundaries
-# put everyone in the bottom tiers and capped the blend at ~17%. Percentile
-# cutoffs fix that: "15+" now means "top-tier score on WHATEVER scale is live."
-_TIER_LABELS = ["15+", "14-15", "13-14", "12-13", "11-12", "10-11", "9-10", "8.5-9"]
+# Percentile-based tier labels that describe what they ACTUALLY mean (top 12%
+# of today's distribution etc.), not old numeric ranges that go stale the
+# moment the scoring scale changes. Renamed from the old "15+"/"14-15"/...
+# names, which became actively misleading after the rescore (a score of 2.0
+# was landing in a bucket still labeled "9-10").
+_TIER_LABELS = ["top 2%", "90-98", "80-90", "65-80", "50-65", "35-50", "20-35", "bot 20"]
 _TIER_PCTS   = [98, 90, 80, 65, 50, 35, 20]   # 7 cutpoints -> 8 tiers
 _TIER_CUTS_CACHE = {"cuts": None}
 
@@ -466,9 +466,8 @@ def build_edge_bands(hr_all_scores: pd.DataFrame, min_n: int = 30) -> list:
     df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
     df = df[(df["odds"] > 0) & (df["score"] > 0)]
 
-    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
-                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
-                   (8.5, 10, "8.5-10")]
+    _cuts = _TIER_CUTS_CACHE.get("cuts") or compute_tier_cuts(df["score"].tolist())
+    score_bands = [(lo, hi, lab) for lab, lo, hi in tier_defs_from_cuts(_cuts)]
     odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
                   (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
                   (501, 600, "+501-600"), (601, 9999, "+601+")]
@@ -601,9 +600,11 @@ def build_all_band_rates(hr_all_scores: pd.DataFrame, min_n: int = 20) -> dict:
     df["hit"] = (df["hit_hr"].astype(str).str.strip() == "Yes").astype(int)
     df = df[(df["odds"] > 0) & (df["score"] > 0)]
 
-    score_bands = [(15, 999, "15+"), (14, 15, "14-15"), (13, 14, "13-14"),
-                   (12, 13, "12-13"), (11, 12, "11-12"), (10, 11, "10-11"),
-                   (8.5, 10, "8.5-10")]
+    # percentile-based tiers (self-recalibrates to whatever scale is live,
+    # fixes the bug where scores <8.5 on the compressed post-rescore scale
+    # matched NO band at all and silently fell out of pick selection)
+    _cuts = _TIER_CUTS_CACHE.get("cuts") or compute_tier_cuts(df["score"].tolist())
+    score_bands = [(lo, hi, lab) for lab, lo, hi in tier_defs_from_cuts(_cuts)]
     odds_bands = [(0, 250, "≤+250"), (251, 300, "+251-300"), (301, 350, "+301-350"),
                   (351, 400, "+351-400"), (401, 450, "+401-450"), (451, 500, "+451-500"),
                   (501, 600, "+501-600"), (601, 9999, "+601+")]
