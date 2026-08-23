@@ -901,7 +901,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     # 98th-pctile cutoff. The cutoff is FIXED from all history (~13.2); this
     # lists however many of today's players clear it (all odds included).
     _cuts = _TIER_CUTS_CACHE.get("cuts") or [13.2]
-    top2_cut = _cuts[0] if _cuts else 13.2
+    top2_cut = _cuts[0] if _cuts else 14.4   # emergency fallback only (cache
+                                              # empty); updated 2026-08-23 to
+                                              # match current post-reweight scale
     elite = []
     if not hr_source.empty:
         for _, row in hr_source.iterrows():
@@ -935,7 +937,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     rows.append((E[:], "spacer"))
 
     # ── 🎯 HR SCORE ≥9.5 — every player today at or above a flat 9.5 cutoff
-    HR_SCORE_FLOOR = 9.5
+    HR_SCORE_FLOOR = 10.4   # updated 2026-08-23 to match the new 90th-pctile
+                             # boundary after the power/platoon reweight
     over95 = []
     if not hr_source.empty:
         for _, row in hr_source.iterrows():
