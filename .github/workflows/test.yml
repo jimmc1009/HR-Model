@@ -36,7 +36,7 @@ on:
           - extract_feature_bounds
           - test_hand_split
           - build_hr_separators.py
-
+          - rescore_all.py
 
 jobs:
   test:
@@ -296,4 +296,12 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python build_hr_separators.py
+
+      - name: Rescore all with new weights
+        if: github.event.inputs.script == 'rescore_all.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python rescore_all.py
+
 
