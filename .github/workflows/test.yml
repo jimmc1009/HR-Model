@@ -31,7 +31,7 @@ on:
           - ks_analysis
           - hrrbi_analysis
           - hrrbi_picks_main
-
+          - rescore_all.py
 
 jobs:
   test:
@@ -244,6 +244,14 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python dashboard.py
+
+      - name: Rescore all with new weights
+        if: github.event.inputs.script == 'rescore_all.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python rescore_all.py
+
 
 
 
