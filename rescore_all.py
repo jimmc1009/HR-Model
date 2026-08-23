@@ -46,8 +46,10 @@ def recalc_row(row):
         if not np.isnan(v): total += fn(v, 0.0 if np.isnan(bbe) else bbe)
     sb=g(row,"season_barrel_pct",0.0); hf=g(row,"hr_per_fb",0.0)
     hp=g(row,"hr_per_pa",0.0); iso=g(row,"iso",0.0)
+    # POWER_WEIGHT scales the composite (2026-08-23 rebalance) — must match
+    # hr_picks exactly or the rescore diverges from live scores again.
     total += HP.score_power_composite(0.0 if np.isnan(sb) else sb, 0.0 if np.isnan(hf) else hf,
-        0.0 if np.isnan(hp) else hp, 0.0 if np.isnan(iso) else iso, pa)
+        0.0 if np.isnan(hp) else hp, 0.0 if np.isnan(iso) else iso, pa) * getattr(HP, "POWER_WEIGHT", 1.0)
     pbar=g(row,"pitcher_barrel_pct")
     if not np.isnan(pbar): total += HP.score_pitcher_barrel_pct(pbar)
     phf=g(row,"pitcher_hr_per_fb")
