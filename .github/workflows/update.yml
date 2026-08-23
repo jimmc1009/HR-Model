@@ -1,135 +1,183 @@
 name: MLB Model Pipeline
 
 on:
- workflow_dispatch:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Leave blank for normal full pipeline run, or pick ONE script to run in isolation'
+        required: false
+        type: choice
+        default: ''
+        options:
+          - ''
+          - main.py
+          - pitcher_statcast.py
+          - park_factors.py
+          - weather.py
+          - odds.py
+          - hr_picks.py
+          - rescore_all.py
+          - hr_picks_v2.py
+          - hrrbi_statcast.py
+          - hrrbi_picks.py
+          - ks_statcast.py
+          - ks_picks.py
+          - resolve_picks.py
+          - hr_analysis.py
+          - ks_analysis.py
+          - hrrbi_analysis.py
+          - dashboard.py
 
 jobs:
- run-pipeline:
-   runs-on: ubuntu-latest
-   permissions:
-     contents: write
+  run-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-   steps:
-     - name: Checkout repo
-       uses: actions/checkout@v4
-       with:
-         token: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-     - name: Set up Python
-       uses: actions/setup-python@v5
-       with:
-         python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-     - name: Install dependencies
-       run: |
-         pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
+      - name: Install dependencies
+        run: |
+          pip install pybaseball pandas numpy gspread oauth2client pytz requests google-auth
 
-     # ── Shared data pulls ─────────────────────────────────────────────────
-     - name: Run main.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python main.py
+      # ── Shared data pulls ─────────────────────────────────────────────────
+      - name: Run main.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'main.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python main.py
 
-     - name: Run pitcher_statcast.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python pitcher_statcast.py
+      - name: Run pitcher_statcast.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'pitcher_statcast.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python pitcher_statcast.py
 
-     - name: Run park_factors.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python park_factors.py
+      - name: Run park_factors.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'park_factors.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python park_factors.py
 
-     - name: Run weather.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python weather.py
+      - name: Run weather.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'weather.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python weather.py
 
-     - name: Run odds.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-         ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-       run: python odds.py
+      - name: Run odds.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'odds.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python odds.py
 
-     # ── HR Model (v1 — LIVE, feeds dashboard) ─────────────────────────────
-     - name: Run hr_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hr_picks.py
+      # ── HR Model (v1 — LIVE, feeds dashboard) ─────────────────────────────
+      - name: Run hr_picks.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'hr_picks.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hr_picks.py
 
-     # ── HR Model (v2 — SHADOW, logs to *_v2 tabs for comparison) ───────────
-     - name: Cool down before v2 shadow (avoid Sheets rate limit)
-       run: sleep 120
+      # ── ONE-TIME / ON-DEMAND: rescore all of HR_All_Scores ─────────────────
+      - name: Run rescore_all.py
+        if: github.event.inputs.script == 'rescore_all.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python rescore_all.py
 
-     - name: Run hr_picks_v2.py (shadow)
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hr_picks_v2.py
+      # ── HR Model (v2 — SHADOW, logs to *_v2 tabs for comparison) ───────────
+      - name: Cool down before v2 shadow (avoid Sheets rate limit)
+        if: github.event.inputs.script == ''
+        run: sleep 120
 
-     # ── H+R+RBI Model ─────────────────────────────────────────────────────
-     - name: Run hrrbi_statcast.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hrrbi_statcast.py
+      - name: Run hr_picks_v2.py (shadow)
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'hr_picks_v2.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hr_picks_v2.py
 
-     - name: Run hrrbi_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hrrbi_picks.py
+      # ── H+R+RBI Model ─────────────────────────────────────────────────────
+      - name: Run hrrbi_statcast.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'hrrbi_statcast.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hrrbi_statcast.py
 
-     # ── Pitcher Strikeout Model ───────────────────────────────────────────
-     - name: Run ks_statcast.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python ks_statcast.py
+      - name: Run hrrbi_picks.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'hrrbi_picks.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hrrbi_picks.py
 
-     - name: Run ks_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python ks_picks.py
+      # ── Pitcher Strikeout Model ───────────────────────────────────────────
+      - name: Run ks_statcast.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'ks_statcast.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_statcast.py
 
-     # ── Resolve picks (before analysis and dashboard) ─────────────────────
-     - name: Run resolve_picks.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python resolve_picks.py
+      - name: Run ks_picks.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'ks_picks.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_picks.py
 
-     # ── Analysis (uses resolved data) ─────────────────────────────────────
-     - name: Run hr_analysis.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hr_analysis.py
+      # ── Resolve picks (before analysis and dashboard) ─────────────────────
+      - name: Run resolve_picks.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'resolve_picks.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python resolve_picks.py
 
-     - name: Run ks_analysis.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python ks_analysis.py
+      # ── Analysis (uses resolved data) ─────────────────────────────────────
+      - name: Run hr_analysis.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'hr_analysis.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hr_analysis.py
 
-     - name: Run hrrbi_analysis.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python hrrbi_analysis.py
+      - name: Run ks_analysis.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'ks_analysis.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python ks_analysis.py
 
-     # ── Dashboard (uses resolved data + analysis) ─────────────────────────
-     - name: Run dashboard.py
-       env:
-         GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-       run: python dashboard.py
+      - name: Run hrrbi_analysis.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'hrrbi_analysis.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python hrrbi_analysis.py
 
-
+      # ── Dashboard (uses resolved data + analysis) ─────────────────────────
+      - name: Run dashboard.py
+        if: github.event.inputs.script == '' || github.event.inputs.script == 'dashboard.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python dashboard.py
