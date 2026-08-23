@@ -31,7 +31,15 @@ MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
 # ── Weights (based on feature separator analysis) ──────────────────────────
-PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+
+# 2026-08-23 rebalance: test_component_weights.py measured topQ-botQ spread
+# on 14,883 resolved rows -- power composite +8.9 (eff +0.325), pitch +6.0
+# (eff +0.198), platoon +2.8 (eff +0.084). Power was the strongest signal but
+# had NO weight lever (implicit 1x); platoon was the weakest despite one of
+# the two biggest levers on the board. Reweighted to match measured signal.
+POWER_WEIGHT         = 2.0   # NEW — power composite had no weight before this;
+                              # strongest separator (+8.9 spread), doubled
+PITCH_MATCHUP_WEIGHT = 1.9   # raised from 1.7 — separator at +16.8% STRONG+;
+                              # confirmed 2nd-strongest (+6.0 spread), unchanged
 BVP_WEIGHT           = 0.5   # conceptually sound, no separator data yet
 MOMENTUM_WEIGHT      = 1.2   # rebuilt — blended barrel% delta vs personal baseline
 WEATHER_WEIGHT       = 0.3   # reduced — inconsistent by tier per diagnose_score
@@ -444,7 +452,10 @@ def score_pitcher_quality_penalty(
 
 
 # ── Platoon score — two-way ────────────────────────────────────────────────
-PLATOON_WEIGHT = 1.2  # reduced from 1.8 — diagnose_score shows 1.8 breaks monotonicity at 10-11
+PLATOON_WEIGHT = 0.6  # halved from 1.2 (2026-08-23) — test_component_weights
+                       # showed platoon the WEAKEST separator (+2.8 spread,
+                       # eff +0.084) despite having one of the two biggest
+                       # levers on the score. See POWER_WEIGHT comment above.
 
 # Platoon splits are the noisiest split in baseball. Everything else in this
 # file regresses by sample size; these now do too.
@@ -1015,10 +1026,13 @@ def prepare_combined(
         combined.apply(lambda r: score_barrel_pct_5d(r["barrel_pct_5d"], r["bbe_5d"]), axis=1) +
         combined.apply(lambda r: score_barrel_pct_10d(r["barrel_pct_10d"], r["bbe_10d"]), axis=1) +
         # LEVEL power — collapsed into ONE composite (was 4 independent sums
-        # that quadruple-counted the same trait and caused 15+ saturation)
+        # that quadruple-counted the same trait and caused 15+ saturation).
+        # POWER_WEIGHT scales the already-capped [0,2.0] composite, so it
+        # amplifies the single safe signal rather than reintroducing the
+        # correlated-metric double-count the collapse was built to remove.
         combined.apply(lambda r: score_power_composite(
             r["season_barrel_pct"], r["hr_per_fb"], r["hr_per_pa"], r["iso"], r["pa"]
-        ), axis=1) +
+        ), axis=1) * POWER_WEIGHT +
         # Pitcher side — light weight
         combined["pitcher_barrel_pct"].apply(score_pitcher_barrel_pct) +
         combined["pitcher_hr_per_fb"].apply(score_pitcher_hr_per_fb) -
