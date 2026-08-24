@@ -36,7 +36,8 @@ on:
           - test_value_longshots.py
           - test_component_weights.py
           - test_momentum_progressive.py
-          - test_recency_penalty.py 
+          - test_recency_penalty.py
+          - test_barrel_negative.py
 
 
 jobs:
@@ -255,6 +256,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_recency_penalty.py
+
+      - name: Barrel negative penalty test
+        if: github.event.inputs.script == 'test_barrel_negative.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_barrel_negative.py
 
 
 
