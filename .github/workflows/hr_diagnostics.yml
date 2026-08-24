@@ -35,6 +35,7 @@ on:
           - test_platoon_split.py
           - test_value_longshots.py
           - test_component_weights.py
+          - test_momentum_progressive.py
 
 
 jobs:
@@ -239,6 +240,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python test_component_weights.py
+
+      - name: Test momentum progressive vs old gate
+        if: github.event.inputs.script == 'test_momentum_progressive.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_momentum_progressive.py
 
 
 
