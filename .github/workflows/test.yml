@@ -27,7 +27,6 @@ on:
           - dashboard
           - resolve_picks
           - migrate_ks
-          - hr_odds_backtest
           - hr_analysis
           - ks_analysis
           - hrrbi_analysis
@@ -152,20 +151,6 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python hr_picks_v2.py
 
-      - name: Run extract_feature_bounds.py
-        if: inputs.script == 'extract_feature_bounds'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python extract_feature_bounds.py
-
-      - name: Run test_hand_split.py
-        if: inputs.script == 'test_hand_split'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python test_hand_split.py
-
       - name: Run hrrbi_statcast.py
         if: >
           inputs.script == 'full' ||
@@ -264,38 +249,16 @@ jobs:
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
         run: python dashboard.py
 
-      - name: Run hr_cards.py
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'hr_cards'
+      - name: Rescore all with new weights (Dev)
+        if: github.event.inputs.script == 'rescore_all.py'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1e_iMlYn-2wwaXg2DUeV-BDIR6CNZzloniqZpe_TsAIU"
-        run: python hr_cards.py
+        run: python rescore_all.py
 
-      - name: Upload HR cards (artifact backup)
-        if: >
-          inputs.script == 'full' ||
-          inputs.script == 'hr_cards'
-        uses: actions/upload-artifact@v4
-        with:
-          name: hr-cards
-          path: hr_cards.html
 
-      - name: Run hr_odds_backtest.py
-        if: inputs.script == 'hr_odds_backtest'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: "10nL_2vYwWY84sRLgKgkfASST1YcLF2PbSNFpJzOGXLQ"
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: python hr_odds_backtest by.py
 
-      - name: Build HR_Separators tab
-        if: github.event.inputs.script == 'build_hr_separators.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python build_hr_separators.py
+
 
       - name: Rescore all with new weights
         if: github.event.inputs.script == 'rescore_all.py'

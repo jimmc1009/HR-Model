@@ -21,6 +21,21 @@ on:
           - test_platoon_unfiltered.py
           - test_platoon_diagnose.py
           - inspect_matchup.py
+          - test_wind_categories.py
+          - test_wind_controlled.py
+          - test_pitcher_barrel.py
+          - test_within_matchup_separators.py
+          - test_pitcher_trends.py
+          - test_filter_bakeoff.py
+          - test_dueness.py
+          - test_blend_zones.py
+          - test_monotonic.py
+          - test_pocket_and_inversion.py
+          - rescore_all.py
+          - test_platoon_split.py
+          - test_value_longshots.py
+          - test_component_weights.py
+
 
 jobs:
   diagnostic:
@@ -126,4 +141,104 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID_DEV }}
         run: python inspect_matchup.py "Murakami" "Fried"
+
+      - name: Wind categories on HR 10+
+        if: github.event.inputs.script == 'test_wind_categories.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_wind_categories.py
+
+      - name: Wind effect controlled (hitter + park)
+        if: github.event.inputs.script == 'test_wind_controlled.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_wind_controlled.py
+
+      - name: Pitcher barrel penalty sizing
+        if: github.event.inputs.script == 'test_pitcher_barrel.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_pitcher_barrel.py
+
+      - name: Within-matchup separators (hidden metrics)
+        if: github.event.inputs.script == 'test_within_matchup_separators.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_within_matchup_separators.py
+
+      - name: Pitcher recent-form trends
+        if: github.event.inputs.script == 'test_pitcher_trends.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_pitcher_trends.py
+
+      - name: RR filter bakeoff (combined vs score×odds)
+        if: github.event.inputs.script == 'test_filter_bakeoff.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_filter_bakeoff.py
+
+      - name: Dueness test (gambler's fallacy check)
+        if: github.event.inputs.script == 'test_dueness.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_dueness.py
+
+      - name: Blend zones verify + parlay construction
+        if: github.event.inputs.script == 'test_blend_zones.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_blend_zones.py
+
+      - name: Monotonic diagnosis
+        if: github.event.inputs.script == 'test_monotonic.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_monotonic.py
+
+      - name: Pocket + inversion analysis
+        if: github.event.inputs.script == 'test_pocket_and_inversion.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_pocket_and_inversion.py
+
+      - name: Rescore all + tier analysis
+        if: github.event.inputs.script == 'rescore_all.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python rescore_all.py
+
+      - name: Platoon split test
+        if: github.event.inputs.script == 'test_platoon_split.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_platoon_split.py
+
+      - name: Value longshots test
+        if: github.event.inputs.script == 'test_value_longshots.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_value_longshots.py
+
+      - name: Component weight comparison
+        if: github.event.inputs.script == 'test_component_weights.py'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python test_component_weights.py
+
+
 
