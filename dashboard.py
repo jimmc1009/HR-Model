@@ -156,6 +156,27 @@ def resolve_score(row, default=0.0) -> float:
     return default
 
 
+# ── COLD-BARREL HARD FILTER ─────────────────────────────────────────────
+# If a player has enough recent batted balls (bbe_7d >= 8) and his barrel
+# rate over the last 7 days is below 4%, he's excluded from ALL picks —
+# +EV singles, RR legs, top-2%, >=10.4 list, value bomb. This directly
+# prevents cold players (Buxton returning from injury, Caminero in a
+# slump) from populating the board off stale season power stats.
+# Tested: the <5% barrel / sufficient-sample group hits 10.1% vs 11.9%
+# overall; the stale-vs-fresh power gap was 3.2pp. Justified.
+COLD_BARREL_MIN_BBE = 8     # need this many recent BBE to judge
+COLD_BARREL_FLOOR   = 4.0   # below this = too cold, excluded
+
+
+def is_cold_filtered(row) -> bool:
+    """Returns True if the player should be EXCLUDED (cold barrel gate)."""
+    bbe = safe_float(row.get("bbe_7d", ""), 0)
+    if bbe < COLD_BARREL_MIN_BBE:
+        return False   # not enough sample to judge — let them through
+    barrel = safe_float(row.get("barrel_pct_7d", ""), 99)
+    return barrel < COLD_BARREL_FLOOR
+
+
 def american_to_implied(odds: float) -> float:
     if odds >= 0:
         return 100.0 / (odds + 100.0)
@@ -810,6 +831,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             batter = str(row.get("player_name", "")).strip()
             if not batter or batter == "nan":
                 continue
+            if is_cold_filtered(row):
+                continue
             _diag["total"] += 1
             sc = resolve_score(row)
             # prefer the best available price across your books; fall back to
@@ -910,6 +933,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
                 continue
+            if is_cold_filtered(row):
+                continue
             sc = resolve_score(row)
             if sc < top2_cut:
                 continue
@@ -944,6 +969,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
+                continue
+            if is_cold_filtered(row):
                 continue
             sc = resolve_score(row)
             if sc < HR_SCORE_FLOOR:
@@ -982,6 +1009,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
+                continue
+            if is_cold_filtered(row):
                 continue
             sc = resolve_score(row)
             _b = str(row.get("best_odds", "")).strip()
@@ -1071,6 +1100,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
+                continue
+            if is_cold_filtered(row):
                 continue
             sc = resolve_score(row)
             _b = str(row.get("best_odds", "")).strip()
