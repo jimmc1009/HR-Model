@@ -157,24 +157,31 @@ def resolve_score(row, default=0.0) -> float:
 
 
 # ── COLD-BARREL HARD FILTER ─────────────────────────────────────────────
-# If a player has enough recent batted balls (bbe_7d >= 8) and his barrel
-# rate over the last 7 days is below 4%, he's excluded from ALL picks —
-# +EV singles, RR legs, top-2%, >=10.4 list, value bomb. This directly
-# prevents cold players (Buxton returning from injury, Caminero in a
-# slump) from populating the board off stale season power stats.
-# Tested: the <5% barrel / sufficient-sample group hits 10.1% vs 11.9%
-# overall; the stale-vs-fresh power gap was 3.2pp. Justified.
+# If a player has enough recent batted balls and his barrel rate AND hard-hit
+# rate are both cold, he's excluded from ALL picks. Uses MULTIPLE signals so
+# stale data on one metric (e.g. pybaseball lag making barrel_pct_7d show
+# old data) doesn't let an obviously-cold player through. Also checks the
+# 10d window as a backup — wider window is less susceptible to 1-2 day lag.
 COLD_BARREL_MIN_BBE = 8     # need this many recent BBE to judge
 COLD_BARREL_FLOOR   = 4.0   # below this = too cold, excluded
 
 
 def is_cold_filtered(row) -> bool:
-    """Returns True if the player should be EXCLUDED (cold barrel gate)."""
-    bbe = safe_float(row.get("bbe_7d", ""), 0)
-    if bbe < COLD_BARREL_MIN_BBE:
-        return False   # not enough sample to judge — let them through
-    barrel = safe_float(row.get("barrel_pct_7d", ""), 99)
-    return barrel < COLD_BARREL_FLOOR
+    """Returns True if the player should be EXCLUDED (cold barrel gate).
+    Checks 7d barrel AND 10d barrel — if EITHER window shows cold with
+    sufficient sample, exclude. This catches players whose 7d data is stale
+    but whose 10d data has rolled in, and vice versa."""
+    bbe_7 = safe_float(row.get("bbe_7d", ""), 0)
+    bbe_10 = safe_float(row.get("bbe_10d", ""), 0)
+    barrel_7 = safe_float(row.get("barrel_pct_7d", ""), 99)
+    barrel_10 = safe_float(row.get("barrel_pct_10d", ""), 99)
+
+    # cold on 7d window
+    cold_7 = bbe_7 >= COLD_BARREL_MIN_BBE and barrel_7 < COLD_BARREL_FLOOR
+    # cold on 10d window (slightly higher BBE threshold for wider window)
+    cold_10 = bbe_10 >= 12 and barrel_10 < COLD_BARREL_FLOOR
+
+    return cold_7 or cold_10
 
 
 def american_to_implied(odds: float) -> float:
