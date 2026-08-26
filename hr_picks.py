@@ -26,7 +26,7 @@ LEAGUE_AVG_ISO           = 0.155
 LEAGUE_AVG_BARREL_7D     = 8.0
 LEAGUE_AVG_SEASON_BARREL = 8.0
 
-MIN_PA_FULL        = 120
+MIN_PA_FULL        = 150
 MIN_BBE_7D_FULL    = 20
 MIN_BBE_7D_PARTIAL = 5
 
@@ -182,11 +182,20 @@ def score_barrel_pct_7d(v: float, bbe_7d: float) -> float:
     """Barrel% 7d — +31.8% separation"""
     if bbe_7d < MIN_BBE_7D_PARTIAL:
         return 0.0
+    raw = v   # preserve pre-regression value for cold check
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_7d, MIN_BBE_7D_FULL)
+    # don't let regression rescue a genuinely cold raw value — if raw is
+    # near-zero but regression pulls it up toward league avg, cap at the
+    # raw value so cold stays cold (fixes the Buxton problem where 0 actual
+    # barrels regressed to 4.8% and slipped through the cold filter)
+    if raw < 2.0 and bbe_7d >= 8:
+        v = min(v, raw + 1.0)
     if v >= 20: return 2.5
     if v >= 15: return 1.8
     if v >= 10: return 1.2
     if v >= 6:  return 0.4
+    if v < 2 and bbe_7d >= 8:  return -1.0
+    if v < 4 and bbe_7d >= 8:  return -0.5
     return 0.0
 
 
@@ -194,11 +203,16 @@ def score_barrel_pct_5d(v: float, bbe_5d: float) -> float:
     """Barrel% 5d — +31.8% separation"""
     if bbe_5d < MIN_BBE_7D_PARTIAL:
         return 0.0
+    raw = v
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_5d, MIN_BBE_7D_FULL)
+    if raw < 2.0 and bbe_5d >= 8:
+        v = min(v, raw + 1.0)
     if v >= 20: return 2.0
     if v >= 15: return 1.5
     if v >= 10: return 1.0
     if v >= 6:  return 0.3
+    if v < 2 and bbe_5d >= 8:  return -0.8
+    if v < 4 and bbe_5d >= 8:  return -0.4
     return 0.0
 
 
@@ -206,11 +220,16 @@ def score_barrel_pct_10d(v: float, bbe_10d: float) -> float:
     """Barrel% 10d — +36.3% separation"""
     if bbe_10d < MIN_BBE_7D_PARTIAL:
         return 0.0
+    raw = v
     v = regress(v, LEAGUE_AVG_BARREL_7D, bbe_10d, MIN_BBE_7D_FULL)
+    if raw < 2.0 and bbe_10d >= 10:
+        v = min(v, raw + 1.0)
     if v >= 20: return 2.5
     if v >= 15: return 1.8
     if v >= 10: return 1.2
     if v >= 6:  return 0.4
+    if v < 2 and bbe_10d >= 10:  return -1.0
+    if v < 4 and bbe_10d >= 10:  return -0.5
     return 0.0
 
 
@@ -352,24 +371,32 @@ def score_momentum_delta(
     if not signals:
         return 0.0, ""
 
-    # ── Convergence logic ─────────────────────────────────────────────
-    n          = len(signals)
+    n = len(signals)
     avg_signal = sum(signals) / n
-    positives  = sum(1 for s in signals if s > 0.1)
-    negatives  = sum(1 for s in signals if s < -0.1)
 
-    # Require at least 2 of available metrics to agree
-    if n >= 2:
-        if positives < 2 and negatives < 2:
-            return 0.0, ""  # split signal — ignore
+    # ── PROGRESSIVE agreement (replaces the old hard "2-of-3 must agree" gate) ──
+    # Old behavior: signals like [0.9, -0.15] got a hard ZERO because neither
+    # direction hit a count of 2 — even though the average (0.375) was real,
+    # mostly-agreeing signal. That's a cliff, not a taper.
+    # New: directional CONSISTENCY = how much of the total signal magnitude
+    # points the same way as the average. Continuous 0 (fully split, cancels
+    # out) to 1 (fully aligned) — smoothly dampens disagreement instead of an
+    # all-or-nothing count threshold.
+    total_abs = sum(abs(s) for s in signals)
+    if total_abs == 0:
+        return 0.0, ""
+    consistency = abs(sum(signals)) / total_abs
+
+    if n == 1:
+        # single metric: no direction to check consistency against, so ramp
+        # confidence up smoothly with the metric's own strength instead of a
+        # hard cutoff at |signal| >= 0.5 (a 0.49 used to be thrown away
+        # entirely; now it contributes proportionally, just softly).
+        confidence = min(1.0, abs(avg_signal) / 0.5) * 0.7
     else:
-        # Only 1 metric available — require stronger signal
-        if abs(avg_signal) < 0.5:
-            return 0.0, ""
+        confidence = consistency
 
-    # Scale by agreement strength — full agreement amplifies signal
-    agreement_multiplier = positives / n if avg_signal > 0 else negatives / n
-    final_score = avg_signal * agreement_multiplier
+    final_score = avg_signal * confidence
 
     # Cap at ±1.5
     final_score = max(-1.5, min(1.5, final_score))
