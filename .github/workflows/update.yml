@@ -17,15 +17,8 @@ on:
           - odds.py
           - hr_picks.py
           - rescore_all.py
-          - hr_picks_v2.py
-          - hrrbi_statcast.py
-          - hrrbi_picks.py
-          - ks_statcast.py
-          - ks_picks.py
           - resolve_picks.py
           - hr_analysis.py
-          - ks_analysis.py
-          - hrrbi_analysis.py
           - dashboard.py
 
 jobs:
@@ -102,48 +95,6 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python rescore_all.py
 
-      # ── HR Model (v2 — SHADOW, logs to *_v2 tabs for comparison) ───────────
-      - name: Cool down before v2 shadow (avoid Sheets rate limit)
-        if: github.event.inputs.script == ''
-        run: sleep 120
-
-      - name: Run hr_picks_v2.py (shadow)
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'hr_picks_v2.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python hr_picks_v2.py
-
-      # ── H+R+RBI Model ─────────────────────────────────────────────────────
-      - name: Run hrrbi_statcast.py
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'hrrbi_statcast.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python hrrbi_statcast.py
-
-      - name: Run hrrbi_picks.py
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'hrrbi_picks.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python hrrbi_picks.py
-
-      # ── Pitcher Strikeout Model ───────────────────────────────────────────
-      - name: Run ks_statcast.py
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'ks_statcast.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python ks_statcast.py
-
-      - name: Run ks_picks.py
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'ks_picks.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python ks_picks.py
-
       # ── Resolve picks (before analysis and dashboard) ─────────────────────
       - name: Run resolve_picks.py
         if: github.event.inputs.script == '' || github.event.inputs.script == 'resolve_picks.py'
@@ -159,20 +110,6 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: python hr_analysis.py
-
-      - name: Run ks_analysis.py
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'ks_analysis.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python ks_analysis.py
-
-      - name: Run hrrbi_analysis.py
-        if: github.event.inputs.script == '' || github.event.inputs.script == 'hrrbi_analysis.py'
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python hrrbi_analysis.py
 
       # ── Dashboard (uses resolved data + analysis) ─────────────────────────
       - name: Run dashboard.py
