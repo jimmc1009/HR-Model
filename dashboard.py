@@ -196,6 +196,14 @@ def american_to_implied(odds: float) -> float:
     return abs(odds) / (abs(odds) + 100.0)
 
 
+def safe_decimal_odds(od: float) -> float:
+    """American odds -> decimal multiplier, safe against 0/missing odds
+    (returns 1.0 = no-op multiplier rather than crashing the whole run)."""
+    if od is None or od == 0:
+        return 1.0
+    return 1 + (od / 100 if od > 0 else 100 / abs(od))
+
+
 def combo_edge(legs) -> dict:
     """For a 2+ leg combo, compute the MODEL's joint probability (product of
     each leg's Win% independence-assumed) vs what the combo's own odds
@@ -1109,8 +1117,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins", "Model %", "Implied %", "Edge"]), "col_header_hr"))
         combos = []
         for a, b in _it.combinations(five, 2):
-            dec = (1 + (a["od"]/100 if a["od"] > 0 else 100/abs(a["od"]))) * \
-                  (1 + (b["od"]/100 if b["od"] > 0 else 100/abs(b["od"])))
+            dec = safe_decimal_odds(a["od"]) * safe_decimal_odds(b["od"])
             pay = combined_american([a["od"], b["od"]])
             win = 0.25 * (dec - 1)
             edge = combo_edge([a, b])
@@ -1183,7 +1190,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             sc = resolve_score(row)
             _b = str(row.get("best_odds", "")).strip()
             od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
-            if not (lo <= od <= hi):
+            if od <= 0 or not (lo <= od <= hi):
                 continue
             cell = player_band(sc, od, band_rates) or {}
             b7 = safe_float(row.get("barrel_pct_7d", ""), 0)
@@ -1223,8 +1230,7 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins", "Model %", "Implied %", "Edge"]), "col_header_hr"))
         combos = []
         for a, b in _it.combinations(four, 2):
-            dec = (1 + (a["od"]/100 if a["od"] > 0 else 100/abs(a["od"]))) * \
-                  (1 + (b["od"]/100 if b["od"] > 0 else 100/abs(b["od"])))
+            dec = safe_decimal_odds(a["od"]) * safe_decimal_odds(b["od"])
             pay = combined_american([a["od"], b["od"]])
             win = 0.25 * (dec - 1)
             edge = combo_edge([a, b])
