@@ -31,15 +31,21 @@ SCOPES = [
 ]
 DASHBOARD_SHEET = "Today's Top Picks"
 
-COLOR_BG        = {"red": 0.086, "green": 0.086, "blue": 0.086}
-COLOR_BG_ALT    = {"red": 0.118, "green": 0.118, "blue": 0.118}
-COLOR_WHITE     = {"red": 1.000, "green": 1.000, "blue": 1.000}
-COLOR_GOLD      = {"red": 1.000, "green": 0.843, "blue": 0.000}
-COLOR_GREEN     = {"red": 0.180, "green": 0.800, "blue": 0.443}
-COLOR_PURPLE    = {"red": 0.541, "green": 0.165, "blue": 0.557}
-COLOR_HEADER_BG = {"red": 0.055, "green": 0.055, "blue": 0.055}
-COLOR_SUBTEXT   = {"red": 0.600, "green": 0.600, "blue": 0.600}
-COLOR_BLACK     = {"red": 0.050, "green": 0.050, "blue": 0.050}
+# ── Color palette v2 — midnight teal / electric cyan / hot coral ───────────
+# Replaces the old gold-on-black scheme with something that doesn't look like
+# every other sportsbook dashboard. Dark teal base (not pure black — has a
+# little depth), cyan for structure/headers, coral for the "pay attention"
+# accents (score, edge), green kept only for genuine positive signal.
+COLOR_BG        = {"red": 0.043, "green": 0.075, "blue": 0.086}   # deep midnight teal
+COLOR_BG_ALT    = {"red": 0.063, "green": 0.106, "blue": 0.122}   # slightly lighter alt row
+COLOR_WHITE     = {"red": 0.925, "green": 0.976, "blue": 0.980}   # soft ice white (not stark)
+COLOR_GOLD      = {"red": 0.157, "green": 0.831, "blue": 0.878}   # electric cyan (replaces gold — section headers)
+COLOR_GREEN     = {"red": 0.302, "green": 0.906, "blue": 0.573}   # mint green — genuine positive signal only
+COLOR_PURPLE    = {"red": 1.000, "green": 0.412, "blue": 0.380}   # hot coral (replaces purple — parlay headers)
+COLOR_HEADER_BG = {"red": 0.024, "green": 0.043, "blue": 0.051}   # near-black teal for header rows
+COLOR_SUBTEXT   = {"red": 0.427, "green": 0.573, "blue": 0.588}   # muted teal-grey for secondary text
+COLOR_BLACK     = {"red": 0.020, "green": 0.035, "blue": 0.043}   # for text on bright cyan backgrounds
+COLOR_ACCENT    = {"red": 1.000, "green": 0.412, "blue": 0.380}   # coral accent — score/edge highlights
 
 N_COLS = 15
 RESET_ROWS = 400
@@ -188,6 +194,39 @@ def american_to_implied(odds: float) -> float:
     if odds >= 0:
         return 100.0 / (odds + 100.0)
     return abs(odds) / (abs(odds) + 100.0)
+
+
+def combo_edge(legs) -> dict:
+    """For a 2+ leg combo, compute the MODEL's joint probability (product of
+    each leg's Win% independence-assumed) vs what the combo's own odds
+    IMPLY, and the edge between them -- the exact same +EV framework as the
+    singles section, applied at the parlay level. Most combos will show
+    negative edge (parlay vig compounds fast) but this tells you exactly
+    which specific combo is least bad, or the rare one that clears it."""
+    model_prob = 1.0
+    implied_prob = 1.0
+    for leg in legs:
+        model_prob *= (leg.get("win_pct", 0) / 100.0)
+        implied_prob *= american_to_implied(leg["od"])
+    edge_pp = (model_prob - implied_prob) * 100
+    return {"model_pct": model_prob * 100, "implied_pct": implied_prob * 100, "edge_pp": edge_pp}
+
+
+def player_win_pct(row, hit_rates) -> float:
+    """Every player's 'chance of hitting' — their score tier's LIVE, shrunk
+    hit rate. Monotonic by construction (validated tier table), always
+    populated (8 broad tiers, never thin), and not diluted by averaging in
+    weak components like the blend is. This is the single number to trust
+    for 'what are the odds this guy homers today' at a glance."""
+    cuts = _TIER_CUTS_CACHE.get("cuts") or [15, 14, 13, 12, 11, 10, 9]
+    score = resolve_score(row)
+    tier = tier_key_from_cuts(score, cuts)
+    if tier is None:
+        return hr_rates_get(hit_rates, "_base", 0.12) * 100
+    rate = hr_rates_get(hit_rates, tier, None)
+    if rate is None:
+        rate = hr_rates_get(hit_rates, "_base", 0.12)
+    return rate * 100
 
 
 def implied_to_american(prob: float) -> str:
@@ -952,19 +991,19 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             elite.append({"nm": nm, "team": str(row.get("team", "")).strip(),
                 "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
                 "book": str(row.get("best_book", "")).strip(),
-                "plat": plat, "pitch": pitch})
+                "plat": plat, "pitch": pitch, "win_pct": player_win_pct(row, hr_hit_rates)})
     elite.sort(key=lambda x: -x["sc"])
     rows.append((pad([f"\u2B50  TOP 2% SCORE TIER — today's guys scoring \u2265{top2_cut:.1f} (all odds)"]),
                  "section_header_hr"))
     if not elite:
         rows.append((pad(["\u2014", f"No players above {top2_cut:.1f} on today's slate", ""]), "no_plays"))
     else:
-        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Plat", "Pitch"]),
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Win %", "Plat", "Pitch"]),
                      "col_header_hr"))
         for c in elite:
             od_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
             rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
-                od_s, c["book"] or "\u2014", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
+                od_s, c["book"] or "\u2014", f"{c['win_pct']:.1f}%", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
                 "data_hr_strong"))
     rows.append((E[:], "spacer"))
 
@@ -988,19 +1027,20 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             pitch = safe_float(row.get("pitch_matchup_score", 0))
             over95.append({"nm": nm, "team": str(row.get("team", "")).strip(),
                 "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
-                "book": str(row.get("best_book", "")).strip(), "plat": plat, "pitch": pitch})
+                "book": str(row.get("best_book", "")).strip(), "plat": plat, "pitch": pitch,
+                "win_pct": player_win_pct(row, hr_hit_rates)})
     over95.sort(key=lambda x: -x["sc"])
     rows.append((pad([f"\U0001F3AF  HR SCORE \u2265{HR_SCORE_FLOOR} — every player today (all odds)"]),
                  "section_header_hr"))
     if not over95:
         rows.append((pad(["\u2014", f"No players \u2265{HR_SCORE_FLOOR} on today's slate", ""]), "no_plays"))
     else:
-        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Plat", "Pitch"]),
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Win %", "Plat", "Pitch"]),
                      "col_header_hr"))
         for c in over95:
             od_s = f"+{int(c['od'])}" if c["od"] > 0 else "\u2014"
             rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
-                od_s, c["book"] or "\u2014", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
+                od_s, c["book"] or "\u2014", f"{c['win_pct']:.1f}%", f"{c['plat']:+.1f}", f"{c['pitch']:+.1f}"]),
                 "data_hr_strong"))
     rows.append((E[:], "spacer"))
 
@@ -1034,7 +1074,8 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             rr_pool.append({"nm": nm, "team": str(row.get("team", "")).strip(),
                 "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
                 "book": str(row.get("best_book", "")).strip(), "blend": blend,
-                "cell_rate": cell_rate, "cell_n": cell_n})
+                "cell_rate": cell_rate, "cell_n": cell_n,
+                "win_pct": player_win_pct(row, hr_hit_rates)})
 
     _CELL_FLOOR = 25   # need >=25 resolved in the cell to trust its rate
 
@@ -1058,22 +1099,28 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             rows.append((pad(["—", "Fewer than 5 eligible bats today", ""]), "no_plays"))
             rows.append((E[:], "spacer"))
             return
-        rows.append((pad(["Leg", "Batter", "Team", "Pitcher", "Score", "Odds", "Book", prob_col_label]),
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", prob_col_label]),
                      "col_header_hr"))
         for i, c in enumerate(five, 1):
-            rows.append((pad([str(i), c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c["book"] or "—", prob_fn(c)]), "data_hr_strong"))
         rows.append((pad([""]), "spacer"))
-        rows.append((pad(["  Ten 2-leg parlays (25¢ each = $2.50 total):"]), "col_header_parlay"))
-        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins"]), "col_header_hr"))
+        rows.append((pad(["  Ten 2-leg parlays (25¢ each = $2.50 total) — ranked by edge:"]), "col_header_parlay"))
+        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins", "Model %", "Implied %", "Edge"]), "col_header_hr"))
+        combos = []
         for a, b in _it.combinations(five, 2):
             dec = (1 + (a["od"]/100 if a["od"] > 0 else 100/abs(a["od"]))) * \
                   (1 + (b["od"]/100 if b["od"] > 0 else 100/abs(b["od"])))
             pay = combined_american([a["od"], b["od"]])
             win = 0.25 * (dec - 1)
+            edge = combo_edge([a, b])
             combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
-            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}"]),
-                "data_hr_strong"))
+            combos.append((edge["edge_pp"], combo_name, a, b, pay, win, edge))
+        combos.sort(key=lambda x: -x[0])
+        for edge_pp, combo_name, a, b, pay, win, edge in combos:
+            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}",
+                f"{edge['model_pct']:.1f}%", f"{edge['implied_pct']:.1f}%", f"{edge['edge_pp']:+.1f}pp"]),
+                "data_combo"))
         rows.append((E[:], "spacer"))
 
     # A) PRIMARY — rank by cell hit rate (trusted cells first), score as the
@@ -1091,66 +1138,6 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         return f"sc {c['sc']:.1f}"
     _emit_rr("🔁  5-LEG RR — ranked by score×odds hit rate (sharp)",
              five_cell, "Cell Hit%", _cell_prob)
-
-    # B) FUN — rank by blend
-    five_blend = _pick_five(lambda c: -c["blend"])
-    _emit_rr("🔁  5-LEG RR — ranked by blend (for fun)",
-             five_blend, "Blend%", lambda c: f"{c['blend']*100:.1f}%")
-
-    # ── 💥 VALUE BOMB 3-LEGGER — +400-600, ranked by blend ────────────────
-    # The "model likes them, market prices them long" swing. Tested: no signal
-    # clears breakeven here, so this is an honest LOTTERY ticket, not +EV —
-    # ranked by blend to at least favor the model's best in the range. RR it
-    # yourself if you want more coverage.
-    bomb = []
-    if not hr_source.empty:
-        for _, row in hr_source.iterrows():
-            nm = str(row.get("player_name", "")).strip()
-            if not nm or nm == "nan":
-                continue
-            if is_cold_filtered(row):
-                continue
-            sc = resolve_score(row)
-            _b = str(row.get("best_odds", "")).strip()
-            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
-            if not (400 <= od <= 600):      # the target zone only
-                continue
-            plat = safe_float(row.get("platoon_score", 0))
-            pitch = safe_float(row.get("pitch_matchup_score", 0))
-            blend = blended_hit_prob(sc, od, plat, pitch, hr_hit_rates)
-            bomb.append({"nm": nm, "team": str(row.get("team", "")).strip(),
-                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
-                "book": str(row.get("best_book", "")).strip(), "blend": blend})
-    bomb.sort(key=lambda x: -x["blend"])
-    b3, bteams = [], set()
-    for c in bomb:
-        if len(b3) >= 3: break
-        if c["team"] in bteams: continue
-        b3.append(c); bteams.add(c["team"])
-    if len(b3) < 3:
-        for c in bomb:
-            if len(b3) >= 3: break
-            if c in b3: continue
-            b3.append(c)
-
-    rows.append((pad(["💥  VALUE BOMB 3-LEGGER — +400-600, model's best (lottery, RR it yourself)"]),
-                 "section_header_hr"))
-    if len(b3) < 3:
-        rows.append((pad(["—", "Fewer than 3 bats in the +400-600 range today", ""]), "no_plays"))
-    else:
-        combo_dec = 1.0
-        for c in b3:
-            o = c["od"]; combo_dec *= (1 + (o/100 if o > 0 else 100/abs(o)))
-        payout = combined_american([c["od"] for c in b3])
-        rows.append((pad([f"  pays {payout} · 25¢ → ${0.25*(combo_dec-1):.2f} on a win"]),
-                     "col_header_parlay"))
-        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", "Blend%"]),
-                     "col_header_hr"))
-        for c in b3:
-            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
-                f"+{int(c['od'])}", c["book"] or "—", f"{c['blend']*100:.1f}%"]),
-                "data_hr_strong"))
-    rows.append((E[:], "spacer"))
 
     # ── ⚾ K's PICKS IN STRONG BUCKETS ────────────────────────────────────
     # Today's strikeout-prop picks whose (score tier, line, side) cell has a
@@ -1174,6 +1161,103 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 bet_s, c["tier"], f"{c['hit']:.1f}%", str(c["n"]), c["be"]]),
                 "data_hr_strong"))
     rows.append((E[:], "spacer"))
+
+    # ── 🔁 TWO 4-LEG ROUND ROBINS (by 2s) — split by zone AND by signal ────
+    # Different pools, different rankings, not a re-slice of the same idea:
+    #   Safe Zone:  <=+300, ranked by score x odds CELL HIT RATE (sharpest,
+    #               validated signal; this zone's top tier hit 29.8% historically)
+    #   Hot Hand:   +301-499, ranked by RAW recent barrel_pct_7d (not score,
+    #               not blend -- pure "who's barreling the ball right now."
+    #               Tested: +5.0 spread, +0.196 eff, holds even among elite
+    #               scorers -- a genuinely different, validated angle.)
+    def _build_zone_pool(lo, hi, rank_key, extra_col_label, extra_col_fn):
+        pool = []
+        if hr_source.empty:
+            return pool
+        for _, row in hr_source.iterrows():
+            nm = str(row.get("player_name", "")).strip()
+            if not nm or nm == "nan":
+                continue
+            if is_cold_filtered(row):
+                continue
+            sc = resolve_score(row)
+            _b = str(row.get("best_odds", "")).strip()
+            od = safe_float(_b) if _b not in ("", "nan", "None") else safe_float(row.get("consensus_odds", 0))
+            if not (lo <= od <= hi):
+                continue
+            cell = player_band(sc, od, band_rates) or {}
+            b7 = safe_float(row.get("barrel_pct_7d", ""), 0)
+            bbe7 = safe_float(row.get("bbe_7d", ""), 0)
+            pool.append({"nm": nm, "team": str(row.get("team", "")).strip(),
+                "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
+                "book": str(row.get("best_book", "")).strip(),
+                "cell_rate": cell.get("hit"), "cell_n": cell.get("n", 0),
+                "barrel_7d": b7, "bbe_7d": bbe7,
+                "win_pct": player_win_pct(row, hr_hit_rates)})
+        pool.sort(key=rank_key)
+        four, fteams = [], set()
+        for c in pool:
+            if len(four) >= 4: break
+            if c["team"] in fteams: continue
+            four.append(c); fteams.add(c["team"])
+        if len(four) < 4:
+            for c in pool:
+                if len(four) >= 4: break
+                if c in four: continue
+                four.append(c)
+        return four
+
+    def _emit_4rr(title, four, prob_col_label, prob_fn):
+        rows.append((pad([title]), "section_header_hr"))
+        if len(four) < 4:
+            rows.append((pad(["—", "Fewer than 4 eligible bats in this zone today", ""]), "no_plays"))
+            rows.append((E[:], "spacer"))
+            return
+        rows.append((pad(["Batter", "Team", "Pitcher", "Score", "Odds", "Book", prob_col_label]),
+                     "col_header_hr"))
+        for i, c in enumerate(four, 1):
+            rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
+                f"+{int(c['od'])}", c["book"] or "—", prob_fn(c)]), "data_hr_strong"))
+        rows.append((pad([""]), "spacer"))
+        rows.append((pad(["  Six 2-leg parlays (25¢ each = $1.50 total) — ranked by edge:"]), "col_header_parlay"))
+        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins", "Model %", "Implied %", "Edge"]), "col_header_hr"))
+        combos = []
+        for a, b in _it.combinations(four, 2):
+            dec = (1 + (a["od"]/100 if a["od"] > 0 else 100/abs(a["od"]))) * \
+                  (1 + (b["od"]/100 if b["od"] > 0 else 100/abs(b["od"])))
+            pay = combined_american([a["od"], b["od"]])
+            win = 0.25 * (dec - 1)
+            edge = combo_edge([a, b])
+            combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
+            combos.append((edge["edge_pp"], combo_name, a, b, pay, win, edge))
+        combos.sort(key=lambda x: -x[0])
+        for edge_pp, combo_name, a, b, pay, win, edge in combos:
+            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}",
+                f"{edge['model_pct']:.1f}%", f"{edge['implied_pct']:.1f}%", f"{edge['edge_pp']:+.1f}pp"]),
+                "data_combo"))
+        rows.append((E[:], "spacer"))
+
+    # Safe Zone: <=+300, ranked by cell hit rate (fallback to score if thin)
+    def _safe_key(c):
+        trusted = c["cell_rate"] is not None and c["cell_n"] >= 25
+        return (0 if trusted else 1, -(c["cell_rate"] if trusted else -999), -c["sc"])
+    safe_four = _build_zone_pool(0, 300, _safe_key, "Cell Hit%",
+        lambda c: f"{c['cell_rate']:.0f}% (n{c['cell_n']})" if c["cell_rate"] is not None and c["cell_n"] >= 25
+                  else f"sc {c['sc']:.1f}")
+    _emit_4rr("🔁  4-LEG RR — SAFE ZONE (\u2264+300, ranked by cell hit rate)",
+               safe_four, "Cell Hit%",
+               lambda c: f"{c['cell_rate']:.0f}% (n{c['cell_n']})" if c["cell_rate"] is not None and c["cell_n"] >= 25
+                         else f"sc {c['sc']:.1f}")
+
+    # Hot Hand: +301-499, ranked by RAW recent barrel_pct_7d (needs real sample)
+    def _hot_key(c):
+        has_sample = c["bbe_7d"] >= 5
+        return (0 if has_sample else 1, -(c["barrel_7d"] if has_sample else -999), -c["sc"])
+    hot_four = _build_zone_pool(301, 499, _hot_key, "Barrel 7d%",
+        lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})")
+    _emit_4rr("🔁  4-LEG RR — HOT HAND (+301-499, ranked by RAW recent barrel%)",
+               hot_four, "Barrel 7d%",
+               lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})")
 
     return rows, staging
 
@@ -1233,7 +1317,7 @@ def write_dashboard(gc, sheet_id, rows) -> None:
 
         elif rtype.startswith("section_header"):
             color = COLOR_PURPLE if "parlay" in rtype else COLOR_GOLD
-            text_color = COLOR_WHITE if "parlay" in rtype else COLOR_BLACK
+            text_color = COLOR_BLACK   # both cyan and coral are bright now — dark text on both
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": N_COLS},
@@ -1276,34 +1360,46 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                     "verticalAlignment": "MIDDLE", "horizontalAlignment": "LEFT", "wrapStrategy": "CLIP"}},
                 "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)",
             }})
-            # col 0 (Rank/Leg/Ticket) centered dim
+            # col 0 is ALWAYS a name now (Batter, or paired Combo name) — bold,
+            # left-aligned, full brightness. No more rank-number dim/center
+            # styling (that was leftover from the removed "Leg" column).
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 0, "endColumnIndex": 1},
                 "cell": {"userEnteredFormat": {
-                    "textFormat": {"foregroundColor": COLOR_SUBTEXT, "bold": True,
-                                   "fontFamily": "Roboto", "fontSize": 11},
-                    "horizontalAlignment": "CENTER"}},
+                    "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True,
+                                   "fontFamily": "Roboto Mono", "fontSize": 11},
+                    "horizontalAlignment": "LEFT"}},
                 "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
             }})
-            # col 3 (Score) colored by tier
-            score_color = COLOR_GREEN if "strong" in rtype else (
-                COLOR_GOLD if ("moderate" in rtype or rtype == "data_parlay") else COLOR_WHITE)
-            reqs.append({"repeatCell": {
-                "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
-                          "startColumnIndex": 3, "endColumnIndex": 4},
-                "cell": {"userEnteredFormat": {
-                    "textFormat": {"foregroundColor": score_color, "bold": True,
-                                   "fontFamily": "Roboto", "fontSize": 11},
-                    "horizontalAlignment": "CENTER"}},
-                "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
-            }})
-            # col 6 = Edge (singles) / Payout (parlays) — green accent
+            # col 3 (Score) colored by tier — only for actual player rows;
+            # combo rows have a dollar amount there, not a score, so skip.
+            if rtype != "data_combo":
+                score_color = COLOR_GREEN if "strong" in rtype else (
+                    COLOR_GOLD if ("moderate" in rtype or rtype == "data_parlay") else COLOR_WHITE)
+                reqs.append({"repeatCell": {
+                    "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
+                              "startColumnIndex": 3, "endColumnIndex": 4},
+                    "cell": {"userEnteredFormat": {
+                        "textFormat": {"foregroundColor": score_color, "bold": True,
+                                       "fontFamily": "Roboto", "fontSize": 11},
+                        "horizontalAlignment": "CENTER"}},
+                    "fields": "userEnteredFormat(textFormat,horizontalAlignment)",
+                }})
+            # col 6 = Edge — color reflects the ACTUAL sign (mint green if
+            # positive/breakeven-beating, muted coral if negative) instead of
+            # always green regardless of value. Parsed straight from the cell
+            # text since most edges will legitimately be negative (parlay vig).
+            edge_text = str(row_data[6]) if len(row_data) > 6 else ""
+            if edge_text.strip().startswith("-"):
+                edge_color = {"red": 1.000, "green": 0.545, "blue": 0.522}   # muted coral-red
+            else:
+                edge_color = COLOR_GREEN
             reqs.append({"repeatCell": {
                 "range": {"sheetId": ws_id, "startRowIndex": r, "endRowIndex": r + 1,
                           "startColumnIndex": 6, "endColumnIndex": 7},
                 "cell": {"userEnteredFormat": {
-                    "textFormat": {"foregroundColor": COLOR_GREEN, "bold": True,
+                    "textFormat": {"foregroundColor": edge_color, "bold": True,
                                    "fontFamily": "Roboto", "fontSize": 11}}},
                 "fields": "userEnteredFormat(textFormat)",
             }})
@@ -1319,14 +1415,25 @@ def write_dashboard(gc, sheet_id, rows) -> None:
                 "fields": "userEnteredFormat(backgroundColor,textFormat)",
             }})
 
-    # Column widths matched to the +EV layout:
-    # Batter Team Pitcher Score Odds Book BandBE Edge BandHit% N Comb Plat Form Band Info
-    col_widths = [110, 60, 100, 52, 60, 88, 72, 64, 74, 44, 52, 52, 46, 118, 150]
+    # Column widths — now consistent across every section since Batter/name
+    # is always column 0, Team always column 1, Pitcher/Opp always column 2.
+    # Col 0 widened to fit even the longest MLB names (e.g. "Christian
+    # Encarnacion-Strand") without clipping.
+    col_widths = [165, 58, 115, 58, 65, 92, 78, 78, 78, 48, 56, 56, 50, 122, 155]
     for i, w in enumerate(col_widths):
         reqs.append({"updateDimensionProperties": {
             "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
             "properties": {"pixelSize": w}, "fields": "pixelSize",
         }})
+    # Column 0 (names) gets WRAP instead of CLIP — belt-and-suspenders so
+    # even a name longer than 165px wraps to a second line instead of being
+    # cut off, rather than depending on width alone.
+    reqs.append({"repeatCell": {
+        "range": {"sheetId": ws_id, "startRowIndex": 0, "endRowIndex": RESET_ROWS,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+        "fields": "userEnteredFormat(wrapStrategy)",
+    }})
 
     # Row heights
     for r, (_, rtype) in enumerate(rows):
@@ -1425,7 +1532,7 @@ def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
     model_colors = {
         "HR Single": COLOR_GOLD,
         "HR Parlay 3-leg": COLOR_PURPLE,
-        "HR Parlay 2-leg": {"red": 0.451, "green": 0.227, "blue": 0.620},
+        "HR Parlay 2-leg": {"red": 1.000, "green": 0.573, "blue": 0.400},  # lighter coral, matches new scheme
     }
     for idx, row in enumerate(all_rows[1:], start=1):
         if len(row) < 2:
@@ -1450,7 +1557,7 @@ def write_scorecard(gc, sheet_id, rows_data, today_str) -> None:
             "range": {"sheetId": ws_id, "startRowIndex": 1, "endRowIndex": total,
                       "startColumnIndex": ci, "endColumnIndex": ci + 1},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": 0.10, "green": 0.10, "blue": 0.15},
+                "backgroundColor": {"red": 0.031, "green": 0.055, "blue": 0.063},
                 "textFormat": {"foregroundColor": COLOR_WHITE, "bold": True},
                 "horizontalAlignment": "CENTER"}},
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"}})
@@ -1564,4 +1671,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()			
