@@ -1177,13 +1177,16 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     #               not blend -- pure "who's barreling the ball right now."
     #               Tested: +5.0 spread, +0.196 eff, holds even among elite
     #               scorers -- a genuinely different, validated angle.)
-    def _build_zone_pool(lo, hi, rank_key, extra_col_label, extra_col_fn):
+    def _build_zone_pool(lo, hi, rank_key, extra_col_label, extra_col_fn, exclude=None):
+        exclude = exclude or set()
         pool = []
         if hr_source.empty:
             return pool
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
+                continue
+            if nm in exclude:
                 continue
             if is_cold_filtered(row):
                 continue
@@ -1243,24 +1246,31 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 "data_combo"))
         rows.append((E[:], "spacer"))
 
+    # Names already used in the Sharp 5-leg RR — both 4-leggers exclude them
+    # so every section shows genuinely DIFFERENT players, not overlapping picks.
+    _sharp_names = {c["nm"] for c in five_cell}
+
     # Safe Zone: <=+300, ranked by cell hit rate (fallback to score if thin)
     def _safe_key(c):
         trusted = c["cell_rate"] is not None and c["cell_n"] >= 25
         return (0 if trusted else 1, -(c["cell_rate"] if trusted else -999), -c["sc"])
     safe_four = _build_zone_pool(0, 300, _safe_key, "Cell Hit%",
         lambda c: f"{c['cell_rate']:.0f}% (n{c['cell_n']})" if c["cell_rate"] is not None and c["cell_n"] >= 25
-                  else f"sc {c['sc']:.1f}")
+                  else f"sc {c['sc']:.1f}", exclude=_sharp_names)
     _emit_4rr("🔁  4-LEG RR — SAFE ZONE (\u2264+300, ranked by cell hit rate)",
                safe_four, "Cell Hit%",
                lambda c: f"{c['cell_rate']:.0f}% (n{c['cell_n']})" if c["cell_rate"] is not None and c["cell_n"] >= 25
                          else f"sc {c['sc']:.1f}")
 
     # Hot Hand: +301-499, ranked by RAW recent barrel_pct_7d (needs real sample)
+    # Also excludes Sharp RR's players AND Safe Zone's (in case of overlap in
+    # the 301-499 range) so all three round robins stay fully distinct.
+    _used_names = _sharp_names | {c["nm"] for c in safe_four}
     def _hot_key(c):
         has_sample = c["bbe_7d"] >= 5
         return (0 if has_sample else 1, -(c["barrel_7d"] if has_sample else -999), -c["sc"])
     hot_four = _build_zone_pool(301, 499, _hot_key, "Barrel 7d%",
-        lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})")
+        lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})", exclude=_used_names)
     _emit_4rr("🔁  4-LEG RR — HOT HAND (+301-499, ranked by RAW recent barrel%)",
                hot_four, "Barrel 7d%",
                lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})")
