@@ -1177,13 +1177,16 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
     #               not blend -- pure "who's barreling the ball right now."
     #               Tested: +5.0 spread, +0.196 eff, holds even among elite
     #               scorers -- a genuinely different, validated angle.)
-    def _build_zone_pool(lo, hi, rank_key, extra_col_label, extra_col_fn):
+    def _build_zone_pool(lo, hi, rank_key, extra_col_label, extra_col_fn, exclude=None):
+        exclude = exclude or set()
         pool = []
         if hr_source.empty:
             return pool
         for _, row in hr_source.iterrows():
             nm = str(row.get("player_name", "")).strip()
             if not nm or nm == "nan":
+                continue
+            if nm in exclude:
                 continue
             if is_cold_filtered(row):
                 continue
@@ -1195,12 +1198,14 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
             cell = player_band(sc, od, band_rates) or {}
             b7 = safe_float(row.get("barrel_pct_7d", ""), 0)
             bbe7 = safe_float(row.get("bbe_7d", ""), 0)
+            win_pct = player_win_pct(row, hr_hit_rates)
+            leg_edge = win_pct - (american_to_implied(od) * 100)
             pool.append({"nm": nm, "team": str(row.get("team", "")).strip(),
                 "pit": str(row.get("pitcher_name", "")).strip(), "sc": sc, "od": od,
                 "book": str(row.get("best_book", "")).strip(),
                 "cell_rate": cell.get("hit"), "cell_n": cell.get("n", 0),
                 "barrel_7d": b7, "bbe_7d": bbe7,
-                "win_pct": player_win_pct(row, hr_hit_rates)})
+                "win_pct": win_pct, "leg_edge": leg_edge})
         pool.sort(key=rank_key)
         four, fteams = [], set()
         for c in pool:
@@ -1243,24 +1248,34 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 "data_combo"))
         rows.append((E[:], "spacer"))
 
-    # Safe Zone: <=+300, ranked by cell hit rate (fallback to score if thin)
-    def _safe_key(c):
-        trusted = c["cell_rate"] is not None and c["cell_n"] >= 25
-        return (0 if trusted else 1, -(c["cell_rate"] if trusted else -999), -c["sc"])
-    safe_four = _build_zone_pool(0, 300, _safe_key, "Cell Hit%",
-        lambda c: f"{c['cell_rate']:.0f}% (n{c['cell_n']})" if c["cell_rate"] is not None and c["cell_n"] >= 25
-                  else f"sc {c['sc']:.1f}")
-    _emit_4rr("🔁  4-LEG RR — SAFE ZONE (\u2264+300, ranked by cell hit rate)",
-               safe_four, "Cell Hit%",
-               lambda c: f"{c['cell_rate']:.0f}% (n{c['cell_n']})" if c["cell_rate"] is not None and c["cell_n"] >= 25
-                         else f"sc {c['sc']:.1f}")
+    # Names already used in the Sharp 5-leg RR — every other RR excludes them
+    # so all sections show genuinely DIFFERENT players, not overlapping picks.
+    _sharp_names = {c["nm"] for c in five_cell}
+
+    # 🎯 MARKET GAP: not restricted to any odds zone — hunts the WHOLE slate
+    # for whoever the market has mispriced the MOST. Ranked by individual
+    # edge = (tier Win%) minus (what this player's own price implies). Same
+    # +EV logic as the singles section and the combo-edge trick, but applied
+    # as a selection key across every price instead of one zone. This is what
+    # replaced Safe Zone, which turned out to just re-pick the Sharp RR's
+    # players since they shared the same ranking signal.
+    def _gap_key(c):
+        return -c["leg_edge"]
+    gap_four = _build_zone_pool(1, 499, _gap_key, "Edge",
+        lambda c: f"{c['leg_edge']:+.1f}pp", exclude=_sharp_names)
+    _emit_4rr("🎯  4-LEG RR — MARKET GAP (any odds, biggest model-vs-market mispricing)",
+               gap_four, "Edge",
+               lambda c: f"{c['leg_edge']:+.1f}pp")
 
     # Hot Hand: +301-499, ranked by RAW recent barrel_pct_7d (needs real sample)
+    # Also excludes Sharp RR's players AND Market Gap's (in case of overlap)
+    # so all three round robins stay fully distinct.
+    _used_names = _sharp_names | {c["nm"] for c in gap_four}
     def _hot_key(c):
         has_sample = c["bbe_7d"] >= 5
         return (0 if has_sample else 1, -(c["barrel_7d"] if has_sample else -999), -c["sc"])
     hot_four = _build_zone_pool(301, 499, _hot_key, "Barrel 7d%",
-        lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})")
+        lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})", exclude=_used_names)
     _emit_4rr("🔁  4-LEG RR — HOT HAND (+301-499, ranked by RAW recent barrel%)",
                hot_four, "Barrel 7d%",
                lambda c: f"{c['barrel_7d']:.1f}% (n{int(c['bbe_7d'])})")
