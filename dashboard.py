@@ -1112,22 +1112,6 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for i, c in enumerate(five, 1):
             rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c["book"] or "—", prob_fn(c)]), "data_hr_strong"))
-        rows.append((pad([""]), "spacer"))
-        rows.append((pad(["  Ten 2-leg parlays (25¢ each = $2.50 total) — ranked by edge:"]), "col_header_parlay"))
-        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins", "Model %", "Implied %", "Edge"]), "col_header_hr"))
-        combos = []
-        for a, b in _it.combinations(five, 2):
-            dec = safe_decimal_odds(a["od"]) * safe_decimal_odds(b["od"])
-            pay = combined_american([a["od"], b["od"]])
-            win = 0.25 * (dec - 1)
-            edge = combo_edge([a, b])
-            combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
-            combos.append((edge["edge_pp"], combo_name, a, b, pay, win, edge))
-        combos.sort(key=lambda x: -x[0])
-        for edge_pp, combo_name, a, b, pay, win, edge in combos:
-            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}",
-                f"{edge['model_pct']:.1f}%", f"{edge['implied_pct']:.1f}%", f"{edge['edge_pp']:+.1f}pp"]),
-                "data_combo"))
         rows.append((E[:], "spacer"))
 
     # A) PRIMARY — rank by cell hit rate (trusted cells first), score as the
@@ -1230,22 +1214,6 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
         for i, c in enumerate(four, 1):
             rows.append((pad([c["nm"], c["team"], c["pit"], f"{c['sc']:.1f}",
                 f"+{int(c['od'])}", c["book"] or "—", prob_fn(c)]), "data_hr_strong"))
-        rows.append((pad([""]), "spacer"))
-        rows.append((pad(["  Six 2-leg parlays (25¢ each = $1.50 total) — ranked by edge:"]), "col_header_parlay"))
-        rows.append((pad(["Combo", "Odds", "Pays", "25¢ wins", "Model %", "Implied %", "Edge"]), "col_header_hr"))
-        combos = []
-        for a, b in _it.combinations(four, 2):
-            dec = safe_decimal_odds(a["od"]) * safe_decimal_odds(b["od"])
-            pay = combined_american([a["od"], b["od"]])
-            win = 0.25 * (dec - 1)
-            edge = combo_edge([a, b])
-            combo_name = f"{a['nm'].split()[-1]} + {b['nm'].split()[-1]}"
-            combos.append((edge["edge_pp"], combo_name, a, b, pay, win, edge))
-        combos.sort(key=lambda x: -x[0])
-        for edge_pp, combo_name, a, b, pay, win, edge in combos:
-            rows.append((pad([combo_name, f"+{int(a['od'])}/+{int(b['od'])}", pay, f"${win:.2f}",
-                f"{edge['model_pct']:.1f}%", f"{edge['implied_pct']:.1f}%", f"{edge['edge_pp']:+.1f}pp"]),
-                "data_combo"))
         rows.append((E[:], "spacer"))
 
     # Names already used in the Sharp 5-leg RR — every other RR excludes them
