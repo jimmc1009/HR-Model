@@ -201,6 +201,33 @@ def build_analysis(df: pd.DataFrame) -> dict:
             "rate": rate, "avg_odds": f"+{int(avg_odds)}" if avg_odds > 0 else "—"
         })
 
+    # ── Score tiers — FINE (5-point bands below top 2%) ────────────────────
+    # The coarse table above lumps huge groups (65-80 and 50-65 are each
+    # ~15 percentile points, thousands of players). This drills into 5-point
+    # bands everywhere except the top 2% bucket (kept as-is, it's already the
+    # finest natural cut) so hidden bumps/dips in the middle become visible.
+    _fine_pcts = [98, 95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 10, 5]
+    _fq = {p: _sv.quantile(p / 100) for p in _fine_pcts}
+    fine_score_tiers = []
+    bounds = [999] + [_fq[p] for p in _fine_pcts] + [-999]
+    labels = [f"top 2% (\u2265{_fq[98]:.1f})"] + \
+             [f"{_fine_pcts[i+1]}-{_fine_pcts[i]} ({_fq[_fine_pcts[i+1]]:.1f}-{_fq[_fine_pcts[i]]:.1f})"
+              for i in range(len(_fine_pcts) - 1)] + \
+             [f"bot 5 (<{_fq[5]:.1f})"]
+    for i, label in enumerate(labels):
+        lo, hi = bounds[i + 1], bounds[i]
+        sub = scored[(scored["hr_score"] >= lo) & (scored["hr_score"] < hi)]
+        if sub.empty:
+            continue
+        n = len(sub)
+        h = int(sub["hit_bool"].sum())
+        rate = round(h / n * 100, 1) if n else 0.0
+        avg_odds = round(sub[sub["odds_num"] > 0]["odds_num"].mean(), 0) if (sub["odds_num"] > 0).any() else 0
+        fine_score_tiers.append({
+            "label": label, "total": n, "hits": h,
+            "rate": rate, "avg_odds": f"+{int(avg_odds)}" if avg_odds > 0 else "\u2014",
+        })
+
     # ── Odds zones ────────────────────────────────────────────────────────
     odds_zones = []
     for label, lo, hi in [
@@ -612,6 +639,7 @@ def build_analysis(df: pd.DataFrame) -> dict:
         "hits":               hits,
         "hit_rate":           hit_rate,
         "score_tiers":        score_tiers,
+        "fine_score_tiers":   fine_score_tiers,
         "odds_zones":         odds_zones,
         "feature_separators": feature_separators,
         "wind_rows":          wind_rows,
@@ -674,6 +702,15 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
         analysis["score_tiers"],
         lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r["avg_odds"], "", "", ""]
     )
+
+    # ── By Score Tier, FINE (5-point bands) ─────────────────────────────────
+    if analysis.get("fine_score_tiers"):
+        add_section(
+            "🔬  BY SCORE TIER (FINE, 5% bands)",
+            ["Score Tier", "Total Players", "Hit HR", "Hit Rate %", "Avg Odds", "", "", ""],
+            analysis["fine_score_tiers"],
+            lambda r: [r["label"], r["total"], r["hits"], f"{r['rate']}%", r["avg_odds"], "", "", ""]
+        )
 
     # ── Odds Zones ────────────────────────────────────────────────────────
     add_section(
@@ -855,6 +892,7 @@ def write_analysis(gc: gspread.Client, sheet_id: str, analysis: dict) -> None:
 
     section_colors = {
         "🎯  BY SCORE TIER":        (COLOR_PURPLE,    COLOR_PURPLE_DIM),
+        "🔬  BY SCORE TIER (FINE, 5% bands)": (COLOR_PURPLE, COLOR_PURPLE_DIM),
         "💰  BY ODDS ZONE":         (COLOR_GOLD,      COLOR_GOLD_DIM),
         "🌬️  BY WIND CONDITION":    (COLOR_TEAL,      COLOR_TEAL_DIM),
         "💨  BY WIND STRENGTH (Boost Value)": (COLOR_TEAL, COLOR_TEAL_DIM),
