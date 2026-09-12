@@ -1015,9 +1015,9 @@ def build_rows(hr_df, hr_hit_rates, hr_today, timestamp_str, edge_bands=None, hr
                 "data_hr_strong"))
     rows.append((E[:], "spacer"))
 
-    # ── 🎯 HR SCORE ≥9.5 — every player today at or above a flat 9.5 cutoff
-    HR_SCORE_FLOOR = 10.4   # updated 2026-08-23 to match the new 90th-pctile
-                             # boundary after the power/platoon reweight
+    # ── 🎯 HR SCORE ≥11.8 — every player today at or above a flat 11.8 cutoff
+    HR_SCORE_FLOOR = 11.8   # updated to match the 95th-pctile boundary from
+                             # the fine score-tier table (95-98 band starts at 11.8)
     over95 = []
     if not hr_source.empty:
         for _, row in hr_source.iterrows():
